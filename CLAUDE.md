@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # Setup
 python -m venv .venv
-pip install pyside6 pydantic jinja2 pyyaml pytest ruff pre-commit
+pip install pyside6 pydantic jinja2 pyyaml pytest pytest-cov ruff bandit pre-commit
 
 # Run app
 python -m app.main
@@ -25,7 +25,7 @@ pre-commit run --all-files
 pre-commit install
 ```
 
-> `pyproject.toml` is not yet configured. Add `[tool.ruff]` and `[tool.pytest.ini_options]` sections there when setting up the toolchain.
+> `pyproject.toml` has ruff, pytest (with coverage), and bandit configured. Add `--cov-fail-under=80` to `addopts` once there is real app code to measure.
 
 ---
 
@@ -76,14 +76,37 @@ Good early options to expose in UI: pre-commit, CI workflow, PR template, issue 
 
 ---
 
+## Development workflow
+
+Each ticket follows these phases. Use the corresponding slash command to enter each phase:
+
+```
+/groom-ticket WOR-123     # PO review: scope, acceptance criteria, splitting
+                          # ↓ human approves — Linear updated only after this
+
+/start-ticket WOR-123     # PO + Architect: restate req, plan files/tests, create branch
+                          # ↓ human approves plan before any code is written
+
+[Claude implements]       # hooks fire automatically: ruff, bandit, pytest
+
+/security-check           # bandit scan + OWASP diff review → PASS / WARNINGS / FAIL
+
+/finalize-ticket          # coverage check, docs update, PR creation, Linear → In Review
+```
+
+Human gates: plan approval after `/start-ticket`, and explicit PASS verdict from `/security-check` before creating the PR. Command files live in `.claude/commands/`.
+
+---
+
 ## Claude Code hooks
 
 `.claude/settings.json` ships with hooks that run automatically:
 
 - **PostToolUse** — ruff lint + format after any Python file edit
-- **PostToolUse** — pytest after changes to `app/` or `tests/`
+- **PostToolUse** — bandit security scan after any Python file edit (if bandit is installed)
+- **PostToolUse** — pytest with coverage after changes to `app/` or `tests/`
 - **Stop** — `pre-commit run --all-files` at the end of every turn
-- **PreToolUse** — blocks destructive shell commands and writes to sensitive files
+- **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)
 
 No setup needed — hooks activate as soon as Claude Code loads the project.
 

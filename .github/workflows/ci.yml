@@ -19,13 +19,16 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install pydantic jinja2 pyyaml pytest ruff
+        run: pip install pydantic jinja2 pyyaml pytest pytest-cov ruff bandit
 
       - name: Lint
         run: ruff check .
 
       - name: Format check
         run: ruff format --check .
+
+      - name: Security scan
+        run: bandit -c pyproject.toml -r app/
 
       - name: Test
         run: pytest

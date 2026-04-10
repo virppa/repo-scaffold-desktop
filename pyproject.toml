@@ -7,3 +7,8 @@ select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing"
+
+[tool.bandit]
+targets = ["app"]
+skips = []
