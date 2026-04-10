@@ -27,3 +27,8 @@ Derive the Linear identifier from the current branch name (e.g., `WOR-42-short-d
 
 ### 4. Update Linear
 Use the Linear MCP server to mark the issue as "In Review" (`save_issue` with the appropriate status).
+
+### 5. Return to main
+```bash
+git checkout main
+```
