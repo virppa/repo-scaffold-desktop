@@ -76,6 +76,19 @@ Good early options to expose in UI: pre-commit, CI workflow, PR template, issue 
 
 ---
 
+## Claude Code hooks
+
+`.claude/settings.json` ships with hooks that run automatically:
+
+- **PostToolUse** — ruff lint + format after any Python file edit
+- **PostToolUse** — pytest after changes to `app/` or `tests/`
+- **Stop** — `pre-commit run --all-files` at the end of every turn
+- **PreToolUse** — blocks destructive shell commands and writes to sensitive files
+
+No setup needed — hooks activate as soon as Claude Code loads the project.
+
+---
+
 ## Linear MCP
 
 This repo ships with `.mcp.json` configured to use the Linear MCP server. Claude Code agents can use this to read Linear issues directly — no manual copy-pasting needed.

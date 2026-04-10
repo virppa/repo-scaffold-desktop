@@ -55,16 +55,16 @@ Suggested early toggles:
 
 The project is split into a few clear layers:
 
-- `app/core/`  
+- `app/core/`
   Main business logic such as config validation, preset handling, file generation, and post-setup actions.
 
-- `app/ui/`  
+- `app/ui/`
   PySide6 desktop UI. This layer should stay thin and call the core logic.
 
-- `templates/`  
+- `templates/`
   Reusable template files and scaffold structures.
 
-- `tests/`  
+- `tests/`
   Tests for generator behavior and config validation.
 
 Expected module responsibilities:

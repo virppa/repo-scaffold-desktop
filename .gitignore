@@ -38,5 +38,9 @@ Thumbs.db
 .idea/
 *.iml
 
+# Environment variables
+.env
+.env.*
+
 # Claude Code local settings
-.claude/
+.claude/settings.local.json
