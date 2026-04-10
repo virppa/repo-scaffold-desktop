@@ -82,6 +82,8 @@ This repo ships with `.mcp.json` configured to use the Linear MCP server. Claude
 
 On first use, run `/mcp` in Claude Code to authenticate via OAuth.
 
+Only interact with the **repo-scaffold-desktop** project in Linear unless explicitly told otherwise.
+
 ---
 
 ## Git and Linear workflow
