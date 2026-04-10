@@ -115,6 +115,14 @@ The repo is intended to work well with:
 - Claude Code
 - Linear
 
+## Claude Code and MCP setup
+
+This repo includes a `.mcp.json` that configures the [Linear MCP server](https://linear.app/docs/mcp), allowing Claude Code agents to read Linear issues directly.
+
+To authenticate on first use, run `/mcp` in Claude Code and follow the OAuth flow.
+
+Local Claude Code settings (`.claude/`) are excluded from version control via `.gitignore`.
+
 ## Git and Linear workflow
 
 This project is intended to use a Linear-linked workflow.
