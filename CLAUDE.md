@@ -1,290 +1,96 @@
 # CLAUDE.md
 
-## Project overview
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This repository contains a Python desktop tool for generating opinionated starter repositories for agent-driven development.
+## Commands
 
-The app should help a user:
-- choose a repository name
-- choose a preset/template
-- toggle common repo options
-- generate folders and files locally
-- optionally initialize git and run post-setup commands
+```bash
+# Setup
+python -m venv .venv
+pip install pyside6 pydantic jinja2 pyyaml pytest ruff pre-commit
 
-The first target is a working local scaffold generator, not a polished enterprise platform.
+# Run app
+python -m app.main
 
----
+# Lint and format
+ruff check .
+ruff format .
 
-## Product goal
+# Tests
+pytest
+pytest tests/test_generator.py::test_name  # single test
 
-Build a simple, useful desktop app that can generate a ready-to-use repository base for solo developers and small teams.
+# Pre-commit
+pre-commit run --all-files
+pre-commit install
+```
 
-Typical generated options may include:
-- pre-commit config
-- GitHub Actions CI
-- PR and issue templates
-- CODEOWNERS
-- Dependabot config
-- SonarQube config
-- Claude project files
-- starter folder structures
-- preset-based repo templates
+> `pyproject.toml` is not yet configured. Add `[tool.ruff]` and `[tool.pytest.ini_options]` sections there when setting up the toolchain.
 
 ---
 
 ## Architecture
 
-Keep the project split into clear layers:
+```
+app/core/      # All business logic — no UI here
+app/ui/        # PySide6 only — calls core, contains no logic
+templates/     # Jinja2 template files for scaffold output
+tests/         # Tests against core only
+```
 
-- `app/core/`  
-  Main business logic. Config models, generation logic, preset handling, and post-setup actions belong here.
+Module responsibilities:
+- `config.py` — Pydantic input models (repo name, output path, preset, option toggles)
+- `presets.py` — preset definitions (maps preset name → file list + options)
+- `generator.py` — renders templates and writes files to disk
+- `post_setup.py` — side effects: `git init`, `pre-commit install`, etc.
+- `main.py` — PySide6 `QApplication` entry point
 
-- `app/ui/`  
-  PySide6 UI layer only. Keep it thin. UI should call the core, not contain business logic.
-
-- `templates/`  
-  Template files and reusable scaffold structures.
-
-- `tests/`  
-  Tests for generator behavior and config validation.
-
-Preferred module responsibilities:
-- `config.py` → input models and validation
-- `generator.py` → file/folder generation
-- `presets.py` → preset definitions
-- `post_setup.py` → optional commands like `git init`, `pre-commit install`, GitHub repo setup
-- `main.py` → app entry point
+Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.
 
 ---
 
 ## Engineering principles
 
-Follow these rules when making changes:
-
-- Keep the UI thin.
-- Keep logic in reusable core modules.
-- Prefer config + templates over complex branching logic.
-- Prefer simple, readable code over heavy abstraction.
-- Keep generated output deterministic.
-- Write small functions with clear responsibilities.
-- Avoid introducing large dependencies without a strong reason.
-- Build incrementally. Do not overdesign v1.
-
-When in doubt:
-- choose the simpler implementation
-- keep side effects isolated
-- make generator behavior easy to test
+- UI stays thin. No branching logic, no file I/O in `app/ui/`.
+- Prefer config + templates over conditional generation logic.
+- Generated output must be deterministic and easy to diff.
+- Avoid over-abstracting v1. Three similar lines beat a premature helper.
+- Side effects (git, pre-commit) live only in `post_setup.py`.
 
 ---
 
 ## Current priorities
 
-Priority order:
+1. Generator logic working end-to-end
+2. Presets clean and easy to extend
+3. Minimal but usable PySide6 UI
+4. Optional post-setup actions (git init, pre-commit install)
 
-1. make generator logic work
-2. make presets clean and easy to extend
-3. add a minimal but usable desktop UI
-4. add optional git/post-setup actions
-5. improve presets and developer experience
-
-Do not jump ahead into advanced integrations unless the current layer is working.
+Do not jump ahead to integrations until the current layer works.
 
 ---
 
-## V1 scope
+## V1 toggles
 
-Focus on a minimal working version that can:
-
-- accept repository name
-- accept output path
-- choose a preset
-- toggle a few options
-- generate files and folders locally
-- optionally initialize git
-
-Good early toggles:
-- include pre-commit
-- include CI workflow
-- include PR template
-- include issue templates
-- include CODEOWNERS
-- include Claude files
-
-Avoid overloading v1 with too many options.
+Good early options to expose in UI: pre-commit, CI workflow, PR template, issue templates, CODEOWNERS, Claude files. Keep the toggle list short.
 
 ---
 
 ## Git and Linear workflow
 
-This repo uses Linear-linked workflow conventions.
-
-When working on a task tied to Linear:
-
-- Use the branch name generated by Linear's copy-branch-name action.
-- Do not prepend custom prefixes like `feat/` or `fix/` unless explicitly requested.
-- Follow Linear's branch naming format as generated.
-- Include the Linear issue ID in the PR title.
-- Reference the Linear issue ID in commit messages when appropriate.
-- Use `Part of ISSUE-ID` for intermediate commits.
-- Use `Closes ISSUE-ID` only when the change fully completes the issue.
-- Keep branches and PRs small and focused.
-
-Examples:
-- PR title: `WOR-123 Initial scaffold`
-- commit: `Part of WOR-123 add generator skeleton`
-- final closing commit or PR text: `Closes WOR-123`
-
-Do not invent a separate branch naming convention if Linear already provides one.
+- Use branch names generated by Linear (copy-branch-name). Do not add `feat/` or `fix/` prefixes.
+- PR title format: `WOR-123 Short description`
+- Intermediate commits: `Part of WOR-123 ...`
+- Closing commit or PR body: `Closes WOR-123`
 
 ---
 
-## Pull request expectations
+## Testing
 
-Prefer small, focused pull requests.
-
-A good PR should:
-- solve one clear problem
-- avoid unrelated refactoring
-- keep docs in sync if behavior changes
-- pass formatting, linting, and tests
-- be easy to review
-
-If a task grows too large, split it into smaller PRs.
-
----
-
-## Code quality guardrails
-
-Respect the repo guardrails once they exist.
-
-Expected checks include:
-- formatting
-- linting
-- tests
-- CI validation
-
-When changing behavior:
-- update or add tests
-- keep README and supporting docs aligned
-- avoid leaving half-implemented options exposed in UI
-
-If a command or quality check is already defined in the repo, use it rather than inventing a new workflow.
-
----
-
-## Testing expectations
-
-Write tests mainly around the core logic.
-
-Prioritize testing:
-- config validation
-- preset selection
-- file generation
-- option toggles
-- overwrite/merge behavior
-- post-setup behavior where practical
-
-Do not overfocus on UI testing early unless the UI contains meaningful behavior.
-
----
-
-## File generation rules
-
-Generated output should be:
-- predictable
-- easy to understand
-- easy to diff
-- safe to rerun where possible
-
-Prefer:
-- explicit templates
-- explicit config mapping
-- stable file content ordering
-
-Avoid:
-- hidden magic
-- too much implicit behavior
-- deeply nested conditional template logic unless clearly needed
-
----
-
-## Dependency rules
-
-Before adding a dependency:
-- confirm it solves a real problem
-- prefer standard library where reasonable
-- prefer lightweight, widely used libraries
-- avoid duplicating functionality already present in the stack
-
-Current intended stack includes:
-- Python
-- PySide6
-- Pydantic
-- Jinja2
-- PyYAML
-- pytest
-- Ruff
-- pre-commit
-
-Do not replace these casually.
-
----
-
-## How to help best in this repo
-
-When contributing or generating code, prefer:
-- concrete file edits
-- minimal working implementations
-- explicit tradeoff notes
-- small iterative progress
-- clear next steps
-
-Good outputs:
-- starter files
-- tests for generator logic
-- config models
-- simple UI shells
-- README updates that match actual behavior
-
-Avoid:
-- unnecessary abstraction
-- speculative enterprise features
-- broad rewrites of unrelated files
-- adding architecture that is not yet needed
-
----
-
-## Documentation rules
-
-Keep documentation practical and current.
-
-When behavior changes, update the relevant docs:
-- `README.md` for user-facing behavior
-- `CLAUDE.md` for repo working rules
-- setup notes if commands or workflows change
-
-Do not let documentation drift far from the actual implementation.
-
----
-
-## Preferred development sequence
-
-When adding a new feature, prefer this order:
-
-1. define config/input shape
-2. implement core logic
-3. add or update tests
-4. connect the UI
-5. update docs if needed
-
-This keeps the project stable and easier to evolve.
+Test core logic only. Priority: config validation, preset selection, file generation, option toggles, overwrite behavior. Skip UI tests unless the UI contains meaningful logic.
 
 ---
 
 ## Immediate milestone
 
-The immediate milestone is:
-
 **Generate a local repository skeleton from a selected preset and write all files to disk.**
-
-Everything else should support that milestone.
