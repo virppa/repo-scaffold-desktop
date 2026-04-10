@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CMD=\"$CLAUDE_TOOL_INPUT_COMMAND\"; if echo \"$CMD\" | grep -qE '(rm\s+-[^\s]*r|git\s+push\s+--force|git\s+reset\s+--hard|git\s+checkout\s+--|git\s+clean\s+-f)'; then echo \"Blocked: dangerous command detected: $CMD\" >&2; exit 1; fi"
+            "command": "CMD=\"$CLAUDE_TOOL_INPUT_COMMAND\"; if echo \"$CMD\" | grep -qE '(rm\\s+-[^\\s]*r|git\\s+push\\s+--force|git\\s+reset\\s+--hard|git\\s+checkout\\s+--|git\\s+clean\\s+-f)'; then echo \"Blocked: dangerous command detected: $CMD\" >&2; exit 1; fi"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if echo \"$FILE\" | grep -qE '(\.env|\.mcp\.json|\.claude/settings)'; then echo \"Blocked: writes to sensitive file not allowed: $FILE\" >&2; exit 1; fi"
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if echo \"$FILE\" | grep -qE '(\\.env|\\.mcp\\.json|\\.claude/settings)'; then echo \"Blocked: writes to sensitive file not allowed: $FILE\" >&2; exit 1; fi"
           }
         ]
       }
