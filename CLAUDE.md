@@ -12,6 +12,10 @@ pip install pyside6 pydantic jinja2 pyyaml pytest pytest-cov ruff bandit pre-com
 # Run app
 python -m app.main
 
+# CLI
+python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out
+# With optional toggles: --pre-commit --ci --pr-template --issue-templates --codeowners --claude-files
+
 # Lint and format
 ruff check .
 ruff format .

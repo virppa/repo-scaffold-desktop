@@ -8,8 +8,11 @@ from app.core.presets import get_preset
 _TEMPLATES_DIR = Path(__file__).parent.parent.parent / "templates"
 
 
-def generate(config: RepoConfig, output_path: Path) -> None:
-    """Render all preset template files and write them to output_path."""
+def generate(config: RepoConfig, output_path: Path) -> list[str]:
+    """Render all preset template files and write them to output_path.
+
+    Returns the list of relative file paths that were written.
+    """
     preset = get_preset(config.preset)
 
     # Build file list: required files + enabled optional files, deduplicated
@@ -43,3 +46,5 @@ def generate(config: RepoConfig, output_path: Path) -> None:
         dest = output_path / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
+
+    return files_to_write
