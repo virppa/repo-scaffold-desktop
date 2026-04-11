@@ -94,20 +94,54 @@ This project (`repo-scaffold-desktop`) is a CLI/desktop tool that generates repo
 
 ---
 
-## Decision: NO-GO
+## Free Alternatives Evaluated
 
-**Do not integrate the Penpot MCP server at this time.**
+Since Penpot MCP isn't viable today, two other free/open-source design MCP options were assessed:
 
-Reasons:
-1. **Remote MCP not production-ready** — the only headless-compatible mode is not available on penpot.app yet. Local mode requires an active browser window, which cannot run in our agentic/CI workflow.
-2. **No designs to reference** — this project has no Penpot files. Integrating MCP without wireframes adds infrastructure with zero immediate value.
-3. **Pre-beta stability** — the API is experimental, Chromium v142+ has known issues, and the toolset is subject to change.
-4. **Workflow friction outweighs benefit** — the overhead (run Node.js server, keep plugin open, manage tokens) doesn't fit a fast code-generation workflow.
+### OpenPencil MCP
+
+- **Repo:** [open-pencil/open-pencil](https://github.com/open-pencil/open-pencil) — MIT licensed
+- **Tools:** 90 MCP tools (shape creation, fill/stroke, auto-layout, components, variables, export, design token analysis)
+- **Setup:** `bun add -g @open-pencil/mcp`; HTTP mode runs headlessly on port 3100
+- **Reads .fig files** natively — Figma files work without a Figma account
+- **Headless?** HTTP mode is headless; Claude Code integration still requires the desktop app open
+- **Status:** "Active development. **Not ready for production use**" — their own words
+- **Verdict:** Most capable alternative long-term; blocked by production-readiness today
+
+### Superdesign MCP
+
+- **Repo:** [jonthebeef/superdesign-mcp-claude-code](https://github.com/jonthebeef/superdesign-mcp-claude-code)
+- **Tools:** 5 tools: `superdesign_generate`, `superdesign_iterate`, `superdesign_extract_system`, `superdesign_list`, `superdesign_gallery`
+- **Use case:** Generates designs from natural language prompts — does not read existing design files
+- **Setup:** Node.js 16+, no external API key (uses Claude Code's built-in LLM)
+- **Headless?** Yes — no browser or desktop app needed
+- **Status:** 10 commits, no releases, unclear license — highly experimental
+- **Verdict:** Different use case (generate, not read); too immature for adoption
+
+### Figma-based servers
+
+Multiple Figma MCP servers exist (Framelink, community servers). All require a Figma API token. Figma has a free tier but it is a proprietary SaaS product. Not suitable for an open-source-first project or for teams without Figma accounts. Excluded.
+
+---
+
+## Decision: NO-GO (all options)
+
+**Do not integrate any design MCP server at this time.**
+
+| Option | Blocker |
+|--------|---------|
+| Penpot MCP | Remote MCP not on penpot.app yet; local mode requires open browser window |
+| OpenPencil MCP | Self-declared not production-ready; desktop app required for Claude Code integration |
+| Superdesign MCP | 10 commits, no releases, unclear license, different use case |
+| Figma MCP servers | Proprietary SaaS; not open-source-first |
+
+Common underlying issue across all: **this project has no design files to reference**. Any design MCP adds infrastructure overhead with zero immediate value until wireframes exist.
 
 **Revisit when:**
-- Penpot v2.16 ships Remote MCP to `penpot.app` production
-- The team starts producing Penpot wireframes for the UI
-- The API reaches at least beta stability
+- Penpot v2.16 ships Remote MCP to `penpot.app` production (best fit for this project's toolchain)
+- OR OpenPencil reaches a stable release (best fit if .fig compatibility matters)
+- The team starts producing wireframes for the UI
+- The chosen server's API reaches at least beta stability
 
 ---
 
@@ -117,3 +151,6 @@ Reasons:
 - [Penpot MCP official docs](https://help.penpot.app/mcp/)
 - [Penpot MCP in main repo](https://github.com/penpot/penpot/tree/develop/mcp)
 - [Smashing Magazine: Penpot experimenting with MCP servers](https://www.smashingmagazine.com/2026/01/penpot-experimenting-mcp-servers-ai-powered-design-workflows/)
+- [OpenPencil GitHub](https://github.com/open-pencil/open-pencil)
+- [Superdesign MCP for Claude Code](https://github.com/jonthebeef/superdesign-mcp-claude-code)
+- [Snyk: 14 MCP servers for UI/UX engineers](https://snyk.io/articles/14-mcp-servers-for-ui-ux-engineers/)
