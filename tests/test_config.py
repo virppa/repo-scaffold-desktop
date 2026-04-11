@@ -64,6 +64,12 @@ def test_repo_name_with_backslash_rejected():
         RepoConfig(repo_name="foo\\bar", preset="python_basic")
 
 
+def test_all_valid_presets_accepted():
+    for preset in ("python_basic", "python_desktop", "full_agentic"):
+        config = RepoConfig(repo_name="my-repo", preset=preset)
+        assert config.preset == preset
+
+
 def test_invalid_preset_rejected():
     with pytest.raises(ValidationError):
         RepoConfig(repo_name="my-repo", preset="nonexistent_preset")
