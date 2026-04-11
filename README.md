@@ -1,232 +1,161 @@
 # Repo Scaffold Desktop
 
-A Python desktop tool for generating opinionated starter repositories for agent-driven development.
+A Python CLI tool for generating opinionated starter repositories for agent-driven development.
 
 ## Purpose
 
 This project helps create ready-to-use repository scaffolds for solo developers and small teams.
 
-The tool is intended to make it faster to start a new project with sensible defaults such as:
+The tool makes it faster to start a new project with sensible defaults such as:
 
 - pre-commit setup
 - GitHub Actions CI
 - PR and issue templates
 - CODEOWNERS
-- Dependabot config
-- SonarQube config
 - Claude project files
 - starter folder structures
 - preset-based repository templates
 
-The first goal is a practical local scaffold generator, not a full platform.
+## Usage
 
-## Main idea
+```bash
+# Basic generation
+python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out
 
-The app should allow a user to:
+# With optional file toggles
+python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out \
+  --pre-commit --ci --pr-template --issue-templates --codeowners --claude-files
 
-- enter a repository name
-- choose an output path
-- select a preset
-- toggle common setup options
-- generate files and folders locally
-- optionally initialize git and run basic post-setup commands
+# With post-setup actions
+python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out \
+  --git-init --install-precommit
 
-## Initial scope
+# Show all options
+python -m app.cli generate --help
+```
 
-Version 1 should focus on a minimal working implementation that can:
+## Running locally
 
-- accept repository name
-- accept output path
-- choose a preset
-- toggle a few common options
-- generate a repository locally
-- optionally initialize git
+```bash
+# Create and activate virtual environment
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
-Suggested early toggles:
+# Install dependencies
+pip install pyside6 pydantic jinja2 pyyaml pytest pytest-cov ruff bandit pre-commit
 
-- include pre-commit
-- include CI workflow
-- include PR template
-- include issue templates
-- include CODEOWNERS
-- include Claude files
+# Install pre-commit hooks
+pre-commit install
+```
 
 ## Architecture
 
-The project is split into a few clear layers:
+The project is split into clear layers:
 
-- `app/core/`
-  Main business logic such as config validation, preset handling, file generation, and post-setup actions.
+- `app/core/` — all business logic: config validation, preset handling, file generation, post-setup
+- `app/ui/` — PySide6 desktop UI (deferred to V2; CLI is V1 primary interface)
+- `templates/` — Jinja2 template files for scaffold output
+- `tests/` — tests for core logic only
 
-- `app/ui/`
-  PySide6 desktop UI. This layer should stay thin and call the core logic.
+Module responsibilities:
 
-- `templates/`
-  Reusable template files and scaffold structures.
+- `config.py` — Pydantic input models and validation
+- `generator.py` — renders templates and writes files to disk
+- `presets.py` — preset definitions (maps preset name → file list + toggles)
+- `post_setup.py` — side effects: `git init`, `pre-commit install`
+- `cli.py` — argparse CLI entry point
+- `main.py` — PySide6 app entry point (V2)
 
-- `tests/`
-  Tests for generator behavior and config validation.
+Data flows one way: CLI → config model → generator → disk. Post-setup runs after generation.
 
-Expected module responsibilities:
+## Available presets
 
-- `config.py` → input models and validation
-- `generator.py` → file and folder generation
-- `presets.py` → preset definitions
-- `post_setup.py` → optional commands like `git init` and `pre-commit install`
-- `main.py` → app entry point
+| Preset | Description |
+|--------|-------------|
+| `python_basic` | Minimal Python project with tests and tooling |
+| `python_desktop` | Python project with PySide6 desktop app structure |
+| `full_agentic` | Full agentic repo with Claude, Linear, and CI wiring |
+
+## CLI toggles
+
+| Flag | Effect |
+|------|--------|
+| `--pre-commit` | Include `.pre-commit-config.yaml` |
+| `--ci` | Include GitHub Actions CI workflow |
+| `--pr-template` | Include pull request template |
+| `--issue-templates` | Include bug report and feature request templates |
+| `--codeowners` | Include `CODEOWNERS` file |
+| `--claude-files` | Include `CLAUDE.md` and `.mcp.json` |
+| `--git-init` | Run `git init` in the output directory after generation |
+| `--install-precommit` | Run `pre-commit install` in the output directory |
 
 ## Engineering principles
 
-This project follows a few simple rules:
+- UI stays thin — no branching logic or file I/O in `app/ui/`
+- Prefer config + templates over conditional generation logic
+- Generated output must be deterministic and easy to diff
+- Side effects (git, pre-commit) live only in `post_setup.py`
+- Avoid over-abstracting V1
 
-- keep the UI thin
-- keep logic in reusable core modules
-- prefer config and templates over complex branching
-- prefer simple, readable code over heavy abstraction
-- keep generated output deterministic
-- write small, testable functions
-- build incrementally
-- avoid overengineering v1
+## Stack
 
-## Current priorities
-
-Priority order:
-
-1. make generator logic work
-2. make presets clean and easy to extend
-3. add a minimal but usable desktop UI
-4. add optional git and post-setup actions
-5. improve presets and developer experience
-
-## Planned presets
-
-Early preset ideas:
-
-- Minimal Python repo
-- Python desktop app
-- Full agentic repo
-- Strict repo with extra guardrails
-
-## Planned integrations
-
-The repo is intended to work well with:
-
-- GitHub
-- Claude Code
-- Linear
-
-## Claude Code and MCP setup
-
-This repo includes a `.mcp.json` that configures the [Linear MCP server](https://linear.app/docs/mcp), allowing Claude Code agents to read Linear issues directly.
-
-To authenticate on first use, run `/mcp` in Claude Code and follow the OAuth flow.
-
-Local Claude Code settings (`.claude/`) are excluded from version control via `.gitignore`.
-
-## Git and Linear workflow
-
-This project is intended to use a Linear-linked workflow.
-
-Conventions:
-
-- use the branch name generated by Linear
-- do not prepend custom prefixes unless explicitly wanted
-- include the Linear issue ID in PR titles
-- use commit references such as:
-  - `Part of WOR-123 add generator skeleton`
-  - `Closes WOR-123`
-
-Example PR title:
-
-```
-WOR-123 Initial scaffold
-```
-
-## Suggested stack
-
-- Python
-- PySide6
-- Pydantic
-- Jinja2
-- PyYAML
-- pytest
-- Ruff
-- pre-commit
+- Python 3.12+
+- Pydantic — config validation
+- Jinja2 — template rendering
+- PyYAML — YAML parsing
+- PySide6 — desktop UI (V2)
+- pytest + pytest-cov — testing
+- Ruff — linting and formatting
+- bandit — security scanning
+- pre-commit — git hooks
 
 ## Project structure
 
+```
 repo-scaffold-desktop/
 ├─ app/
-│  ├─ __init__.py
+│  ├─ cli.py
 │  ├─ main.py
-│  ├─ ui/
-│  │  ├─ __init__.py
-│  │  └─ main_window.py
-│  └─ core/
-│     ├─ __init__.py
-│     ├─ config.py
-│     ├─ generator.py
-│     ├─ post_setup.py
-│     └─ presets.py
+│  ├─ core/
+│  │  ├─ config.py
+│  │  ├─ generator.py
+│  │  ├─ post_setup.py
+│  │  └─ presets.py
+│  └─ ui/
+│     └─ main_window.py
 ├─ templates/
 │  ├─ python_basic/
 │  ├─ python_desktop/
 │  └─ full_agentic/
 ├─ tests/
-│  ├─ __init__.py
-│  └─ test_generator.py
+│  ├─ test_cli.py
+│  ├─ test_config.py
+│  ├─ test_generator.py
+│  ├─ test_post_setup.py
+│  └─ test_presets.py
 ├─ .github/
 │  ├─ workflows/
-│  │  └─ ci.yml
+│  │  ├─ ci.yml
+│  │  └─ claude-code-review.yml
 │  ├─ ISSUE_TEMPLATE/
-│  │  ├─ feature_request.md
-│  │  └─ bug_report.md
 │  └─ pull_request_template.md
-├─ .gitignore
-├─ .editorconfig
-├─ .pre-commit-config.yaml
-├─ CODEOWNERS
 ├─ CLAUDE.md
-├─ README.md
 ├─ pyproject.toml
-└─ sonar-project.properties
+└─ README.md
 ```
 
-## Running locally
+## Claude Code and MCP setup
 
-Create a virtual environment:
+This repo ships with `.mcp.json` configured to use the [Linear MCP server](https://linear.app/docs/mcp), allowing Claude Code agents to read Linear issues directly.
 
-```bash
-python -m venv .venv
-```
+To authenticate on first use, run `/mcp` in Claude Code and follow the OAuth flow.
 
-Install the initial dependencies:
+## Git and Linear workflow
 
-```bash
-pip install pyside6 pydantic jinja2 pyyaml typer rich pytest ruff black pre-commit
-```
-
-## First milestone
-
-The immediate milestone is:
-
-**Generate a local repository skeleton from a selected preset and write all files to disk.**
-
-## Near-term roadmap
-
-- bootstrap repo structure
-- add config model
-- implement preset-based generation
-- add PySide6 main window shell
-- add optional local git init and pre-commit install
-- improve presets and generated defaults
-
-## Development notes
-
-- keep the core reusable even if the desktop UI is the main entry point
-- prefer deterministic output that is easy to diff
-- keep docs aligned with actual behavior
-- add tests when generator behavior changes
+- Branch names come from Linear (copy-branch-name) — no custom prefixes
+- PR title format: `WOR-123 Short description`
+- Intermediate commits: `Part of WOR-123 …`
+- Closing commit or PR body: `Closes WOR-123`
 
 ## License
 
