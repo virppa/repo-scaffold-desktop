@@ -1,7 +1,7 @@
 # WOR-27 Spike: Penpot MCP Server Evaluation
 
 **Date:** 2026-04-11
-**Status:** COMPLETE — NO-GO
+**Status:** COMPLETE — GO (Superdesign MCP)
 
 ---
 
@@ -40,7 +40,7 @@ A token-based remote mode is in development. It uses a personal token generated 
 
 ---
 
-## Self-Hosting Requirements
+## Self-Hosting Requirements (Penpot)
 
 ### Local mode (only option today)
 
@@ -49,33 +49,11 @@ A token-based remote mode is in development. It uses a personal token generated 
 - WebSocket server on port 4402 for plugin connections
 - Penpot browser plugin must be installed and active — **the plugin window must remain open during the entire session**
 - Authentication via the user's active Penpot browser session (no separate token)
-- Optional: `mcp-remote` proxy for stdio transport compatibility
 
 ### Remote mode (future)
 
 - **Not yet available on `penpot.app` production** — targeted for Penpot v2.16
-- Would work with both penpot.app (cloud) and self-hosted Penpot instances
 - Token-based auth (no active browser session needed)
-
----
-
-## Cloud vs. Self-Hosted Penpot
-
-| | Local MCP | Remote MCP |
-|---|---|---|
-| `penpot.app` (cloud) | Yes (via browser plugin) | Not yet (v2.16 target) |
-| Self-hosted Penpot | Yes | In progress |
-
-You do **not** need to self-host Penpot to use the MCP server today — you can use penpot.app with the local MCP. However, you do need Node.js running locally and a browser window open.
-
----
-
-## Maturity Assessment
-
-- Pre-beta, active experiment (Penpot's own words)
-- Original standalone repo (`penpot/penpot-mcp`) was **archived 2026-02-03** and merged into the main Penpot repo — sign of consolidation, not abandonment
-- Known issue: Chromium v142+ has browser connectivity restrictions affecting the plugin
-- No stable API guarantees; toolset may change between Penpot releases
 
 ---
 
@@ -84,77 +62,70 @@ You do **not** need to self-host Penpot to use the MCP server today — you can 
 The target workflow is:
 
 ```
-groom-ticket → Claude generates wireframe via MCP → developer reviews/approves → start-ticket → implement
+groom-ticket → Claude generates wireframe → developer reviews/approves → start-ticket → implement
 ```
 
-Claude creates the wireframe (not the developer), the developer reviews and approves it as part of the groom phase, and implementation only starts after that approval. This means the absence of pre-existing design files is **not** a blocker — the MCP server's write/generate capabilities are the relevant surface, not read.
-
-This framing makes two tools more relevant than initially assessed:
-
-- **Superdesign MCP** — designed exactly for this: generate UI from a natural language spec, iterate, extract a design system. No API key, no browser required.
-- **Penpot/OpenPencil write tools** — can programmatically create frames, components, and layouts that the developer then views in the design tool UI.
-
-## Fit Assessment for This Project
-
-| Factor | Assessment |
-|--------|------------|
-| Does this project need pre-existing designs? | No — Claude generates them as part of groom |
-| Is the workflow headless-compatible? | Needs to be — CI and unattended runs |
-| Is Penpot Remote MCP available? | No — not until Penpot v2.16 |
-| Can Penpot local MCP run headlessly? | No — requires open browser plugin window |
-| Is OpenPencil production-ready? | No — self-declared |
-| Is Superdesign mature enough? | No — 10 commits, no releases, unclear license |
+Claude creates the wireframe (not the developer). The developer reviews and approves it as part of the groom phase, and implementation only starts after that approval. This means the absence of pre-existing design files is **not** a blocker — the MCP server's **write/generate** capabilities are the relevant surface, not read.
 
 ---
 
-## Free Alternatives Evaluated
+## Alternatives Assessed
 
-Since Penpot MCP isn't viable today, two other free/open-source design MCP options were assessed:
+### Penpot MCP
+
+- **Fit:** Good write capabilities; developer reviews in penpot.app
+- **Blocker:** Remote MCP not on penpot.app yet; local mode requires open browser plugin window — incompatible with headless agentic workflow
 
 ### OpenPencil MCP
 
 - **Repo:** [open-pencil/open-pencil](https://github.com/open-pencil/open-pencil) — MIT licensed
-- **Tools:** 90 MCP tools (shape creation, fill/stroke, auto-layout, components, variables, export, design token analysis)
-- **Setup:** `bun add -g @open-pencil/mcp`; HTTP mode runs headlessly on port 3100
-- **Reads .fig files** natively — Figma files work without a Figma account
-- **Headless?** HTTP mode is headless; Claude Code integration still requires the desktop app open
+- **Tools:** 90 MCP tools including full write surface; reads .fig files natively
+- **Headless?** HTTP mode (port 3100) is headless; Claude Code integration still requires the desktop app open
 - **Status:** "Active development. **Not ready for production use**" — their own words
-- **Verdict:** Most capable alternative long-term; blocked by production-readiness today
+- **Verdict:** Most capable long-term; blocked by production-readiness today
 
 ### Superdesign MCP
 
 - **Repo:** [jonthebeef/superdesign-mcp-claude-code](https://github.com/jonthebeef/superdesign-mcp-claude-code)
-- **Tools:** 5 tools: `superdesign_generate`, `superdesign_iterate`, `superdesign_extract_system`, `superdesign_list`, `superdesign_gallery`
-- **Use case:** Generates designs from natural language prompts — does not read existing design files
+- **Tools:** `superdesign_generate`, `superdesign_iterate`, `superdesign_extract_system`, `superdesign_list`, `superdesign_gallery`
 - **Setup:** Node.js 16+, no external API key (uses Claude Code's built-in LLM)
 - **Headless?** Yes — no browser or desktop app needed
-- **Status:** 10 commits, no releases, unclear license — highly experimental
-- **Verdict:** Different use case (generate, not read); too immature for adoption
+- **Status:** Early-stage (few commits, no versioned release), unclear license
+- **Verdict:** Best fit for the intended workflow — designed exactly for prompt-to-wireframe within Claude Code
 
 ### Figma-based servers
 
-Multiple Figma MCP servers exist (Framelink, community servers). All require a Figma API token. Figma has a free tier but it is a proprietary SaaS product. Not suitable for an open-source-first project or for teams without Figma accounts. Excluded.
+Require a Figma account. Figma is proprietary SaaS — not open-source-first. Excluded.
 
 ---
 
-## Decision: NO-GO (all options)
+## Decision: GO — Superdesign MCP
 
-**Do not integrate any design MCP server at this time.**
+**Integrate Superdesign MCP as the design step in the groom-ticket phase.**
 
-| Option | Blocker |
-|--------|---------|
-| Penpot MCP | Remote MCP not on penpot.app yet; local mode requires open browser window |
-| OpenPencil MCP | Self-declared not production-ready; desktop app required for Claude Code integration |
-| Superdesign MCP | 10 commits, no releases, unclear license, different use case |
-| Figma MCP servers | Proprietary SaaS; not open-source-first |
+Despite being early-stage, Superdesign is the only option that:
+- Is designed for the exact intended workflow (Claude generates → developer reviews)
+- Requires no browser window, no desktop app, no external API key
+- Works directly within Claude Code via stdio MCP
 
-The intended workflow (Claude generates wireframe → developer reviews → implementation starts) is viable in principle — but no option is mature enough to support it reliably today.
+The early-stage risk is acceptable because this is a developer tooling workflow (not user-facing) and the output (an HTML wireframe) is reviewable and disposable — a bad wireframe is easy to discard or regenerate.
 
-**Revisit when:**
-- Penpot v2.16 ships Remote MCP to `penpot.app` production (best fit: headless, token-based, cloud)
-- OR OpenPencil reaches a stable release (best fit if .fig compatibility matters)
-- OR Superdesign MCP cuts a versioned release with a clear license (best fit for prompt-to-wireframe with no extra tooling)
-- The chosen server's API reaches at least beta stability
+---
+
+## Proposed Workflow Step
+
+Insert a wireframe generation + approval gate inside `groom-ticket`, after scope is agreed and before acceptance criteria are finalised:
+
+```
+/groom-ticket WOR-123
+  1. PO review: scope, acceptance criteria, splitting
+  2. [NEW] Claude generates wireframe(s) via Superdesign MCP for any UI-facing changes
+  3. Developer reviews wireframe — approves, requests iteration, or skips (non-UI tickets)
+  4. Acceptance criteria updated to reference approved wireframe if applicable
+  ↓ human approves — Linear updated only after this
+```
+
+Non-UI tickets (pure logic, config, tests) skip step 2–3.
 
 ---
 
