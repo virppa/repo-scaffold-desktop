@@ -11,4 +11,5 @@ addopts = "--cov=app --cov-report=term-missing"
 
 [tool.bandit]
 targets = ["app"]
+exclude_dirs = ["tests"]
 skips = []
