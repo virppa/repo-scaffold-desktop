@@ -94,6 +94,54 @@ def test_codeowners_written_when_toggled(output_dir):
     assert (output_dir / ".github" / "CODEOWNERS").exists()
 
 
+def test_python_desktop_required_files_written(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    assert (output_dir / "pyproject.toml").exists()
+    assert (output_dir / "README.md").exists()
+    assert (output_dir / ".gitignore").exists()
+    assert (output_dir / "app" / "__init__.py").exists()
+    assert (output_dir / "app" / "main.py").exists()
+    assert (output_dir / "app" / "ui" / "__init__.py").exists()
+    assert (output_dir / "tests" / "__init__.py").exists()
+
+
+def test_python_desktop_pyproject_contains_pyside6(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "pyside6" in content
+
+
+def test_python_desktop_ci_toggle(output_dir):
+    config = RepoConfig(
+        repo_name="my-desktop-app", preset="python_desktop", include_ci=True
+    )
+    generate(config, output_dir)
+    assert (output_dir / ".github" / "workflows" / "lint-and-test.yml").exists()
+
+
+def test_full_agentic_required_files_written(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    assert (output_dir / "pyproject.toml").exists()
+    assert (output_dir / "README.md").exists()
+    assert (output_dir / ".gitignore").exists()
+    assert (output_dir / "app" / "__init__.py").exists()
+    assert (output_dir / "tests" / "__init__.py").exists()
+    assert (output_dir / "CLAUDE.md").exists()
+    assert (output_dir / ".mcp.json").exists()
+    assert (output_dir / ".claude" / "settings.json").exists()
+
+
+def test_full_agentic_ci_toggle(output_dir):
+    config = RepoConfig(
+        repo_name="my-agentic-project", preset="full_agentic", include_ci=True
+    )
+    generate(config, output_dir)
+    assert (output_dir / ".github" / "workflows" / "lint-and-test.yml").exists()
+
+
 def test_all_toggles_enabled(output_dir):
     config = RepoConfig(
         repo_name="my-project",
