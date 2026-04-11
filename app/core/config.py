@@ -16,6 +16,9 @@ class RepoConfig(BaseModel):
     include_codeowners: bool = False
     include_claude_files: bool = False
 
+    git_init: bool = False
+    install_precommit: bool = False
+
     @field_validator("repo_name")
     @classmethod
     def repo_name_must_be_valid(cls, v: str) -> str:

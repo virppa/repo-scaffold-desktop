@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from app.core.config import RepoConfig
 from app.core.generator import generate
+from app.core.post_setup import run_git_init, run_precommit_install
 from app.core.presets import _PRESETS
 
 
@@ -44,6 +45,14 @@ def _build_parser() -> argparse.ArgumentParser:
     gen.add_argument(
         "--claude-files", action="store_true", help="Include Claude Code files."
     )
+    gen.add_argument(
+        "--git-init", action="store_true", help="Run git init in the output directory."
+    )
+    gen.add_argument(
+        "--install-precommit",
+        action="store_true",
+        help="Run pre-commit install in the output directory.",
+    )
 
     return parser
 
@@ -73,6 +82,8 @@ def main(argv: list[str] | None = None) -> int:
             include_issue_templates=args.issue_templates,
             include_codeowners=args.codeowners,
             include_claude_files=args.claude_files,
+            git_init=args.git_init,
+            install_precommit=args.install_precommit,
         )
     except ValidationError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -86,6 +97,17 @@ def main(argv: list[str] | None = None) -> int:
 
     for path in written:
         print(f"✓ {path}")
+
+    try:
+        if config.git_init:
+            run_git_init(args.output)
+            print("✓ git init")
+        if config.install_precommit:
+            run_precommit_install(args.output)
+            print("✓ pre-commit install")
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     return 0
 

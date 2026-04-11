@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 
 from app.cli import main
@@ -111,3 +113,60 @@ def test_no_subcommand_shows_help(capsys):
     assert rc == 1
     captured = capsys.readouterr()
     assert "usage" in captured.out.lower()
+
+
+def test_git_init_flag_calls_post_setup(output_dir):
+    with patch("app.cli.run_git_init") as mock_git:
+        rc = main(
+            [
+                "generate",
+                "--preset",
+                "python_basic",
+                "--repo-name",
+                "myrepo",
+                "--output",
+                str(output_dir),
+                "--git-init",
+            ]
+        )
+    assert rc == 0
+    mock_git.assert_called_once_with(output_dir)
+
+
+def test_install_precommit_flag_calls_post_setup(output_dir):
+    with patch("app.cli.run_precommit_install") as mock_pc:
+        rc = main(
+            [
+                "generate",
+                "--preset",
+                "python_basic",
+                "--repo-name",
+                "myrepo",
+                "--output",
+                str(output_dir),
+                "--install-precommit",
+            ]
+        )
+    assert rc == 0
+    mock_pc.assert_called_once_with(output_dir)
+
+
+def test_post_setup_error_exits_nonzero(output_dir, capsys):
+    with patch(
+        "app.cli.run_git_init", side_effect=RuntimeError("git not found on PATH")
+    ):
+        rc = main(
+            [
+                "generate",
+                "--preset",
+                "python_basic",
+                "--repo-name",
+                "myrepo",
+                "--output",
+                str(output_dir),
+                "--git-init",
+            ]
+        )
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "git not found on PATH" in captured.err
