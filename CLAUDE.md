@@ -25,8 +25,6 @@ pre-commit run --all-files
 pre-commit install
 ```
 
-> `pyproject.toml` has ruff, pytest (with coverage), and bandit configured. Add `--cov-fail-under=80` to `addopts` once there is real app code to measure.
-
 ---
 
 ## Architecture
