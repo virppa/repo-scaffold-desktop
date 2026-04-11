@@ -42,7 +42,7 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # Install dependencies
-pip install pyside6 pydantic jinja2 pyyaml pytest pytest-cov ruff bandit pre-commit
+pip install -r requirements-dev.txt
 
 # Install pre-commit hooks
 pre-commit install

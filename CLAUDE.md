@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # Setup
 python -m venv .venv
-pip install pyside6 pydantic jinja2 pyyaml pytest pytest-cov ruff bandit pre-commit
+pip install -r requirements-dev.txt
 
 # Run app
 python -m app.main
