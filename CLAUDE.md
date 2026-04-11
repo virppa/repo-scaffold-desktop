@@ -15,6 +15,7 @@ python -m app.main
 # CLI
 python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out
 # With optional toggles: --pre-commit --ci --pr-template --issue-templates --codeowners --claude-files
+# With post-setup:       --git-init --install-precommit
 
 # Lint and format
 ruff check .
