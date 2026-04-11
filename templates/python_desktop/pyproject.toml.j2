@@ -1,0 +1,19 @@
+[project]
+name = "{{ repo_name }}"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["pyside6"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov", "ruff"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=app --cov-report=term-missing"
