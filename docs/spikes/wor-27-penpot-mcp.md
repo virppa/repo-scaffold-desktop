@@ -79,18 +79,31 @@ You do **not** need to self-host Penpot to use the MCP server today — you can 
 
 ---
 
-## Fit Assessment for This Project
+## Intended Use Case
 
-This project (`repo-scaffold-desktop`) is a CLI/desktop tool that generates repository skeletons. Key considerations:
+The target workflow is:
+
+```
+groom-ticket → Claude generates wireframe via MCP → developer reviews/approves → start-ticket → implement
+```
+
+Claude creates the wireframe (not the developer), the developer reviews and approves it as part of the groom phase, and implementation only starts after that approval. This means the absence of pre-existing design files is **not** a blocker — the MCP server's write/generate capabilities are the relevant surface, not read.
+
+This framing makes two tools more relevant than initially assessed:
+
+- **Superdesign MCP** — designed exactly for this: generate UI from a natural language spec, iterate, extract a design system. No API key, no browser required.
+- **Penpot/OpenPencil write tools** — can programmatically create frames, components, and layouts that the developer then views in the design tool UI.
+
+## Fit Assessment for This Project
 
 | Factor | Assessment |
 |--------|------------|
-| Does this project have Penpot designs? | No — no wireframes exist yet |
-| Is the UI design-heavy? | No — v1 is a minimal PySide6 form |
-| Does our agentic workflow run headlessly? | Yes — Claude Code + hooks, no browser |
-| Can we keep a browser plugin open during agent runs? | No — incompatible with CI and unattended runs |
-| Is Remote MCP available? | No — not until Penpot v2.16 |
-| Would Claude reference Penpot during groom/start? | Only if designs existed and were kept in sync |
+| Does this project need pre-existing designs? | No — Claude generates them as part of groom |
+| Is the workflow headless-compatible? | Needs to be — CI and unattended runs |
+| Is Penpot Remote MCP available? | No — not until Penpot v2.16 |
+| Can Penpot local MCP run headlessly? | No — requires open browser plugin window |
+| Is OpenPencil production-ready? | No — self-declared |
+| Is Superdesign mature enough? | No — 10 commits, no releases, unclear license |
 
 ---
 
@@ -135,12 +148,12 @@ Multiple Figma MCP servers exist (Framelink, community servers). All require a F
 | Superdesign MCP | 10 commits, no releases, unclear license, different use case |
 | Figma MCP servers | Proprietary SaaS; not open-source-first |
 
-Common underlying issue across all: **this project has no design files to reference**. Any design MCP adds infrastructure overhead with zero immediate value until wireframes exist.
+The intended workflow (Claude generates wireframe → developer reviews → implementation starts) is viable in principle — but no option is mature enough to support it reliably today.
 
 **Revisit when:**
-- Penpot v2.16 ships Remote MCP to `penpot.app` production (best fit for this project's toolchain)
+- Penpot v2.16 ships Remote MCP to `penpot.app` production (best fit: headless, token-based, cloud)
 - OR OpenPencil reaches a stable release (best fit if .fig compatibility matters)
-- The team starts producing wireframes for the UI
+- OR Superdesign MCP cuts a versioned release with a clear license (best fit for prompt-to-wireframe with no extra tooling)
 - The chosen server's API reaches at least beta stability
 
 ---
