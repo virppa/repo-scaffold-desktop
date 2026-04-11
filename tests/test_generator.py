@@ -39,6 +39,9 @@ def test_optional_files_absent_by_default(basic_config, output_dir):
     generate(basic_config, output_dir)
     assert not (output_dir / ".pre-commit-config.yaml").exists()
     assert not (output_dir / ".github" / "workflows" / "ci.yml").exists()
+    assert not (output_dir / ".github" / "pull_request_template.md").exists()
+    assert not (output_dir / ".github" / "ISSUE_TEMPLATE" / "bug_report.md").exists()
+    assert not (output_dir / ".github" / "CODEOWNERS").exists()
     assert not (output_dir / "CLAUDE.md").exists()
     assert not (output_dir / ".mcp.json").exists()
 
@@ -66,17 +69,48 @@ def test_claude_files_written_when_toggled(output_dir):
     assert (output_dir / ".mcp.json").exists()
 
 
+def test_pr_template_written_when_toggled(output_dir):
+    config = RepoConfig(
+        repo_name="my-project", preset="python_basic", include_pr_template=True
+    )
+    generate(config, output_dir)
+    assert (output_dir / ".github" / "pull_request_template.md").exists()
+
+
+def test_issue_templates_written_when_toggled(output_dir):
+    config = RepoConfig(
+        repo_name="my-project", preset="python_basic", include_issue_templates=True
+    )
+    generate(config, output_dir)
+    assert (output_dir / ".github" / "ISSUE_TEMPLATE" / "bug_report.md").exists()
+    assert (output_dir / ".github" / "ISSUE_TEMPLATE" / "feature_request.md").exists()
+
+
+def test_codeowners_written_when_toggled(output_dir):
+    config = RepoConfig(
+        repo_name="my-project", preset="python_basic", include_codeowners=True
+    )
+    generate(config, output_dir)
+    assert (output_dir / ".github" / "CODEOWNERS").exists()
+
+
 def test_all_toggles_enabled(output_dir):
     config = RepoConfig(
         repo_name="my-project",
         preset="python_basic",
         include_precommit=True,
         include_ci=True,
+        include_pr_template=True,
+        include_issue_templates=True,
+        include_codeowners=True,
         include_claude_files=True,
     )
     generate(config, output_dir)
     assert (output_dir / "README.md").exists()
     assert (output_dir / ".pre-commit-config.yaml").exists()
     assert (output_dir / ".github" / "workflows" / "ci.yml").exists()
+    assert (output_dir / ".github" / "pull_request_template.md").exists()
+    assert (output_dir / ".github" / "ISSUE_TEMPLATE" / "bug_report.md").exists()
+    assert (output_dir / ".github" / "CODEOWNERS").exists()
     assert (output_dir / "CLAUDE.md").exists()
     assert (output_dir / ".mcp.json").exists()
