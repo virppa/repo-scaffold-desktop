@@ -91,6 +91,13 @@ No worktree needed for solo work.
 Then immediately set the issue status to **In Progress** in Linear:
 `save_issue(id: "$ARGUMENTS", state: "In Progress")`
 
+**If the parent epic was previously Backlog** (i.e., this is the first sub-ticket being started in this epic), also promote all other Backlog children to **Todo**:
+```
+list_issues(project: "repo-scaffold-desktop", parentId: <epicId>, state: "Backlog")
+→ for each result (excluding the current ticket): save_issue(id: "WOR-X", state: "Todo")
+```
+"Todo" signals "actively queued in this epic, not yet started" — distinguishes from Backlog items that aren't in scope yet. Skip this step if the epic was already In Progress.
+
 ### 4. Present the plan
 Summarize as:
 ```
