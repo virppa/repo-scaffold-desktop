@@ -6,6 +6,7 @@ from app.core.config import RepoConfig
 from app.core.presets import get_preset
 
 _TEMPLATES_DIR = Path(__file__).parent.parent.parent / "templates"
+_SHARED_DIR = _TEMPLATES_DIR / "shared"
 
 
 def generate(config: RepoConfig, output_path: Path) -> list[str]:
@@ -30,7 +31,7 @@ def generate(config: RepoConfig, output_path: Path) -> list[str]:
 
     templates_dir = _TEMPLATES_DIR / config.preset
     env = Environment(  # nosec B701 — autoescape not relevant for text file generation
-        loader=FileSystemLoader(str(templates_dir)),
+        loader=FileSystemLoader([str(templates_dir), str(_SHARED_DIR)]),
         undefined=StrictUndefined,
         keep_trailing_newline=True,
     )

@@ -226,3 +226,19 @@ def test_all_toggles_enabled(output_dir):
     assert (output_dir / ".github" / "CODEOWNERS").exists()
     assert (output_dir / "CLAUDE.md").exists()
     assert (output_dir / ".mcp.json").exists()
+
+
+def test_shared_template_used_as_fallback(output_dir):
+    # .gitignore lives only in templates/shared/, not in any preset dir
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    generate(config, output_dir)
+    assert (output_dir / ".gitignore").exists()
+
+
+def test_preset_template_overrides_shared(output_dir):
+    # README.md.j2 exists in the preset dir; shared has no README — verify
+    # the preset version is used (contains the repo name rendered by the template)
+    config = RepoConfig(repo_name="override-check", preset="python_basic")
+    generate(config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "override-check" in content
