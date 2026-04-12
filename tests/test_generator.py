@@ -185,6 +185,27 @@ def test_readme_no_claude_section_when_not_toggled(basic_config, output_dir):
     assert "Claude" not in content
 
 
+def test_python_basic_readme_does_not_contain_app_main(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    generate(config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "python -m app.main" not in content
+
+
+def test_python_desktop_readme_contains_app_main(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "python -m app.main" in content
+
+
+def test_full_agentic_readme_does_not_contain_app_main(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "python -m app.main" not in content
+
+
 def test_all_toggles_enabled(output_dir):
     config = RepoConfig(
         repo_name="my-project",

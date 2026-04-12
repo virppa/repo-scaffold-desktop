@@ -18,6 +18,8 @@ The tool makes it faster to start a new project with sensible defaults such as:
 
 ## Usage
 
+> Note: Desktop GUI is planned for V2. The CLI is the primary interface for V1.
+
 ```bash
 # Basic generation
 python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out
