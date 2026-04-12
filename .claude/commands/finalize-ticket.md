@@ -21,12 +21,13 @@ Only update docs if the change is meaningful — do not document implementation 
 ### 3. Create the pull request
 Derive the Linear identifier from the current branch name (e.g., `WOR-42-short-description` → `WOR-42`).
 
-Fetch the issue with `get_issue(id, includeMilestone: true)` to get its milestone name.
+Fetch the issue with `get_issue(id, includeRelations: true)` to get its milestone and parent epic.
 
 - PR title: `WOR-NNN Short description`
 - PR body:
   - 2–3 bullet summary
-  - Milestone line: `**Milestone:** <milestone name>`
+  - `**Milestone:** <milestone name>` (if set)
+  - `**Epic:** <parent issue title>` (if set)
   - Test plan checklist
   - `Closes WOR-NNN`
 - Run: `gh pr create`
@@ -48,3 +49,30 @@ Only update `summary` here — full description refresh happens in `/prioritize`
 ```bash
 git checkout main
 ```
+
+---
+
+### 7. Opportunistic issue capture
+
+Now that implementation is complete, you have the deepest context on this area of the codebase. Surface anything noticed during implementation that falls outside the current ticket's scope:
+- Bugs encountered in code you touched or read
+- Missing features that would naturally complement what was just built
+- Unhandled edge cases or input validation gaps
+
+**Rules:**
+- Only surface things genuinely encountered during implementation — no extra scans
+- Check existing Linear issues first (`list_issues` with `project: "repo-scaffold-desktop"`) to avoid duplicates
+- Maximum 3 suggestions; keep only the most impactful
+- Present suggestions and wait for approval before creating anything
+
+If you have suggestions:
+
+```
+**Spotted during implementation:**
+1. [Bug/Feature/Fix] Title — one-line description
+   Suggested: Type=<label>, Stream=<label>, Epic=WOR-NNN or "new epic needed", Milestone=<name>, Priority=<N>
+```
+
+On human approval: create each approved issue with `save_issue`, setting labels, `parentId` (epic), and milestone. If the right epic doesn't exist yet, create it first with `save_issue` (no parentId), then set it as parent.
+
+If nothing was spotted, skip this section silently — do not say "nothing spotted."
