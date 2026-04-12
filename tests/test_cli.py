@@ -1,8 +1,10 @@
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from app.cli import main
+from app.core.user_prefs import PrefsStore
 
 
 @pytest.fixture()
@@ -149,6 +151,42 @@ def test_install_precommit_flag_calls_post_setup(output_dir):
         )
     assert rc == 0
     mock_pc.assert_called_once_with(output_dir)
+
+
+def test_config_get_defaults(tmp_path, capsys):
+    prefs_path = tmp_path / "prefs.json"
+    with patch.object(PrefsStore, "get_path", return_value=prefs_path):
+        rc = main(["config", "get"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "author-name:" in out
+    assert "default-preset: python_basic" in out
+
+
+def test_config_set_and_get(tmp_path, capsys):
+    prefs_path = tmp_path / "prefs.json"
+    with patch.object(PrefsStore, "get_path", return_value=prefs_path):
+        rc_set = main(["config", "set", "author-name", "Antti"])
+        assert rc_set == 0
+        rc_get = main(["config", "get"])
+    assert rc_get == 0
+    out = capsys.readouterr().out
+    assert "author-name: Antti" in out
+
+
+def test_config_set_output_dir(tmp_path, capsys):
+    prefs_path = tmp_path / "prefs.json"
+    with patch.object(PrefsStore, "get_path", return_value=prefs_path):
+        rc = main(["config", "set", "default-output-dir", "/tmp/repos"])
+    assert rc == 0
+    with patch.object(PrefsStore, "get_path", return_value=prefs_path):
+        prefs = PrefsStore.load()
+    assert prefs.default_output_dir == Path("/tmp/repos")
+
+
+def test_config_no_subcommand_exits(capsys):
+    rc = main(["config"])
+    assert rc == 1
 
 
 def test_post_setup_error_exits_nonzero(output_dir, capsys):

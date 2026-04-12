@@ -8,6 +8,10 @@ from app.core.config import RepoConfig
 from app.core.generator import generate
 from app.core.post_setup import run_git_init, run_precommit_install
 from app.core.presets import _PRESETS
+from app.core.user_prefs import PrefsStore, UserPreferences
+
+_PREFS_KEYS = set(UserPreferences.model_fields)
+_KEY_TO_FIELD = {k.replace("_", "-"): k for k in _PREFS_KEYS}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -16,6 +20,19 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Generate a repository scaffold from a preset.",
     )
     sub = parser.add_subparsers(dest="command")
+
+    cfg = sub.add_parser("config", help="Manage user preferences.")
+    cfg_sub = cfg.add_subparsers(dest="config_cmd")
+
+    cfg_sub.add_parser("get", help="Print current preferences.")
+
+    cfg_set = cfg_sub.add_parser("set", help="Set a preference value.")
+    cfg_set.add_argument(
+        "key",
+        choices=sorted(_KEY_TO_FIELD),
+        help="Preference key (use hyphens, e.g. author-name).",
+    )
+    cfg_set.add_argument("value", help="Value to store.")
 
     gen = sub.add_parser("generate", help="Generate scaffold files.")
     gen.add_argument(
@@ -57,6 +74,37 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_config(args: argparse.Namespace) -> int:
+    if args.config_cmd == "get":
+        prefs = PrefsStore.load()
+        for field, value in prefs.model_dump().items():
+            key = field.replace("_", "-")
+            print(f"{key}: {value}")
+        return 0
+
+    if args.config_cmd == "set":
+        field = _KEY_TO_FIELD[args.key]
+        prefs = PrefsStore.load()
+        raw = args.value
+        field_info = UserPreferences.model_fields[field]
+        annotation = field_info.annotation
+        # Handle Path | None
+        if annotation in (Path, "Path | None") or (
+            hasattr(annotation, "__args__") and Path in annotation.__args__
+        ):
+            value = Path(raw) if raw else None
+        else:
+            value = raw
+        updated = prefs.model_copy(update={field: value})
+        PrefsStore.save(updated)
+        print(f"✓ {args.key} = {value}")
+        return 0
+
+    # config with no sub-subcommand
+    print("Usage: scaffold config {get,set}", file=sys.stderr)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     # Ensure the terminal can emit UTF-8 (e.g. ✓); no-op on StringIO (pytest capsys).
     if hasattr(sys.stdout, "reconfigure"):
@@ -71,6 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 1
+
+    if args.command == "config":
+        return _run_config(args)
 
     try:
         config = RepoConfig(
