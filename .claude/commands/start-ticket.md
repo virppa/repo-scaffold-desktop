@@ -2,6 +2,15 @@ Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop
 
 Work through these phases in order:
 
+### 0. Clean up local branches
+Run the following to prune stale remote-tracking refs and delete any local branches that have been merged or whose remote is gone:
+```bash
+git fetch --prune
+git checkout main
+git pull
+git branch --merged main | grep -v '^\*\? *main$' | xargs -r git branch -d
+```
+
 ### 1. As Product Owner — understand the requirement
 - Restate the requirement in plain terms (one paragraph)
 - Flag any ambiguity or missing information
