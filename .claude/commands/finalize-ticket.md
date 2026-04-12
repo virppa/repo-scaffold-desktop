@@ -21,16 +21,31 @@ Only update docs if the change is meaningful — do not document implementation 
 ### 3. Create the pull request
 Derive the Linear identifier from the current branch name (e.g., `WOR-42-short-description` → `WOR-42`).
 
-Fetch the issue with `get_issue(id, includeRelations: true)` to get its milestone and parent epic.
+Fetch the issue with `get_issue(id, includeRelations: true)` to get its milestone and parent epic. If the epic has an in-progress branch (not main), that is the PR target.
 
-- PR title: `WOR-NNN Short description`
-- PR body:
-  - 2–3 bullet summary
-  - `**Milestone:** <milestone name>` (if set)
-  - `**Epic:** <parent issue title>` (if set)
-  - Test plan checklist
-  - `Closes WOR-NNN`
-- Run: `gh pr create`
+**If this ticket has a parent epic with an epic branch:**
+```bash
+gh pr create --base <epic-branch> \
+  --title "WOR-NNN Short description" \
+  --body "..."
+# Enable auto-merge — merges automatically when CI passes, no manual approval needed
+gh pr merge --auto --squash <PR-number>
+```
+
+**If no parent epic (targeting main):**
+```bash
+gh pr create --base main \
+  --title "WOR-NNN Short description" \
+  --body "..."
+# No auto-merge — human review required for main
+```
+
+PR body format (both cases):
+- 2–3 bullet summary
+- `**Milestone:** <milestone name>` (if set)
+- `**Epic:** <parent issue title>` (if set)
+- Test plan checklist
+- `Closes WOR-NNN`
 
 ### 4. Update Linear
 Use the Linear MCP server to:
@@ -45,7 +60,9 @@ Call `save_project(id: "87ca9685-f2e6-493f-a022-03ef2425d2ab")` with an updated 
 
 Only update `summary` here — full description refresh happens in `/prioritize`.
 
-### 6. Return to main
+### 6. Return to base context
+If this session entered a worktree via `EnterWorktree`, call `ExitWorktree` now to return to the main repo context.
+
 ```bash
 git checkout main
 ```

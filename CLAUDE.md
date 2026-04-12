@@ -94,6 +94,7 @@ Each ticket follows these phases. Use the corresponding slash command to enter e
                           # ↓ human approves — Linear updated only after this
 
 /start-ticket WOR-123     # PO + Architect: restate req, plan files/tests, create branch
+                          # auto-creates epic branch if needed; shows parallel-safe siblings
                           # ↓ human approves plan before any code is written
 
 [Claude implements]       # hooks fire automatically: ruff, bandit, pytest
@@ -101,9 +102,26 @@ Each ticket follows these phases. Use the corresponding slash command to enter e
 /security-check           # bandit scan + OWASP diff review → PASS / WARNINGS / FAIL
 
 /finalize-ticket          # coverage check, docs update, PR creation, Linear → In Review
+                          # PR targets epic branch (auto-merge) or main (human review)
+
+/close-epic WOR-123       # when all sub-tickets are Done: security + coverage + UI tests,
+                          # create epic → main PR (human review required)
 ```
 
-Human gates: plan approval after `/start-ticket`, and explicit PASS verdict from `/security-check` before creating the PR. Command files live in `.claude/commands/`.
+### Branch topology
+
+```
+main
+└── wor-49-template-system          ← epic branch (created by first /start-ticket in epic)
+    ├── wor-45-add-yaml-preset      ← sub-ticket branch → auto-merges to epic when CI passes
+    └── wor-47-jinja-context-fix    ← parallel sub-ticket → its own worktree, isolated
+```
+
+### Parallel work
+
+`/start-ticket` checks Linear for other In-Progress tickets in the same epic and flags file-safe parallel candidates. To work in parallel: open a second Claude Code session in the same repo directory and run `/start-ticket WOR-NN` for a candidate ticket. Each session enters its own isolated git worktree.
+
+Human gates: plan approval after `/start-ticket`; explicit PASS from `/security-check` before any main-targeting PR; human review of the epic → main PR created by `/close-epic`. Command files live in `.claude/commands/`.
 
 ---
 
@@ -137,6 +155,8 @@ Only interact with the **repo-scaffold-desktop** project in Linear unless explic
 - PR title format: `WOR-123 Short description`
 - Intermediate commits: `Part of WOR-123 ...`
 - Closing commit or PR body: `Closes WOR-123`
+- Sub-ticket PRs target the epic branch and auto-merge when CI passes — no manual approval needed
+- Epic PRs target main and always require human review
 
 ---
 
