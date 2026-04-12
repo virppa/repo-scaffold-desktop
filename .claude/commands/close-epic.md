@@ -2,12 +2,51 @@ Finalize an epic and create the pull request to main.
 
 Usage: `/close-epic WOR-NNN` where WOR-NNN is the epic issue identifier.
 
-### 1. Verify all sub-tickets are done
-Fetch the epic with `get_issue($ARGUMENTS, includeRelations: true)` to get all child issues.
+### 1. Verify all sub-tickets are merged (GitHub is the source of truth)
 
-Check the status of each child in Linear. If any child is not **Done**:
-- List the incomplete tickets
-- Block and stop: "Cannot close epic — the following tickets are not Done: WOR-X, WOR-Y"
+Fetch the epic with `get_issue($ARGUMENTS, includeRelations: true)` to get all child issues and the epic branch name.
+
+**Step 1a — List all PRs that targeted the epic branch:**
+```bash
+gh pr list --base <epic-branch> --state all \
+  --json number,title,headRefName,state,mergedAt
+```
+Match each child issue to a PR by branch name (Linear branch format: `wor-NN-short-description`). A child with no corresponding PR is treated as unmerged.
+
+**Step 1b — Classify each PR and repair Linear state:**
+
+For each **merged** PR (`mergedAt` not null): if the corresponding Linear issue is not already Done, mark it Done now:
+`save_issue(id: "WOR-X", state: "Done")`
+(Linear's "merge → Done" automation never fires for epic-branch-targeting PRs — this is the repair step.)
+
+For each **open** PR: check CI status:
+```bash
+gh pr checks <PR-number> --json name,state,conclusion
+```
+Classify as:
+- **CI failing** — any check has `conclusion == "FAILURE"` or `"TIMED_OUT"`
+- **CI pending** — checks still running (`state == "IN_PROGRESS"`), none failing
+- **CI passing but not merged** — all checks pass; auto-merge may not have triggered, flag for investigation
+
+**Step 1c — Block if anything is unmerged:**
+
+If there are open PRs or children with no PR at all, stop:
+```
+Cannot close epic — the following sub-tickets are not yet merged:
+
+CI failing:
+  WOR-X: #<N> "<title>" — <failing check names>
+CI pending:
+  WOR-Y: #<M> "<title>" — checks still running
+CI passing, not merged (investigate auto-merge):
+  WOR-Z: #<P> "<title>"
+No PR found:
+  WOR-W — no PR was opened against <epic-branch>
+
+Fix these before running /close-epic again.
+```
+
+If all child PRs are merged: confirm "All N sub-tickets confirmed merged via GitHub. Linear state repaired where stale." and continue.
 
 ### 2. Pull and verify the epic branch
 Derive the epic branch name from the Linear "Copy branch name" format (e.g. `wor-49-template-system`).
@@ -71,9 +110,13 @@ gh pr create --base main \
 **Milestone:** <milestone name>
 
 Closes WOR-NNN
+Closes WOR-X
+Closes WOR-Y
 EOF
 )"
 ```
+
+Enumerate a `Closes WOR-X` line for **every child issue** in the epic (from Step 1 relations), one per line after `Closes WOR-NNN`. This triggers Linear's "merge to main → Done" automation for all sub-tickets as a final backstop.
 
 This PR requires **human review and approval** — no auto-merge.
 

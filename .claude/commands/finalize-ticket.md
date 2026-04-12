@@ -48,9 +48,13 @@ PR body format (both cases):
 - `Closes WOR-NNN`
 
 ### 4. Update Linear
-Use the Linear MCP server to:
-1. Mark the issue as **In Review**: `save_issue(id: "WOR-NNN", state: "In Review")`
-2. Fetch the milestone this issue belongs to with `list_milestones(project: "repo-scaffold-desktop")`. If the milestone's progress has reached 100%, note it explicitly: "🎉 Milestone '<name>' is now complete."
+Mark the issue as **In Review**: `save_issue(id: "WOR-NNN", state: "In Review")`
+
+What "In Review" means depends on the PR target:
+- **Sub-ticket → epic branch (auto-merge):** "In Review" = PR is open and will merge automatically when CI passes. `/close-epic` will repair this to Done once the PR is confirmed merged. If CI fails, the PR stays open and `/close-epic` will catch and report it.
+- **Ticket → main (human review):** "In Review" = PR is open, awaiting human approval.
+
+Fetch the milestone this issue belongs to with `list_milestones(project: "repo-scaffold-desktop")`. If the milestone's progress has reached 100%, note it explicitly: "🎉 Milestone '<name>' is now complete."
 
 ### 5. Update the project page
 Update the **repo-scaffold-desktop** project summary to reflect what just shipped.
