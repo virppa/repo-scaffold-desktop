@@ -1,4 +1,4 @@
-Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop project using the Linear MCP server. Also fetch `get_issue($ARGUMENTS, includeRelations: true)` to see its milestone, labels, priority, and any blocking relations.
+Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop project using the Linear MCP server. Also fetch `get_issue($ARGUMENTS, includeRelations: true)` to see its milestone, labels, priority, parent epic, and any blocking relations.
 
 Work through these phases in order:
 
@@ -42,6 +42,7 @@ Summarize as:
 ```
 Branch: <branch-name>
 Milestone: <milestone name> (<progress>%)
+Epic: <parent issue title or "none">
 Files to change:
   - path/to/file.py — what changes
 Tests to write:
@@ -51,3 +52,30 @@ Edge cases: <list>
 ```
 
 **STOP HERE. Do not write any code until the human approves this plan.**
+
+---
+
+### 5. Opportunistic issue capture (after plan is shown — do not delay the plan for this)
+
+While reading the codebase to plan this ticket you may have noticed things outside the current scope. Surface anything that looks like:
+- An apparent bug in code you read (not in scope for this ticket)
+- A missing feature that pairs naturally with this work
+- An unhandled edge case that could cause a real problem
+
+**Rules:**
+- Only surface things genuinely encountered while reading — no extra scans
+- Check existing Linear issues first (`list_issues` with `project: "repo-scaffold-desktop"`) to avoid duplicates
+- Maximum 3 suggestions; if you spotted more, keep only the most impactful
+- Do not create anything — present suggestions and wait for approval
+
+If you have suggestions, append them after the plan summary:
+
+```
+**Spotted while planning:**
+1. [Bug/Feature/Fix] Title — one-line description
+   Suggested: Type=<label>, Stream=<label>, Epic=WOR-NNN or "new epic needed", Milestone=<name>, Priority=<N>
+```
+
+On human approval: create each approved issue with `save_issue`, setting labels, `parentId` (epic), and milestone. If the right epic doesn't exist yet, create it first with `save_issue` (no parentId), then set it as parent on the new issue.
+
+If nothing was spotted, skip this section silently — do not say "nothing spotted."

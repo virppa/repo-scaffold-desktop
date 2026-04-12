@@ -1,4 +1,6 @@
-Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop project using the Linear MCP server. Also fetch `get_issue($ARGUMENTS, includeRelations: true)` to see existing labels, milestone, and blocking relations.
+Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop project using the Linear MCP server. Run these in parallel:
+- `get_issue($ARGUMENTS, includeRelations: true)` — see existing labels, milestone, parent epic, priority, blocking relations
+- `list_milestones(project: "repo-scaffold-desktop")` — check milestone progress before suggesting assignment
 
 As a Product Owner, evaluate the issue before development begins:
 
@@ -15,9 +17,18 @@ As a Product Owner, evaluate the issue before development begins:
 5. **Dependencies** — note any other tickets or work that must come first. Check actual Linear relations from `get_issue(includeRelations: true)` before inferring.
 
 6. **Metadata recommendations** — propose values for any of these that are missing or wrong:
+
    - **Type label** — one of: Feature / Fix / Refactor / Spike / Bug
    - **Stream label** — one of: Product / Infra / AI / Docs
-   - **Milestone** — which of the project milestones this belongs to: Discovery / Scope Locked / MVP Build / Test/polish / Release
+   - **Epic (parent issue)** — which thematic epic this belongs under. Current epics:
+     - WOR-49 Template System
+     - WOR-50 User Preferences
+     - WOR-51 Custom Presets
+     - WOR-52 GitHub Integration
+     - WOR-53 Desktop UI
+     - WOR-26 Penpot Integration
+     - If none fit, propose a new epic title
+   - **Milestone** — which project milestone to assign. **First check `list_milestones` progress — do not assign to any milestone at 100%; it is complete and closed to new work.** Suggest the next appropriate open milestone instead. If no existing milestone fits (e.g. clear post-V1 work), flag this and suggest creating a new one with name and description.
    - **Priority** — 1=Urgent / 2=High / 3=Normal / 4=Low
    - **Blockers** — any issues that must ship first (by WOR-NNN identifier)
 
@@ -25,12 +36,13 @@ As a Product Owner, evaluate the issue before development begins:
 
 ---
 
-After the human approves, take all of the following actions in Linear using `save_issue`:
+After the human approves, take all of the following actions in Linear:
 
-1. **Labels** — set the Type and Stream labels on the issue (use label names, not IDs)
-2. **Milestone** — assign the issue to the recommended milestone
-3. **Priority** — update if the current value is wrong or missing
-4. **Blockers** — add any missing `blockedBy` relations (append-only; existing relations are never removed)
-5. **Sub-issues** — if splitting was recommended and the human approved, create each sub-issue with `save_issue` using `parentId: "$ARGUMENTS"`, then set the same milestone and labels on each sub-issue
+1. **Labels** — set the Type and Stream labels on the issue using `save_issue` (use label names, not IDs)
+2. **Epic** — set `parentId` to the approved epic identifier using `save_issue`. If a new epic was proposed and approved, create it first with `save_issue` (no parentId, with Type+Stream labels), then set it as parent on this issue
+3. **Milestone** — assign with `save_issue`. If a new milestone was approved, create it first with `save_milestone(project: "repo-scaffold-desktop", name: "...", description: "...")`, then assign
+4. **Priority** — update if the current value is wrong or missing
+5. **Blockers** — add any missing `blockedBy` relations (append-only; existing relations are never removed)
+6. **Sub-issues** — if splitting was recommended and approved, create each sub-issue with `save_issue` using `parentId: "$ARGUMENTS"`, then set the same labels, epic, and milestone on each
 
 Report a summary of every change made in Linear.

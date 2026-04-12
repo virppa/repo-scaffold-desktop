@@ -15,14 +15,14 @@ List each milestone with its progress % and status (complete / active / upcoming
 
 ### 2. Current state
 
-List every open issue grouped first by milestone, then by status within each milestone (In Progress → In Review → Backlog). For each issue show:
+List every open issue grouped first by epic (parent issue), then by status within each epic (In Progress → In Review → Backlog). For each issue show:
 
 ```
 WOR-NNN [Type/Stream labels] Title — one-line description of what it delivers
-         Status: <status>   Priority: <priority>
+         Status: <status>   Milestone: <name>   Priority: <priority>
 ```
 
-Issues not assigned to any milestone are listed last under **Unassigned (needs triage)**.
+Issues with no epic (parent) are listed last under **Ungrouped (needs triage)**.
 
 ### 3. Dependency map
 
@@ -46,7 +46,7 @@ Rank all Backlog issues by priority using this scoring — apply in order, stop 
 4. **Smallest scope** (single file / doc-only) — prefer at equal value
 5. **Release gate** — do last
 
-Output as a numbered list: `WOR-NNN [milestone] — rationale`.
+Output as a numbered list: `WOR-NNN [epic] [milestone] — rationale`.
 
 ### 5. Suggested next ticket
 
@@ -54,24 +54,21 @@ State the single best ticket to pick up right now and why. If something is alrea
 
 ---
 
-### 6. Project health summary
+### 6. Milestone lifecycle recommendations
 
-Write a 5–8 line project status update in this format (ready to paste into Linear's project Updates tab or a team channel):
+Based on the milestone overview and current issue distribution, recommend any of the following if warranted:
 
-```
-**Health:** On Track / At Risk / Off Track
-**Active milestone:** <name> (<progress>% complete)
-**In flight:** <list of In Progress / In Review issues>
-**Completed since last update:** <recently closed issues if visible>
-**Blockers / risks:** <any blocked or at-risk items>
-**Next up:** <top 2-3 items from recommended order>
-```
+- **Create a new milestone** — if there are ungrouped issues that belong to a phase not yet defined (e.g. a "V2" or "Post-MVP" milestone). Propose: name, description, and which issues should move into it.
+- **Retire a completed milestone** — if a milestone is at 100% but still has open issues incorrectly assigned to it, flag those issues and suggest reassigning them to an appropriate open milestone.
+- **Rename or redescribe a milestone** — if the current name no longer matches what the remaining work actually is.
 
-Set health as: **On Track** if active milestone ≥ its expected progress and no High/Urgent issues are blocked; **At Risk** if milestone is behind or a High issue is blocked; **Off Track** if multiple milestones are slipping or blockers are unresolved for >1 cycle.
+> Note: the MCP server supports `save_milestone` (create/edit) but not delete. To retire a milestone, prefix its name with `ARCHIVED:` or advise the user to delete it manually in Linear.
+
+**Do not act on these recommendations without human approval.** On approval, use `save_milestone` to create or update milestones, and `save_issue` to reassign issues.
 
 ---
 
-### 6. Update the Linear project page
+### 7. Update the Linear project page
 
 After presenting sections 1–5, update the **repo-scaffold-desktop** project in Linear to reflect current state. Do both of these:
 
@@ -99,4 +96,4 @@ After presenting sections 1–5, update the **repo-scaffold-desktop** project in
 
 Call `save_project` with `id: "87ca9685-f2e6-493f-a022-03ef2425d2ab"` and both `summary` and `description` fields.
 
-**Do not create issues or begin implementation.** Present the analysis first (sections 1–5), then update the project page.
+**Do not create issues or begin implementation.** Present sections 1–5, discuss section 6 recommendations with the human if warranted, then update the project page.
