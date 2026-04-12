@@ -12,10 +12,15 @@ pip install -r requirements-dev.txt
 # Run app
 python -m app.main
 
-# CLI
+# CLI — scaffold
 python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out
 # With optional toggles: --pre-commit --ci --pr-template --issue-templates --codeowners --claude-files
 # With post-setup:       --git-init --install-precommit
+
+# CLI — user preferences
+python -m app.cli config get
+python -m app.cli config set author-name "Your Name"
+python -m app.cli config set github-username "your-username"
 
 # Lint and format
 ruff check .
@@ -46,6 +51,7 @@ Module responsibilities:
 - `presets.py` — preset definitions (maps preset name → file list + options)
 - `generator.py` — renders templates and writes files to disk
 - `post_setup.py` — side effects: `git init`, `pre-commit install`, etc.
+- `user_prefs.py` — `UserPreferences` model + `PrefsStore` (platform-aware JSON persistence)
 - `main.py` — PySide6 `QApplication` entry point
 
 Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.
