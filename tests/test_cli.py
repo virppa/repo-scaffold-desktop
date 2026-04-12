@@ -50,7 +50,7 @@ def test_all_toggles_enabled(output_dir):
     )
     assert rc == 0
     assert (output_dir / ".pre-commit-config.yaml").exists()
-    assert (output_dir / ".github" / "workflows" / "ci.yml").exists()
+    assert (output_dir / ".github" / "workflows" / "lint-and-test.yml").exists()
     assert (output_dir / ".github" / "pull_request_template.md").exists()
     assert (output_dir / ".github" / "ISSUE_TEMPLATE" / "bug_report.md").exists()
     assert (output_dir / ".github" / "ISSUE_TEMPLATE" / "feature_request.md").exists()

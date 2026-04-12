@@ -23,7 +23,7 @@ _PRESETS: dict[str, Preset] = {
         ),
         optional_files={
             "include_precommit": (".pre-commit-config.yaml",),
-            "include_ci": (".github/workflows/ci.yml",),
+            "include_ci": (".github/workflows/lint-and-test.yml",),
             "include_pr_template": (".github/pull_request_template.md",),
             "include_issue_templates": (
                 ".github/ISSUE_TEMPLATE/bug_report.md",
