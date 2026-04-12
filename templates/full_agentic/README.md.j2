@@ -9,6 +9,20 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 ```
+{% if include_precommit %}
+
+Install pre-commit hooks (runs ruff and other checks before each commit):
+
+```bash
+pre-commit install
+```
+
+Run all hooks manually:
+
+```bash
+pre-commit run --all-files
+```
+{% endif %}
 
 ## Usage
 
@@ -26,6 +40,24 @@ pytest
 ruff check .
 ruff format .
 ```
+{% if include_ci %}
+
+## CI
+
+A GitHub Actions workflow (`.github/workflows/lint-and-test.yml`) runs lint and tests on every push and pull request.
+{% endif %}
+{% if include_pr_template or include_issue_templates %}
+
+## Contributing
+
+This repo includes GitHub templates to guide contributions:
+{% if include_pr_template %}
+- **Pull request template** — `.github/pull_request_template.md`
+{% endif %}
+{% if include_issue_templates %}
+- **Issue templates** — bug report and feature request under `.github/ISSUE_TEMPLATE/`
+{% endif %}
+{% endif %}
 
 ## Claude Code
 
