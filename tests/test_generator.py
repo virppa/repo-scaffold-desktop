@@ -142,6 +142,49 @@ def test_full_agentic_ci_toggle(output_dir):
     assert (output_dir / ".github" / "workflows" / "lint-and-test.yml").exists()
 
 
+def test_readme_mentions_precommit_when_toggled(output_dir):
+    config = RepoConfig(
+        repo_name="my-project", preset="python_basic", include_precommit=True
+    )
+    generate(config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "pre-commit" in content
+
+
+def test_readme_no_precommit_section_when_not_toggled(basic_config, output_dir):
+    generate(basic_config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "pre-commit" not in content
+
+
+def test_readme_mentions_ci_when_toggled(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic", include_ci=True)
+    generate(config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "workflow" in content.lower() or "CI" in content
+
+
+def test_readme_no_ci_section_when_not_toggled(basic_config, output_dir):
+    generate(basic_config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "workflow" not in content.lower()
+
+
+def test_readme_mentions_claude_when_toggled(output_dir):
+    config = RepoConfig(
+        repo_name="my-project", preset="python_basic", include_claude_files=True
+    )
+    generate(config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "Claude" in content
+
+
+def test_readme_no_claude_section_when_not_toggled(basic_config, output_dir):
+    generate(basic_config, output_dir)
+    content = (output_dir / "README.md").read_text(encoding="utf-8")
+    assert "Claude" not in content
+
+
 def test_all_toggles_enabled(output_dir):
     config = RepoConfig(
         repo_name="my-project",
