@@ -137,7 +137,7 @@ repo-scaffold-desktop/
 │  └─ test_presets.py
 ├─ .github/
 │  ├─ workflows/
-│  │  ├─ ci.yml
+│  │  ├─ lint-and-test.yml
 │  │  └─ claude-code-review.yml
 │  ├─ ISSUE_TEMPLATE/
 │  └─ pull_request_template.md

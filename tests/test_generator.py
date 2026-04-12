@@ -38,7 +38,7 @@ def test_pyproject_contains_repo_name(basic_config, output_dir):
 def test_optional_files_absent_by_default(basic_config, output_dir):
     generate(basic_config, output_dir)
     assert not (output_dir / ".pre-commit-config.yaml").exists()
-    assert not (output_dir / ".github" / "workflows" / "ci.yml").exists()
+    assert not (output_dir / ".github" / "workflows" / "lint-and-test.yml").exists()
     assert not (output_dir / ".github" / "pull_request_template.md").exists()
     assert not (output_dir / ".github" / "ISSUE_TEMPLATE" / "bug_report.md").exists()
     assert not (output_dir / ".github" / "CODEOWNERS").exists()
@@ -57,7 +57,7 @@ def test_precommit_file_written_when_toggled(output_dir):
 def test_ci_file_written_when_toggled(output_dir):
     config = RepoConfig(repo_name="my-project", preset="python_basic", include_ci=True)
     generate(config, output_dir)
-    assert (output_dir / ".github" / "workflows" / "ci.yml").exists()
+    assert (output_dir / ".github" / "workflows" / "lint-and-test.yml").exists()
 
 
 def test_claude_files_written_when_toggled(output_dir):
@@ -220,7 +220,7 @@ def test_all_toggles_enabled(output_dir):
     generate(config, output_dir)
     assert (output_dir / "README.md").exists()
     assert (output_dir / ".pre-commit-config.yaml").exists()
-    assert (output_dir / ".github" / "workflows" / "ci.yml").exists()
+    assert (output_dir / ".github" / "workflows" / "lint-and-test.yml").exists()
     assert (output_dir / ".github" / "pull_request_template.md").exists()
     assert (output_dir / ".github" / "ISSUE_TEMPLATE" / "bug_report.md").exists()
     assert (output_dir / ".github" / "CODEOWNERS").exists()
