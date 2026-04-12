@@ -4,16 +4,24 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from app.core.config import RepoConfig
 from app.core.presets import get_preset
+from app.core.user_prefs import UserPreferences
 
 _TEMPLATES_DIR = Path(__file__).parent.parent.parent / "templates"
 _SHARED_DIR = _TEMPLATES_DIR / "shared"
 
 
-def generate(config: RepoConfig, output_path: Path) -> list[str]:
+def generate(
+    config: RepoConfig,
+    output_path: Path,
+    prefs: UserPreferences | None = None,
+) -> list[str]:
     """Render all preset template files and write them to output_path.
 
     Returns the list of relative file paths that were written.
     """
+    if prefs is None:
+        prefs = UserPreferences()
+
     preset = get_preset(config.preset)
 
     # Build file list: required files + enabled optional files, deduplicated
@@ -36,7 +44,7 @@ def generate(config: RepoConfig, output_path: Path) -> list[str]:
         keep_trailing_newline=True,
     )
 
-    context = config.model_dump()
+    context = {**config.model_dump(), **prefs.model_dump()}
 
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)

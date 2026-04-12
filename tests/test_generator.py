@@ -2,6 +2,7 @@ import pytest
 
 from app.core.config import RepoConfig
 from app.core.generator import generate
+from app.core.user_prefs import UserPreferences
 
 
 @pytest.fixture()
@@ -242,3 +243,38 @@ def test_preset_template_overrides_shared(output_dir):
     generate(config, output_dir)
     content = (output_dir / "README.md").read_text(encoding="utf-8")
     assert "override-check" in content
+
+
+def test_generate_with_prefs_injects_author_name(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    prefs = UserPreferences(author_name="Jane Doe", author_email="jane@example.com")
+    generate(config, output_dir, prefs=prefs)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "Jane Doe" in content
+    assert "jane@example.com" in content
+
+
+def test_generate_with_prefs_injects_github_username(output_dir):
+    config = RepoConfig(
+        repo_name="my-project", preset="python_basic", include_codeowners=True
+    )
+    prefs = UserPreferences(github_username="jdoe")
+    generate(config, output_dir, prefs=prefs)
+    content = (output_dir / ".github" / "CODEOWNERS").read_text(encoding="utf-8")
+    assert "@jdoe" in content
+
+
+def test_generate_with_no_prefs_uses_empty_defaults(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    generate(config, output_dir)
+    assert (output_dir / "pyproject.toml").exists()
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "authors" not in content
+
+
+def test_generate_no_authors_section_when_prefs_empty(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    prefs = UserPreferences()
+    generate(config, output_dir, prefs=prefs)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "authors" not in content
