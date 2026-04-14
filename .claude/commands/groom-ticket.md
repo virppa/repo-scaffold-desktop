@@ -21,12 +21,13 @@ As a Product Owner, evaluate the issue before development begins:
    - **Type label** — one of: Feature / Fix / Refactor / Spike / Bug
    - **Stream label** — one of: Product / Infra / AI / Docs
    - **Epic (parent issue)** — which thematic epic this belongs under. Current epics:
-     - WOR-49 Template System
-     - WOR-50 User Preferences
-     - WOR-51 Custom Presets
+     - WOR-55 Agentic Scaffolding
+     - WOR-56 Wizard CLI
+     - WOR-57 UI Testing & Test Infrastructure
      - WOR-52 GitHub Integration
+     - WOR-51 Custom Presets
      - WOR-53 Desktop UI
-     - WOR-26 Penpot Integration
+     - WOR-26 Wireframing (Penpot / Superdesign)
      - If none fit, propose a new epic title
    - **Milestone** — which project milestone to assign. **First check `list_milestones` progress — do not assign to any milestone at 100%; it is complete and closed to new work.** Suggest the next appropriate open milestone instead. If no existing milestone fits (e.g. clear post-V1 work), flag this and suggest creating a new one with name and description.
    - **Priority** — 1=Urgent / 2=High / 3=Normal / 4=Low

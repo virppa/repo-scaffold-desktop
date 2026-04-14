@@ -36,7 +36,7 @@ Check whether this ticket has a parent epic (`parentId` from `get_issue` relatio
 ### 0.6. Coordination check
 Query Linear for sibling tickets in the same epic that are currently In Progress:
 ```
-list_issues(project: "repo-scaffold-desktop", filter: { parent: <epicId>, state: "In Progress" })
+list_issues(project: "repo-scaffold-desktop", state: "In Progress", parentId: <epicId>)
 ```
 For each In-Progress sibling:
 - Show ticket ID, title, branch name
