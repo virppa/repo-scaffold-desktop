@@ -19,3 +19,20 @@ repos:
     hooks:
       - id: bandit
         args: ["-c", "pyproject.toml"]
+
+  - repo: local
+    hooks:
+      - id: semgrep
+        name: semgrep
+        language: python
+        entry: semgrep
+        args: ["--config", "auto", "--error"]
+        types: [python]
+        pass_filenames: false
+        additional_dependencies: ["semgrep>=1.159.0"]
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]

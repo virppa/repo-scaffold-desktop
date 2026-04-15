@@ -1,0 +1,5 @@
+# Suppress confirmed false positives from Jinja2 template usage.
+# These rules fire on deliberate, safe template rendering patterns in this repo.
+# Reviewed in WOR-87 spike — not real vulnerabilities.
+python.flask.security.xss.audit.direct-use-of-jinja2
+python.lang.security.audit.jinja2.autoescape-disabled

@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install pydantic jinja2 pyyaml pytest pytest-cov ruff bandit
+        run: pip install pydantic jinja2 pyyaml pytest pytest-cov ruff bandit semgrep detect-secrets
 
       - name: Lint
         run: ruff check .
@@ -29,6 +29,11 @@ jobs:
 
       - name: Security scan
         run: bandit -c pyproject.toml -r app/
+
+      - name: Semgrep
+        run: semgrep --config auto --error app/
+        env:
+          PYTHONUTF8: "1"
 
       - name: Test
         run: pytest
