@@ -193,7 +193,8 @@ def _run_generate(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        written = generate(config, args.output)
+        prefs = PrefsStore.load()
+        written = generate(config, args.output, prefs)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
