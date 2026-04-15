@@ -44,3 +44,6 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Local LiteLLM config
+litellm-local.yaml
