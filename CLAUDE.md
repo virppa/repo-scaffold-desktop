@@ -44,6 +44,8 @@ app/core/      # All business logic — no UI here
 app/ui/        # PySide6 only — calls core, contains no logic
 templates/     # Jinja2 template files for scaffold output
 tests/         # Tests against core only
+schemas/       # Exported JSON Schemas for non-Python consumers
+docs/spikes/   # Spike investigation docs
 ```
 
 Module responsibilities:
@@ -52,6 +54,7 @@ Module responsibilities:
 - `generator.py` — renders templates and writes files to disk
 - `post_setup.py` — side effects: `git init`, `pre-commit install`, etc.
 - `user_prefs.py` — `UserPreferences` model + `PrefsStore` (platform-aware JSON persistence)
+- `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract for hybrid execution
 - `main.py` — PySide6 `QApplication` entry point
 
 Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.
