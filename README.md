@@ -146,6 +146,26 @@ repo-scaffold-desktop/
 └─ README.md
 ```
 
+## Local model development
+
+To run Claude Code against a local model via Ollama instead of the Anthropic API:
+
+```bash
+# 1. Pull the model
+ollama pull qwen3-coder:30b
+
+# 2. Copy the example config and start LiteLLM proxy (keep terminal open)
+cp litellm-local.yaml.example litellm-local.yaml
+litellm --config litellm-local.yaml --port 8082 --drop_params
+
+# 3. Launch Claude Code in a new terminal
+set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
+set ANTHROPIC_API_KEY=sk-dummy
+claude --model qwen3-coder:30b
+```
+
+`litellm-local.yaml` is gitignored. See [`docs/spikes/local-model-setup.md`](docs/spikes/local-model-setup.md) for VRAM requirements, benchmark results, and go/no-go recommendation.
+
 ## Claude Code and MCP setup
 
 This repo ships with `.mcp.json` configured to use the [Linear MCP server](https://linear.app/docs/mcp), allowing Claude Code agents to read Linear issues directly.

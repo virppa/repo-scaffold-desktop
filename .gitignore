@@ -41,6 +41,6 @@ Thumbs.db
 # Environment variables
 .env
 .env.*
-
+litellm-local.yaml
 # Claude Code local settings
 .claude/settings.local.json
