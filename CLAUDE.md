@@ -139,6 +139,25 @@ No setup needed — hooks activate as soon as Claude Code loads the project.
 
 ---
 
+## Local model development
+
+To run Claude Code routed to a local model (Ollama) instead of the Anthropic API:
+
+```bash
+# 1. Copy the example config and start LiteLLM proxy (keep terminal open)
+cp litellm-local.yaml.example litellm-local.yaml
+litellm --config litellm-local.yaml --port 8082 --drop_params
+
+# 2. Launch Claude Code in a new terminal
+set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
+set ANTHROPIC_API_KEY=sk-dummy
+claude --model qwen3-coder:30b
+```
+
+`litellm-local.yaml` is gitignored. See `docs/spikes/local-model-setup.md` for VRAM budget, model selection, and benchmark results.
+
+---
+
 ## Linear MCP
 
 This repo ships with `.mcp.json` configured to use the Linear MCP server. Claude Code agents can use this to read Linear issues directly — no manual copy-pasting needed.
