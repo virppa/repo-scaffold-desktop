@@ -1,6 +1,7 @@
 """Tests for the ExecutionManifest schema (WOR-77)."""
 
 import json
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -332,3 +333,22 @@ def test_json_schema_contains_required_properties():
     props = schema.get("properties", {})
     for field in ("ticket_id", "title", "priority", "base_branch", "worker_branch"):
         assert field in props, f"Expected {field!r} in JSON Schema properties"
+
+
+def test_committed_schema_file_matches_model(tmp_path):
+    """Catch drift between the committed JSON Schema file and the Pydantic model.
+
+    If this test fails, regenerate with:
+        python -c "import json; from app.core.manifest import ExecutionManifest; \
+            print(json.dumps(ExecutionManifest.json_schema(), indent=2))" \
+            > schemas/execution_manifest.schema.json
+    """
+    schema_file = (
+        Path(__file__).parent.parent / "schemas" / "execution_manifest.schema.json"
+    )
+    committed = json.loads(schema_file.read_text(encoding="utf-8"))
+    current = ExecutionManifest.json_schema()
+    assert committed == current, (
+        "schemas/execution_manifest.schema.json is out of date. "
+        "Regenerate it with the command in the test docstring."
+    )

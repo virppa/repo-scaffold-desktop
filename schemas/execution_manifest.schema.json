@@ -79,7 +79,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Full execution manifest \u2014 the contract between cloud producer and local worker.",
+  "description": "Full execution manifest \u2014 contract between cloud producer and local worker.",
   "properties": {
     "manifest_version": {
       "default": "1.0",
