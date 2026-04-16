@@ -18,7 +18,31 @@ Check if any of the following need updating:
 
 Only update docs if the change is meaningful — do not document implementation details.
 
-### 3. Create the pull request
+### 3. Finalize Reviewer subagent
+Gather the following three inputs:
+```bash
+# Diff against the PR base branch (epic branch or main)
+git diff $(git merge-base HEAD origin/<base-branch>)..HEAD
+
+# Pytest output (reuse the output from step 1 if still in context)
+pytest --tb=short -q 2>&1 | tail -40
+```
+
+Fetch the ticket description with `get_issue(id: "WOR-NNN")` (derive WOR-NNN from the branch name).
+
+Spawn the **finalize-reviewer** subagent with a prompt containing:
+1. The ticket title and description (full text)
+2. The full git diff
+3. The pytest output
+
+The subagent returns a structured verdict. Read **only** the verdict — do not load the raw diff or test log into the main session yourself.
+
+**Act on the verdict:**
+- **PASS** — proceed to step 4 (Create the pull request).
+- **WARNINGS** — print the verdict to the user, then proceed to step 4 (Create the pull request).
+- **FAIL** — print the verdict and rationale, then **stop**. Do not create a PR. Ask the user how to proceed.
+
+### 4. Create the pull request
 Derive the Linear identifier from the current branch name (e.g., `WOR-42-short-description` → `WOR-42`).
 
 Fetch the issue with `get_issue(id, includeRelations: true)` to get its milestone and parent epic. If the epic has an in-progress branch (not main), that is the PR target.
@@ -47,7 +71,7 @@ PR body format (both cases):
 - Test plan checklist
 - `Closes WOR-NNN`
 
-### 4. Update Linear
+### 5. Update Linear
 Mark the issue as **In Review**: `save_issue(id: "WOR-NNN", state: "In Review")`
 
 What "In Review" means depends on the PR target:
