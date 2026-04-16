@@ -34,7 +34,7 @@ class PrefsStore:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             return UserPreferences.model_validate(data)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             return UserPreferences()
 
     @classmethod
