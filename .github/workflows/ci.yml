@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install pydantic jinja2 pyyaml pytest pytest-cov ruff bandit semgrep detect-secrets
+        run: pip install -r requirements-dev.txt
 
       - name: Lint
         run: ruff check .
@@ -34,6 +34,9 @@ jobs:
         run: semgrep --config auto --error app/
         env:
           PYTHONUTF8: "1"
+
+      - name: Dependency check
+        run: deptry . --requirements-files requirements.txt,requirements-dev.txt
 
       - name: Test
         run: pytest

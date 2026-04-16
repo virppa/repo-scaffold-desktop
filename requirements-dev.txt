@@ -6,3 +6,4 @@ bandit>=1.7
 pre-commit>=3.0
 semgrep>=1.0
 detect-secrets>=1.4
+deptry>=0.12
