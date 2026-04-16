@@ -68,6 +68,7 @@ Data flows one way: UI → config model → generator → disk. Post-setup runs 
 - Generated output must be deterministic and easy to diff.
 - Avoid over-abstracting v1. Three similar lines beat a premature helper.
 - Side effects (git, pre-commit) live only in `post_setup.py`.
+- **Architecture contracts are enforced by Import Linter (`lint-imports`).** The contracts live in `.importlinter`. Do not bypass them with `# noqa` or `--noqa`. Do not modify `.importlinter` without explicit cloud LLM approval — contract changes are architecture decisions.
 
 ---
 
@@ -145,6 +146,7 @@ The informational scan runs on `github.base_ref != 'main'`; the blocking scan ru
 
 - **PostToolUse** — ruff lint + format after any Python file edit
 - **PostToolUse** — bandit security scan after any Python file edit (if bandit is installed)
+- **PostToolUse** — `lint-imports` architecture contract check after any Python file edit
 - **PostToolUse** — pytest with coverage after changes to `app/` or `tests/`
 - **Stop** — `pre-commit run --all-files` at the end of every turn
 - **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)

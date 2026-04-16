@@ -27,6 +27,9 @@ jobs:
       - name: Format check
         run: ruff format --check .
 
+      - name: Architecture contracts
+        run: lint-imports
+
       - name: Security scan
         run: bandit -c pyproject.toml -r app/
 

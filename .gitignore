@@ -22,6 +22,9 @@ htmlcov/
 # Ruff
 .ruff_cache/
 
+# Import Linter
+.import_linter_cache/
+
 # Pre-commit
 .pre-commit-cache/
 
