@@ -18,14 +18,15 @@ repos:
     rev: 1.9.4
     hooks:
       - id: bandit
-        args: ["-c", "pyproject.toml"]
+        args: ["-c", "pyproject.toml", "-r", "app/"]
+        pass_filenames: false
 
   - repo: local
     hooks:
       - id: semgrep
         name: semgrep
         language: python
-        entry: semgrep
+        entry: python scripts/semgrep_run.py
         args: ["--config", "auto", "--error"]
         types: [python]
         pass_filenames: false
