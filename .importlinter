@@ -1,0 +1,27 @@
+[importlinter]
+root_package = app
+
+[importlinter:contract:ui-above-core]
+name = UI layer must not be imported by core
+type = layers
+# The app architecture flows one way: app.ui -> app.core -> disk.
+# Higher layers (app.ui) may import lower layers (app.core), but not vice versa.
+# This enforces the "UI stays thin" principle: no business logic in app.ui,
+# and no presentation concerns leaking into app.core.
+# CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
+layers =
+    app.ui
+    app.core
+
+[importlinter:contract:core-no-entry-points]
+name = Core must not import entry-point modules
+type = forbidden
+# app.cli and app.main are entry points (argument parsing, QApplication init).
+# If app.core imports either, it becomes coupled to a specific invocation style.
+# Core logic must remain callable from any entry point — CLI, GUI, or test suite.
+# CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
+source_modules =
+    app.core
+forbidden_modules =
+    app.cli
+    app.main
