@@ -88,7 +88,32 @@ pytest tests/integration/ -q 2>/dev/null || echo "[skip] No integration tests fo
 
 If no UI tests exist yet, note it explicitly: "No UI tests present — consider adding them before the next epic closes."
 
-### 6. Create the epic → main PR
+### 6. Epic Reviewer subagent
+Gather the following inputs:
+```bash
+# Full diff of epic branch against main
+git diff main..<epic-branch>
+
+# Coverage report (reuse from step 4 if still in context)
+pytest --cov=app --cov-report=term-missing --tb=short -q 2>&1 | tail -60
+```
+
+Fetch each child issue's title and acceptance criteria with `get_issue(id: "WOR-X")` (limit to sub-tickets identified in step 1).
+
+Spawn the **epic-reviewer** subagent with a prompt containing:
+1. List of sub-ticket identifiers, titles, and acceptance criteria (full text)
+2. Path to CLAUDE.md: `CLAUDE.md`
+3. The full git diff
+4. The pytest coverage output
+
+The subagent returns a structured verdict. Read **only** the verdict — do not load raw diffs or coverage logs into the main session yourself.
+
+**Act on the verdict:**
+- **READY** — proceed to step 7 (Create the epic → main PR).
+- **NEEDS_ATTENTION** — print the verdict to the user, then proceed to step 7 (Create the epic → main PR).
+- **BLOCKED** — print the verdict and specific blocker list, then **stop**. Do not create a PR. Ask the user how to proceed.
+
+### 7. Create the epic → main PR
 ```bash
 gh pr create --base main \
   --title "WOR-NNN <Epic title>" \
@@ -120,11 +145,11 @@ Enumerate a `Closes WOR-X` line for **every child issue** in the epic (from Step
 
 This PR requires **human review and approval** — no auto-merge.
 
-### 7. Update Linear
+### 8. Update Linear
 1. Mark the epic issue **In Review**: `save_issue(id: "$ARGUMENTS", state: "In Review")`
 2. Check milestone progress with `list_milestones(project: "repo-scaffold-desktop")`. If 100%, note: "🎉 Milestone '<name>' is now complete."
 
-### 8. Clean up worktrees
+### 9. Clean up worktrees
 List any worktrees for sub-tickets that have already been merged into the epic branch:
 ```bash
 git worktree list
@@ -138,6 +163,6 @@ git branch -d <sub-ticket-branch>
 
 Do not remove the epic branch worktree yet — wait until the epic PR merges to main.
 
-### 9. Update the project page
+### 10. Update the project page
 Call `save_project(id: "87ca9685-f2e6-493f-a022-03ef2425d2ab")` with an updated `summary` (max 255 chars):
 `WOR-NNN epic in review | <N> sub-tickets shipped | Next: <next epic or milestone>`
