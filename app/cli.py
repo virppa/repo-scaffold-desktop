@@ -90,7 +90,9 @@ def _run_config(args: argparse.Namespace) -> int:
         annotation = field_info.annotation
         # Handle Path | None
         if annotation in (Path, "Path | None") or (
-            hasattr(annotation, "__args__") and Path in annotation.__args__
+            annotation is not None
+            and hasattr(annotation, "__args__")
+            and Path in annotation.__args__
         ):
             value = Path(raw) if raw else None
         else:

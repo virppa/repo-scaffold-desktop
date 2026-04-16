@@ -26,6 +26,9 @@ python -m app.cli config set github-username "your-username"
 ruff check .
 ruff format .
 
+# Type check (required — fix errors, do not suppress with # type: ignore)
+mypy app/
+
 # Tests
 pytest
 pytest tests/test_generator.py::test_name  # single test

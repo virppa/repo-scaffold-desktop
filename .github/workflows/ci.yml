@@ -38,6 +38,9 @@ jobs:
         env:
           PYTHONUTF8: "1"
 
+      - name: Type check
+        run: mypy app/
+
       - name: Dependency check
         run: deptry . --requirements-files requirements.txt,requirements-dev.txt
 
