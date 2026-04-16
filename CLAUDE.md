@@ -126,6 +126,17 @@ main
 
 Human gates: plan approval after `/start-ticket`; explicit PASS from `/security-check` before any main-targeting PR; human review of the epic → main PR created by `/close-epic`. Command files live in `.claude/commands/`.
 
+### CI quality gate tiers
+
+Two-tier SonarCloud strategy:
+
+| PR target | SonarCloud step | Blocks merge? |
+|-----------|----------------|---------------|
+| sub→epic  | "SonarCloud scan (informational)" — `continue-on-error: true` | No — findings logged, advisory only |
+| epic→main | "SonarCloud scan" — blocking | Yes — gate must pass |
+
+The informational scan runs on `github.base_ref != 'main'`; the blocking scan runs on `github.base_ref == 'main'`. Both use the same `SonarSource/sonarcloud-github-action@master` and the same `SONAR_TOKEN`. The sub→epic tier lets the LLM see and fix code smells cheaply before they surface as blocking findings at the epic→main gate.
+
 ---
 
 ## Claude Code hooks
