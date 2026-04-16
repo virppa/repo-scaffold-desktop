@@ -38,10 +38,11 @@ def generate(
     )
 
     templates_dir = _TEMPLATES_DIR / config.preset
-    env = Environment(  # nosec B701 — autoescape not relevant for text file generation
+    env = Environment(  # nosec B701  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
         loader=FileSystemLoader([str(templates_dir), str(_SHARED_DIR)]),
         undefined=StrictUndefined,
         keep_trailing_newline=True,
+        autoescape=False,  # text file generation, not HTML
     )
 
     context = {**config.model_dump(), **prefs.model_dump()}
@@ -51,7 +52,7 @@ def generate(
 
     for relative_path in files_to_write:
         template = env.get_template(f"{relative_path}.j2")
-        content = template.render(**context)
+        content = template.render(**context)  # nosec  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
         dest = output_path / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")

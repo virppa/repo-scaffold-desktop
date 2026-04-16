@@ -63,6 +63,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v lint-imports >/dev/null 2>&1; then lint-imports 2>/dev/null || echo \"[import-linter] Architecture contract violation — run lint-imports for details\"; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
             "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */app/* || \"$FILE\" == */tests/* ]]; then pytest --tb=short -q; fi"
           }
         ]

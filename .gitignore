@@ -22,6 +22,9 @@ htmlcov/
 # Ruff
 .ruff_cache/
 
+# Import Linter
+.import_linter_cache/
+
 # Pre-commit
 .pre-commit-cache/
 
@@ -41,7 +44,7 @@ Thumbs.db
 # Environment variables
 .env
 .env.*
-
+litellm-local.yaml
 # Claude Code local settings
 .claude/settings.local.json
 

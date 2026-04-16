@@ -44,6 +44,8 @@ app/core/      # All business logic — no UI here
 app/ui/        # PySide6 only — calls core, contains no logic
 templates/     # Jinja2 template files for scaffold output
 tests/         # Tests against core only
+schemas/       # Exported JSON Schemas for non-Python consumers
+docs/spikes/   # Spike investigation docs
 ```
 
 Module responsibilities:
@@ -52,6 +54,7 @@ Module responsibilities:
 - `generator.py` — renders templates and writes files to disk
 - `post_setup.py` — side effects: `git init`, `pre-commit install`, etc.
 - `user_prefs.py` — `UserPreferences` model + `PrefsStore` (platform-aware JSON persistence)
+- `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract for hybrid execution
 - `main.py` — PySide6 `QApplication` entry point
 
 Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.
@@ -65,6 +68,7 @@ Data flows one way: UI → config model → generator → disk. Post-setup runs 
 - Generated output must be deterministic and easy to diff.
 - Avoid over-abstracting v1. Three similar lines beat a premature helper.
 - Side effects (git, pre-commit) live only in `post_setup.py`.
+- **Architecture contracts are enforced by Import Linter (`lint-imports`).** The contracts live in `.importlinter`. Do not bypass them with `# noqa` or `--noqa`. Do not modify `.importlinter` without explicit cloud LLM approval — contract changes are architecture decisions.
 
 ---
 
@@ -123,6 +127,17 @@ main
 
 Human gates: plan approval after `/start-ticket`; explicit PASS from `/security-check` before any main-targeting PR; human review of the epic → main PR created by `/close-epic`. Command files live in `.claude/commands/`.
 
+### CI quality gate tiers
+
+Two-tier SonarCloud strategy:
+
+| PR target | SonarCloud step | Blocks merge? |
+|-----------|----------------|---------------|
+| sub→epic  | "SonarCloud scan (informational)" — `continue-on-error: true` | No — findings logged, advisory only |
+| epic→main | "SonarCloud scan" — blocking | Yes — gate must pass |
+
+The informational scan runs on `github.base_ref != 'main'`; the blocking scan runs on `github.base_ref == 'main'`. Both use the same `SonarSource/sonarcloud-github-action@master` and the same `SONAR_TOKEN`. The sub→epic tier lets the LLM see and fix code smells cheaply before they surface as blocking findings at the epic→main gate.
+
 ---
 
 ## Claude Code hooks
@@ -131,11 +146,31 @@ Human gates: plan approval after `/start-ticket`; explicit PASS from `/security-
 
 - **PostToolUse** — ruff lint + format after any Python file edit
 - **PostToolUse** — bandit security scan after any Python file edit (if bandit is installed)
+- **PostToolUse** — `lint-imports` architecture contract check after any Python file edit
 - **PostToolUse** — pytest with coverage after changes to `app/` or `tests/`
 - **Stop** — `pre-commit run --all-files` at the end of every turn
 - **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)
 
 No setup needed — hooks activate as soon as Claude Code loads the project.
+
+---
+
+## Local model development
+
+To run Claude Code routed to a local model (Ollama) instead of the Anthropic API:
+
+```bash
+# 1. Copy the example config and start LiteLLM proxy (keep terminal open)
+cp litellm-local.yaml.example litellm-local.yaml
+litellm --config litellm-local.yaml --port 8082 --drop_params
+
+# 2. Launch Claude Code in a new terminal
+set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
+set ANTHROPIC_API_KEY=sk-dummy
+claude --model qwen3-coder:30b
+```
+
+`litellm-local.yaml` is gitignored. See `docs/spikes/local-model-setup.md` for VRAM budget, model selection, and benchmark results.
 
 ---
 

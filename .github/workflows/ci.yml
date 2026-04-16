@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'wor-*']
 
 jobs:
   lint-and-test:
@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install pydantic jinja2 pyyaml pytest pytest-cov ruff bandit
+        run: pip install -r requirements-dev.txt
 
       - name: Lint
         run: ruff check .
@@ -27,8 +27,34 @@ jobs:
       - name: Format check
         run: ruff format --check .
 
+      - name: Architecture contracts
+        run: lint-imports
+
       - name: Security scan
         run: bandit -c pyproject.toml -r app/
 
+      - name: Semgrep
+        run: semgrep --config auto --error app/
+        env:
+          PYTHONUTF8: "1"
+
+      - name: Dependency check
+        run: deptry . --requirements-files requirements.txt,requirements-dev.txt
+
       - name: Test
-        run: pytest
+        run: pytest --cov=app --cov-report=xml
+
+      - name: SonarCloud scan (informational)
+        if: github.base_ref != 'main'
+        continue-on-error: true
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: SonarCloud scan
+        if: github.base_ref == 'main'
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

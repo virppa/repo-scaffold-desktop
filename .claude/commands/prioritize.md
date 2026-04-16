@@ -5,6 +5,8 @@ Pull all open issues from the **repo-scaffold-desktop** project using the Linear
 
 Then for every issue that has or appears to have blocking relations, fetch `get_issue(id, includeRelations: true)` to get the **actual Linear blocker chain** (do not infer from titles).
 
+For each Backlog or Todo issue in the current active milestone, spawn the **repo-investigator** subagent (passing the ticket title + description) to get the file-impact summary. Use the returned `Estimated change surface` and `Hidden coupling risks` fields to inform the dependency map and recommended order below. Do not read source files yourself.
+
 Produce the following five sections:
 
 ---

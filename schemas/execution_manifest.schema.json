@@ -1,0 +1,260 @@
+{
+  "$defs": {
+    "ArtifactPaths": {
+      "additionalProperties": false,
+      "description": "Paths where the worker writes result artifacts (relative to repo root).",
+      "properties": {
+        "result_json": {
+          "title": "Result Json",
+          "type": "string"
+        },
+        "manifest_copy": {
+          "title": "Manifest Copy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "result_json",
+        "manifest_copy"
+      ],
+      "title": "ArtifactPaths",
+      "type": "object"
+    },
+    "FailurePolicy": {
+      "additionalProperties": false,
+      "description": "What the worker should do when a required check fails.",
+      "properties": {
+        "on_check_failure": {
+          "default": "abort",
+          "enum": [
+            "abort",
+            "warn"
+          ],
+          "title": "On Check Failure",
+          "type": "string"
+        },
+        "max_retries": {
+          "default": 0,
+          "maximum": 5,
+          "minimum": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "escalate_to_cloud": {
+          "default": false,
+          "title": "Escalate To Cloud",
+          "type": "boolean"
+        }
+      },
+      "title": "FailurePolicy",
+      "type": "object"
+    },
+    "TicketStateMap": {
+      "additionalProperties": false,
+      "description": "Linear workflow state names used by the watcher to advance ticket state.",
+      "properties": {
+        "in_progress_local": {
+          "default": "InProgressLocal",
+          "title": "In Progress Local",
+          "type": "string"
+        },
+        "merged_to_epic": {
+          "default": "MergedToEpic",
+          "title": "Merged To Epic",
+          "type": "string"
+        },
+        "ready_for_review": {
+          "default": "EpicReadyForCloudReview",
+          "title": "Ready For Review",
+          "type": "string"
+        },
+        "failed": {
+          "default": "Blocked",
+          "title": "Failed",
+          "type": "string"
+        }
+      },
+      "title": "TicketStateMap",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Full execution manifest \u2014 contract between cloud producer and local worker.",
+  "properties": {
+    "manifest_version": {
+      "default": "1.0",
+      "title": "Manifest Version",
+      "type": "string"
+    },
+    "ticket_id": {
+      "title": "Ticket Id",
+      "type": "string"
+    },
+    "epic_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Epic Id"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "priority": {
+      "maximum": 4,
+      "minimum": 0,
+      "title": "Priority",
+      "type": "integer"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "parallel_safe": {
+      "title": "Parallel Safe",
+      "type": "boolean"
+    },
+    "risk_level": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "Risk Level",
+      "type": "string"
+    },
+    "risk_flags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Risk Flags",
+      "type": "array"
+    },
+    "implementation_mode": {
+      "enum": [
+        "local",
+        "cloud",
+        "hybrid"
+      ],
+      "title": "Implementation Mode",
+      "type": "string"
+    },
+    "review_mode": {
+      "enum": [
+        "auto",
+        "human"
+      ],
+      "title": "Review Mode",
+      "type": "string"
+    },
+    "base_branch": {
+      "title": "Base Branch",
+      "type": "string"
+    },
+    "worker_branch": {
+      "title": "Worker Branch",
+      "type": "string"
+    },
+    "worktree_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Worktree Name"
+    },
+    "objective": {
+      "title": "Objective",
+      "type": "string"
+    },
+    "acceptance_criteria": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Acceptance Criteria",
+      "type": "array"
+    },
+    "implementation_constraints": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Implementation Constraints",
+      "type": "array"
+    },
+    "allowed_paths": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Allowed Paths",
+      "type": "array"
+    },
+    "forbidden_paths": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Forbidden Paths",
+      "type": "array"
+    },
+    "related_files_hint": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Related Files Hint",
+      "type": "array"
+    },
+    "required_checks": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Checks",
+      "type": "array"
+    },
+    "optional_checks": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Optional Checks",
+      "type": "array"
+    },
+    "done_definition": {
+      "default": "",
+      "title": "Done Definition",
+      "type": "string"
+    },
+    "failure_policy": {
+      "$ref": "#/$defs/FailurePolicy"
+    },
+    "ticket_state_map": {
+      "$ref": "#/$defs/TicketStateMap"
+    },
+    "artifact_paths": {
+      "$ref": "#/$defs/ArtifactPaths"
+    }
+  },
+  "required": [
+    "ticket_id",
+    "title",
+    "priority",
+    "status",
+    "parallel_safe",
+    "risk_level",
+    "implementation_mode",
+    "review_mode",
+    "base_branch",
+    "worker_branch",
+    "objective",
+    "artifact_paths"
+  ],
+  "title": "ExecutionManifest",
+  "type": "object"
+}
