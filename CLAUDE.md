@@ -58,6 +58,7 @@ Module responsibilities:
 - `post_setup.py` — side effects: `git init`, `pre-commit install`, etc.
 - `user_prefs.py` — `UserPreferences` model + `PrefsStore` (platform-aware JSON persistence)
 - `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract for hybrid execution
+- `escalation_policy.py` — `EscalationPolicy` Pydantic model: loads `config/escalation_policy.toml`, classifies result-artifact flags and Sonar findings into watcher actions
 - `main.py` — PySide6 `QApplication` entry point
 
 Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.
@@ -230,6 +231,23 @@ Only interact with the **repo-scaffold-desktop** project in Linear unless explic
 ## Testing
 
 Test core logic only. Priority: config validation, preset selection, file generation, option toggles, overwrite behavior. Skip UI tests unless the UI contains meaningful logic.
+
+---
+
+## Escalation policy
+
+The watcher reads `config/escalation_policy.toml` at startup to decide when to stop a local worker session and escalate to cloud LLM. Rules are data-driven — no hardcoded logic in the watcher.
+
+**Location:** `config/escalation_policy.toml`
+**Model:** `app/core/escalation_policy.py` — `EscalationPolicy.from_toml()`
+
+Key sections:
+- `[retry]` — `max_consecutive_failures`: how many consecutive check failures before escalating
+- `[auto_escalate]` — flags in the result artifact that trigger automatic cloud escalation (e.g. `scope_drift`, `forbidden_path_touched`)
+- `[human_escalate]` — conditions requiring a human/cloud decision (watcher posts a Linear comment and pauses)
+- `[sonar]` — maps SonarLint/SonarCloud severity → action: `blocker`/`critical` → `escalate`; `major`/`minor`/`info` → `fix_locally`
+
+To change escalation rules, edit `config/escalation_policy.toml` and commit — no code changes required.
 
 ---
 
