@@ -37,7 +37,7 @@ def fetch_skills(
         )
         with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             tree = json.loads(resp.read())
-    except (urllib.error.URLError, OSError) as exc:
+    except OSError as exc:
         print(
             f"[skills] Warning: could not fetch {skills_source}@{skills_version}: {exc}"
         )
@@ -60,7 +60,7 @@ def fetch_skills(
         try:
             with urllib.request.urlopen(raw_url, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
                 content = resp.read()
-        except (urllib.error.URLError, OSError) as exc:
+        except OSError as exc:
             print(f"[skills] Warning: could not download {path}: {exc}")
             continue
 

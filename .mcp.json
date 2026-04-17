@@ -3,6 +3,16 @@
     "linear-server": {
       "type": "http",
       "url": "https://mcp.linear.app/mcp"
+    },
+    "sonarqube": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "sonarqube-mcp-server"],
+      "env": {
+        "SONARQUBE_TOKEN": "${SONARCLOUD_TOKEN}",
+        "SONARQUBE_URL": "https://sonarcloud.io",
+        "SONARQUBE_ORG": "virppa"
+      }
     }
   }
 }

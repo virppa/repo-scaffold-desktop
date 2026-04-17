@@ -95,9 +95,9 @@ def check_allowed_paths_overlap(
     conflicts: list[str] = []
     candidate_set = set(candidate.allowed_paths)
     for worker in active:
-        if not worker.manifest.allowed_paths:
-            conflicts.append(worker.manifest.ticket_id)
-        elif candidate_set & set(worker.manifest.allowed_paths):
+        if not worker.manifest.allowed_paths or candidate_set & set(
+            worker.manifest.allowed_paths
+        ):
             conflicts.append(worker.manifest.ticket_id)
     return conflicts
 
