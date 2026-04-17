@@ -48,5 +48,8 @@ litellm-local.yaml
 # Claude Code local settings
 .claude/settings.local.json
 
+# Claude Code local worker artifacts (ephemeral, machine-generated)
+.claude/artifacts/
+
 # Local LiteLLM config
 litellm-local.yaml
