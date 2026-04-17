@@ -343,3 +343,57 @@ def test_generate_no_authors_section_when_prefs_empty(output_dir):
     generate(config, output_dir, prefs=prefs)
     content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
     assert "authors" not in content
+
+
+def test_full_agentic_claude_md_has_all_sections(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    for heading in (
+        "## Commands",
+        "## Architecture",
+        "## Engineering principles",
+        "## Development workflow",
+        "## Claude Code hooks",
+        "## Linear MCP",
+        "## Git & Linear workflow",
+    ):
+        assert heading in content, f"CLAUDE.md missing section: {heading}"
+
+
+def test_full_agentic_claude_md_substitutes_repo_name(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "my_agentic_project" in content
+    assert "{{" not in content
+
+
+def test_full_agentic_claude_md_with_linear_project(output_dir):
+    config = RepoConfig(
+        repo_name="my-agentic-project",
+        preset="full_agentic",
+        linear_project="my-linear-board",
+    )
+    generate(config, output_dir)
+    content = (output_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "my-linear-board" in content
+
+
+def test_python_basic_uses_shared_claude_md_stub(output_dir):
+    config = RepoConfig(
+        repo_name="my-project", preset="python_basic", include_claude_files=True
+    )
+    generate(config, output_dir)
+    content = (output_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "## Development workflow" in content
+    assert "## Linear MCP" not in content
+
+
+def test_python_desktop_uses_shared_claude_md_stub(output_dir):
+    config = RepoConfig(
+        repo_name="my-desktop-app", preset="python_desktop", include_claude_files=True
+    )
+    generate(config, output_dir)
+    content = (output_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "## Linear MCP" not in content
