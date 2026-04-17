@@ -101,7 +101,7 @@ class LinearClient:
     def set_state(self, issue_id: str, state_name: str) -> None:
         """Move *issue_id* to the workflow state with the given name."""
         state_id = self._resolve_state_id(state_name)
-        self._query(
+        data = self._query(
             """
             mutation SetState($issueId: String!, $stateId: String!) {
               issueUpdate(id: $issueId, input: { stateId: $stateId }) {
@@ -111,10 +111,11 @@ class LinearClient:
             """,
             {"issueId": issue_id, "stateId": state_id},
         )
+        self._check_success(data, "issueUpdate", issue_id)
 
     def post_comment(self, issue_id: str, body: str) -> None:
         """Post a comment on *issue_id*."""
-        self._query(
+        data = self._query(
             """
             mutation CreateComment($issueId: String!, $body: String!) {
               commentCreate(input: { issueId: $issueId, body: $body }) {
@@ -124,10 +125,19 @@ class LinearClient:
             """,
             {"issueId": issue_id, "body": body},
         )
+        self._check_success(data, "commentCreate", issue_id)
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _check_success(
+        self, data: dict[str, Any], mutation_key: str, issue_id: str
+    ) -> None:
+        if not data[mutation_key]["success"]:
+            raise LinearError(
+                f"{mutation_key} returned success=false for issue {issue_id!r}"
+            )
 
     def _resolve_state_id(self, state_name: str) -> str:
         if state_name in self._state_cache:
