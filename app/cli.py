@@ -100,15 +100,33 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1,
         help="Maximum number of concurrent worker sessions (default: 1).",
     )
+    watcher.add_argument(
+        "--verbose",
+        action="store_true",
+        default=False,
+        help=(
+            "Stream worker stdout+stderr live to the daemon's stderr, "
+            "prefixed with [WOR-NN]. Output is still written to the log file."
+        ),
+    )
 
     return parser
 
 
 def _run_watcher(args: argparse.Namespace) -> int:
+    import logging
+
     from app.core.watcher import Watcher
 
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        stream=sys.stderr,
+    )
     mode = args.worker_mode or os.environ.get("WORKER_MODE", "default")
-    watcher = Watcher(worker_mode=mode, max_workers=args.max_workers)
+    watcher = Watcher(
+        worker_mode=mode, max_workers=args.max_workers, verbose=args.verbose
+    )
     try:
         watcher.run()
     except FileNotFoundError as exc:

@@ -267,3 +267,16 @@ def test_post_setup_error_exits_nonzero(output_dir, capsys):
     assert rc == 1
     captured = capsys.readouterr()
     assert "git not found on PATH" in captured.err
+
+
+def test_watcher_verbose_flag_forwarded(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    mock_instance = MagicMock()
+    mock_instance.run.return_value = None
+    # Watcher is a lazy import inside _run_watcher, so patch at source module
+    with patch("app.core.watcher.Watcher", return_value=mock_instance) as MockWatcher:
+        rc = main(["watcher", "--verbose"])
+    assert rc == 0
+    _, kwargs = MockWatcher.call_args
+    assert kwargs.get("verbose") is True

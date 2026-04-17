@@ -18,6 +18,7 @@ from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher import (
     ActiveWorker,
     Watcher,
+    _tee_worker_output,
     build_worker_cmd,
     build_worker_env,
     check_allowed_paths_overlap,
@@ -272,3 +273,79 @@ def test_write_and_remove_pid_file(
 
     watcher._remove_pid_file()
     assert not pid_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# _tee_worker_output
+# ---------------------------------------------------------------------------
+
+
+class _CaptureSink:
+    """Byte sink that accumulates writes and tracks close without discarding data."""
+
+    def __init__(self) -> None:
+        self.data = b""
+        self.closed = False
+
+    def write(self, b: bytes) -> int:
+        self.data += b
+        return len(b)
+
+    def flush(self) -> None:
+        pass
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_tee_writes_prefixed_lines_to_dest() -> None:
+    import io
+
+    pipe = io.BytesIO(b"hello\nsecond line\n")
+    log_sink: _CaptureSink = _CaptureSink()
+    dest_sink = io.BytesIO()
+
+    _tee_worker_output(pipe, log_sink, b"[WOR-62] ", dest_sink)  # type: ignore[arg-type]
+
+    assert log_sink.data == b"hello\nsecond line\n"
+    assert dest_sink.getvalue() == b"[WOR-62] hello\n[WOR-62] second line\n"
+
+
+def test_tee_closes_log_file() -> None:
+    import io
+
+    pipe = io.BytesIO(b"line\n")
+    log_sink = _CaptureSink()
+    dest_sink = io.BytesIO()
+
+    _tee_worker_output(pipe, log_sink, b"", dest_sink)  # type: ignore[arg-type]
+
+    assert log_sink.closed
+
+
+def test_tee_empty_pipe() -> None:
+    import io
+
+    pipe = io.BytesIO(b"")
+    log_sink = _CaptureSink()
+    dest_sink = io.BytesIO()
+
+    _tee_worker_output(pipe, log_sink, b"[X] ", dest_sink)  # type: ignore[arg-type]
+
+    assert log_sink.data == b""
+    assert dest_sink.getvalue() == b""
+
+
+# ---------------------------------------------------------------------------
+# Watcher verbose flag
+# ---------------------------------------------------------------------------
+
+
+def test_watcher_verbose_defaults_to_false() -> None:
+    w = Watcher(linear_client=MagicMock())
+    assert w._verbose is False
+
+
+def test_watcher_stores_verbose_true() -> None:
+    w = Watcher(linear_client=MagicMock(), verbose=True)
+    assert w._verbose is True

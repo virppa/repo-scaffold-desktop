@@ -91,15 +91,17 @@ git checkout <epic-branch>
 git pull origin <epic-branch>
 git checkout -b <sub-ticket-branch>
 git push -u origin <sub-ticket-branch>
+git checkout main
 ```
-Then call `EnterWorktree` so this session operates in the sub-ticket branch's worktree, isolated from other parallel sessions.
+The final `git checkout main` is required — the watcher uses `git worktree add` to check out the branch in an isolated directory, and git refuses to do that if the branch is already checked out in the main working tree.
 
 **If no parent epic (targeting main):**
 ```bash
 git checkout -b <branch-name>
 git push -u origin <branch-name>
+git checkout main
 ```
-No worktree needed for solo work.
+Same reason — leave main checked out so the watcher can worktree the sub-ticket branch.
 
 **If the parent epic was previously Backlog** (i.e., this is the first sub-ticket being started in this epic), also promote all other Backlog children to **Todo**:
 ```
@@ -190,6 +192,17 @@ Then:
 The cloud preflight is now complete.
 
 **STOP HERE. Do NOT run `/implement-ticket`. The watcher daemon will pick this ticket up automatically once it detects `ReadyForLocal` state. Your job for this session is done.**
+
+To monitor worker progress once the watcher picks up the ticket:
+```bash
+# Worker log (stdout + stderr from the claude session):
+tail -f .claude/worktrees/<worker-branch>/.claude/worker_<ticket_id_lower>.log
+# e.g. for WOR-62:
+tail -f ".claude/worktrees/wor-62-structured-claudemdj2-for-full_agentic-preset/.claude/worker_wor-62.log"
+
+# Result artifact (written when worker finishes):
+cat .claude/artifacts/<ticket_id_lower>/result.json
+```
 
 ---
 
