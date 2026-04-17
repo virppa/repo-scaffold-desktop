@@ -160,6 +160,42 @@ def test_sonar_unknown_severity_raises(policy: EscalationPolicy) -> None:
 
 
 # ---------------------------------------------------------------------------
+# classify_human_trigger
+# ---------------------------------------------------------------------------
+
+
+def test_human_trigger_architecture_change(policy: EscalationPolicy) -> None:
+    assert policy.classify_human_trigger("architecture_change") == "human"
+
+
+def test_human_trigger_schema_migration(policy: EscalationPolicy) -> None:
+    assert policy.classify_human_trigger("schema_migration") == "human"
+
+
+def test_human_trigger_cross_module_refactor(policy: EscalationPolicy) -> None:
+    assert policy.classify_human_trigger("cross_module_refactor") == "human"
+
+
+def test_human_trigger_auth_payments_touched(policy: EscalationPolicy) -> None:
+    assert policy.classify_human_trigger("auth_payments_touched") == "human"
+
+
+def test_human_trigger_case_insensitive(policy: EscalationPolicy) -> None:
+    assert policy.classify_human_trigger("ARCHITECTURE_CHANGE") == "human"
+    assert policy.classify_human_trigger("Schema_Migration") == "human"
+
+
+def test_human_trigger_unknown_raises(policy: EscalationPolicy) -> None:
+    with pytest.raises(ValueError, match="Unknown human trigger"):
+        policy.classify_human_trigger("unknown_trigger")
+
+
+def test_human_trigger_auto_escalate_key_rejected(policy: EscalationPolicy) -> None:
+    with pytest.raises(ValueError, match="Unknown human trigger"):
+        policy.classify_human_trigger("scope_drift")
+
+
+# ---------------------------------------------------------------------------
 # Retry config
 # ---------------------------------------------------------------------------
 
