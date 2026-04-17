@@ -174,31 +174,7 @@ def _run_config(args: argparse.Namespace) -> int:
     return 1
 
 
-def main(argv: list[str] | None = None) -> int:
-    load_dotenv()
-    # Ensure the terminal can emit UTF-8 (e.g. ✓); no-op on StringIO (pytest capsys).
-    if hasattr(sys.stdout, "reconfigure"):
-        try:
-            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:  # nosec B110 — intentional no-op; stdout may not support reconfigure
-            pass
-
-    parser = _build_parser()
-    args = parser.parse_args(argv)
-
-    if args.command is None:
-        parser.print_help()
-        return 1
-
-    if args.command == "config":
-        return _run_config(args)
-
-    if args.command == "metrics":
-        return _run_metrics(args)
-
-    if args.command == "watcher":
-        return _run_watcher(args)
-
+def _run_generate(args: argparse.Namespace) -> int:
     try:
         config = RepoConfig(
             repo_name=args.repo_name,
@@ -247,6 +223,34 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
+    # Ensure the terminal can emit UTF-8 (e.g. ✓); no-op on StringIO (pytest capsys).
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # nosec B110 — intentional no-op; stdout may not support reconfigure
+            pass
+
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command is None:
+        parser.print_help()
+        return 1
+
+    if args.command == "config":
+        return _run_config(args)
+
+    if args.command == "metrics":
+        return _run_metrics(args)
+
+    if args.command == "watcher":
+        return _run_watcher(args)
+
+    return _run_generate(args)
 
 
 if __name__ == "__main__":
