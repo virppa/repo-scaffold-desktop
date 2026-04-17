@@ -23,10 +23,11 @@ import shlex
 import signal
 import subprocess  # nosec B404
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import IO, Any, Protocol
 
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import ImplementationMode, MetricsStore, Outcome, TicketMetrics
@@ -151,6 +152,28 @@ def resolve_effective_mode(worker_mode: str, manifest_mode: str) -> str:
     return manifest_mode
 
 
+def _tee_worker_output(
+    pipe: IO[bytes],
+    log_file: IO[bytes],
+    prefix: bytes,
+    dest: IO[bytes],
+) -> None:
+    """Read *pipe* line-by-line, writing each line to *log_file* and *dest*.
+
+    Runs in a daemon thread; returns when the pipe reaches EOF (worker exit).
+    Closes *log_file* in the finally block — ownership transfers from the
+    caller to this thread in verbose mode.
+    """
+    try:
+        for raw_line in pipe:
+            log_file.write(raw_line)
+            log_file.flush()
+            dest.write(prefix + raw_line)
+            dest.flush()
+    finally:
+        log_file.close()
+
+
 # ---------------------------------------------------------------------------
 # Watcher
 # ---------------------------------------------------------------------------
@@ -169,6 +192,7 @@ class Watcher:
         metrics_store: MetricsStore | None = None,
         repo_root: Path | None = None,
         project_id: str = "repo-scaffold-desktop",
+        verbose: bool = False,
     ) -> None:
         if linear_client is None:
             from app.core.linear_client import LinearClient  # lazy import
@@ -184,6 +208,9 @@ class Watcher:
         self._active: list[ActiveWorker] = []
         self._running = True
         self._litellm_proc: subprocess.Popen[bytes] | None = None
+        self._verbose = verbose
+        self._worker_counter = 0
+        self._worker_counter_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -427,7 +454,30 @@ class Watcher:
 
         log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path, "wb")  # noqa: SIM115  # kept open for process lifetime
+        log_file = open(log_path, "wb")  # noqa: SIM115
+
+        if self._verbose:
+            with self._worker_counter_lock:
+                self._worker_counter += 1
+            prefix = f"[{manifest.ticket_id}] ".encode()
+            process = subprocess.Popen(  # nosec B603 B607
+                cmd,
+                cwd=str(worktree_path),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            assert process.stdout is not None  # guaranteed by stdout=PIPE  # nosec B101
+            stderr_buf: IO[bytes] = (
+                getattr(sys.stderr, "buffer", None) or sys.stderr.buffer
+            )
+            threading.Thread(
+                target=_tee_worker_output,
+                args=(process.stdout, log_file, prefix, stderr_buf),
+                daemon=True,
+                name=f"tee-{manifest.ticket_id}",
+            ).start()
+            return process
 
         return subprocess.Popen(  # nosec B603 B607
             cmd,
