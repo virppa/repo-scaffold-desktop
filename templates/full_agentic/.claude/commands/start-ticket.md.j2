@@ -1,0 +1,97 @@
+Look up the Linear issue with identifier $ARGUMENTS in the {{ linear_project or repo_name }} project using the Linear MCP server. Also fetch `get_issue($ARGUMENTS, includeRelations: true)` to see its milestone, labels, priority, parent epic, and any blocking relations.
+
+Work through these phases in order:
+
+### 0. Clean up local branches
+Run the following to prune stale remote-tracking refs and delete any local branches that have been merged or whose remote is gone:
+```bash
+git fetch --prune
+git checkout main
+git pull
+git branch --merged main | grep -v '^\*\? *main$' | xargs -r git branch -d
+```
+
+### 0.5. Epic branch setup
+Check whether this ticket has a parent epic (`parentId` from `get_issue` relations):
+
+**If a parent epic exists:**
+- Derive the epic branch name from the epic issue's Linear "Copy branch name" format
+- Check whether that branch exists on the remote:
+  ```bash
+  git fetch origin
+  git branch -a | grep <epic-slug>
+  ```
+- If the epic branch does **not** exist yet — create it from main and push it:
+  ```bash
+  git checkout -b <epic-branch>
+  git push -u origin <epic-branch>
+  git checkout main
+  ```
+- If it already exists — confirm it is present on origin (no further action needed)
+
+**If no parent epic exists:**
+- Warn: "This ticket has no parent epic — branch will target main instead of an epic branch."
+- Continue with the normal main-targeting flow (step 3 will branch off main)
+
+### 0.6. Coordination check
+Query Linear for sibling tickets in the same epic that are currently In Progress:
+```
+list_issues(project: "{{ linear_project or repo_name }}", state: "In Progress", parentId: <epicId>)
+```
+For each In-Progress sibling, show ticket ID, title, branch name, and likely files touched.
+
+Also list epic backlog tickets and flag which are safe to start in parallel vs. likely conflicting.
+
+### 1. As Product Owner — understand the requirement
+- Restate the requirement in plain terms (one paragraph)
+- Flag any ambiguity or missing information
+- State the acceptance criteria (from the issue, or infer them if not specified)
+- Note the milestone this ticket belongs to and how it fits the current milestone's goal
+- Flag any active blockers from Linear — if this ticket is blocked by an open issue, warn before proceeding
+
+### 2. As Architect — plan the implementation
+- List which files need to change and what changes are needed
+- List what new tests are needed (file, test name, what it verifies)
+- Flag any security surface introduced: new I/O, user input handling, file operations, subprocess calls
+- Note edge cases and overwrite behavior to consider
+
+### 3. Create the branch and update Linear
+Using the branch name from Linear's "Copy branch name" format:
+
+**If this ticket has a parent epic with an epic branch:**
+```bash
+git checkout <epic-branch>
+git pull origin <epic-branch>
+git checkout -b <sub-ticket-branch>
+git push -u origin <sub-ticket-branch>
+```
+
+**If no parent epic (targeting main):**
+```bash
+git checkout -b <branch-name>
+git push -u origin <branch-name>
+```
+
+Then immediately set the issue status to **In Progress** in Linear:
+`save_issue(id: "$ARGUMENTS", state: "In Progress")`
+
+**If the parent epic was previously Backlog**, also promote all other Backlog children to **Todo**:
+```
+list_issues(project: "{{ linear_project or repo_name }}", parentId: <epicId>, state: "Backlog")
+→ for each result (excluding the current ticket): save_issue(id: "WOR-X", state: "Todo")
+```
+
+### 4. Present the plan
+```
+Branch: <branch-name> (off <epic-branch | main>)
+Milestone: <milestone name>
+Epic: <parent issue title or "none">
+Files to change:
+  - path/to/file.py — what changes
+Tests to write:
+  - tests/test_X.py::test_name — what it verifies
+Security surface: <none | description>
+Edge cases: <list>
+```
+
+**STOP HERE. Do not write any code until the human approves this plan.**

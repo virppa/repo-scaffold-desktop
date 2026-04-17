@@ -153,6 +153,45 @@ def test_full_agentic_settings_json_contains_hooks(output_dir):
         )
 
 
+def test_full_agentic_command_files_written(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    for cmd in (
+        "groom-ticket.md",
+        "start-ticket.md",
+        "finalize-ticket.md",
+        "security-check.md",
+    ):
+        assert (output_dir / ".claude" / "commands" / cmd).exists(), f"missing {cmd}"
+
+
+def test_full_agentic_commands_substitute_vars(output_dir):
+    config = RepoConfig(
+        repo_name="my-agentic-project",
+        preset="full_agentic",
+        linear_project="my-linear-project",
+    )
+    generate(config, output_dir)
+    for cmd in ("groom-ticket.md", "start-ticket.md", "finalize-ticket.md"):
+        content = (output_dir / ".claude" / "commands" / cmd).read_text()
+        assert "my-linear-project" in content, f"{cmd} missing linear_project value"
+        assert "{{" not in content, f"{cmd} has unrendered Jinja2 variable"
+
+
+def test_full_agentic_commands_fallback_to_repo_name(output_dir):
+    config = RepoConfig(repo_name="my-repo", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / ".claude" / "commands" / "groom-ticket.md").read_text()
+    assert "my-repo" in content
+    assert "{{" not in content
+
+
+def test_other_presets_have_no_command_files(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    generate(config, output_dir)
+    assert not (output_dir / ".claude" / "commands").exists()
+
+
 def test_full_agentic_pyproject_contains_quality_tools(output_dir):
     config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
     generate(config, output_dir)

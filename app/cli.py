@@ -74,6 +74,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run pre-commit install in the output directory.",
     )
+    gen.add_argument(
+        "--linear-project",
+        default="",
+        help="Linear project name for slash command templates (default: repo name).",
+    )
 
     metrics = sub.add_parser("metrics", help="Metrics DB commands.")
     metrics_sub = metrics.add_subparsers(dest="metrics_cmd")
@@ -187,6 +192,7 @@ def _run_generate(args: argparse.Namespace) -> int:
             include_claude_files=args.claude_files,
             git_init=args.git_init,
             install_precommit=args.install_precommit,
+            linear_project=args.linear_project,
         )
     except ValidationError as exc:
         print(f"Error: {exc}", file=sys.stderr)
