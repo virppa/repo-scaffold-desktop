@@ -208,3 +208,57 @@ def test_set_state_caches_state_ids() -> None:
         client.set_state("id-2", "InProgressLocal")  # cached — mutate only = 1 call
 
     assert call_count == 3  # 1 state lookup + 2 mutations
+
+
+def test_set_state_raises_when_success_false() -> None:
+    states_response = {
+        "data": {
+            "teams": {
+                "nodes": [
+                    {
+                        "states": {
+                            "nodes": [{"id": "state-abc", "name": "InProgressLocal"}]
+                        }
+                    }
+                ]
+            }
+        }
+    }
+    mutation_response = {"data": {"issueUpdate": {"success": False}}}
+
+    responses = [states_response, mutation_response]
+    call_idx = 0
+
+    def fake_urlopen(req: object, timeout: int = 30) -> MagicMock:
+        nonlocal call_idx
+        resp = _mock_response(responses[call_idx])
+        call_idx += 1
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(
+            LinearError, match="issueUpdate.*success=false.*issue-id-123"
+        ):
+            _client().set_state("issue-id-123", "InProgressLocal")
+
+
+# ---------------------------------------------------------------------------
+# post_comment
+# ---------------------------------------------------------------------------
+
+
+def test_post_comment_succeeds() -> None:
+    response = {"data": {"commentCreate": {"success": True}}}
+
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        _client().post_comment("issue-id-123", "hello")
+
+
+def test_post_comment_raises_when_success_false() -> None:
+    response = {"data": {"commentCreate": {"success": False}}}
+
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        with pytest.raises(
+            LinearError, match="commentCreate.*success=false.*issue-id-123"
+        ):
+            _client().post_comment("issue-id-123", "hello")
