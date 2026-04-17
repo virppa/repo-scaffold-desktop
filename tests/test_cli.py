@@ -238,10 +238,13 @@ def test_full_agentic_preset_calls_fetch_skills(output_dir):
             ]
         )
     assert rc == 0
+    from app.core.presets import get_preset
+
+    preset = get_preset("full_agentic")
     mock_fetch.assert_called_once_with(
         output_dir,
-        skills_source="github:virppa/repo-scaffold-skills",
-        skills_version="v1.0.0",
+        skills_source=preset.skills_source,
+        skills_version=preset.skills_version,
     )
 
 
