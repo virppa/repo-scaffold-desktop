@@ -4,13 +4,14 @@ import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from app.core.config import RepoConfig
 from app.core.generator import generate
 from app.core.metrics import MetricsStore
 from app.core.post_setup import fetch_skills, run_git_init, run_precommit_install
-from app.core.presets import _PRESETS
+from app.core.presets import _PRESETS, get_preset
 from app.core.user_prefs import PrefsStore, UserPreferences
 
 _PREFS_KEYS = set(UserPreferences.model_fields)
@@ -174,6 +175,7 @@ def _run_config(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     # Ensure the terminal can emit UTF-8 (e.g. ✓); no-op on StringIO (pytest capsys).
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -223,11 +225,12 @@ def main(argv: list[str] | None = None) -> int:
     for path in written:
         print(f"✓ {path}")
 
-    if config.preset == "full_agentic":
+    preset = get_preset(config.preset)
+    if preset.skills_source is not None and preset.skills_version is not None:
         skills_written = fetch_skills(
             args.output,
-            skills_source="github:virppa/repo-scaffold-skills",
-            skills_version="v1.0.0",
+            skills_source=preset.skills_source,
+            skills_version=preset.skills_version,
         )
         for path in skills_written:
             print(f"✓ {path}")
