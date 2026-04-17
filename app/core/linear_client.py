@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.request
-from typing import Any
+from typing import Any, cast
 
 _LINEAR_API_URL = "https://api.linear.app/graphql"
 
@@ -66,7 +66,7 @@ class LinearClient:
             """,
             {"teamName": self._team, "stateName": "ReadyForLocal"},
         )
-        return data["issues"]["nodes"]
+        return cast(list[dict[str, Any]], data["issues"]["nodes"])
 
     def get_open_blockers(self, issue_id: str) -> list[str]:
         """Return identifiers of issues that block *issue_id* and are not yet done."""

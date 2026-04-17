@@ -581,10 +581,10 @@ def is_watcher_running(pid_file: Path = _PID_FILE) -> bool:
     if sys.platform == "win32":
         import ctypes
 
-        handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)  # type: ignore[attr-defined]
+        handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)
         if not handle:
             return False
-        ctypes.windll.kernel32.CloseHandle(handle)  # type: ignore[attr-defined]
+        ctypes.windll.kernel32.CloseHandle(handle)
         return True
     else:
         try:

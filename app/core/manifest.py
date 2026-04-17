@@ -9,7 +9,7 @@ re-interpret the project, or make architectural decisions on its own.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -260,6 +260,6 @@ class ExecutionManifest(BaseModel):
         return cls.model_validate_json(raw)
 
     @classmethod
-    def json_schema(cls) -> dict:
+    def json_schema(cls) -> dict[str, Any]:
         """Return the JSON Schema dict for this model."""
         return cls.model_json_schema()

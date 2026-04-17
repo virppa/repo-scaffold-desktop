@@ -1,5 +1,19 @@
 from dataclasses import dataclass, field
 
+_F_PYPROJECT = "pyproject.toml"
+_F_README = "README.md"
+_F_GITIGNORE = ".gitignore"
+_F_APP_INIT = "app/__init__.py"
+_F_TESTS_INIT = "tests/__init__.py"
+_F_PRECOMMIT = ".pre-commit-config.yaml"
+_F_CI = ".github/workflows/lint-and-test.yml"
+_F_PR_TEMPLATE = ".github/pull_request_template.md"
+_F_BUG_REPORT = ".github/ISSUE_TEMPLATE/bug_report.md"
+_F_FEATURE_REQUEST = ".github/ISSUE_TEMPLATE/feature_request.md"
+_F_CODEOWNERS = ".github/CODEOWNERS"
+_F_CLAUDE_MD = "CLAUDE.md"
+_F_MCP_JSON = ".mcp.json"
+
 
 @dataclass(frozen=True)
 class Preset:
@@ -17,24 +31,24 @@ _PRESETS: dict[str, Preset] = {
         name="python_basic",
         description="Minimal Python project with ruff, pytest, and bandit.",
         required_files=(
-            "pyproject.toml",
-            "README.md",
-            ".gitignore",
-            "app/__init__.py",
-            "tests/__init__.py",
+            _F_PYPROJECT,
+            _F_README,
+            _F_GITIGNORE,
+            _F_APP_INIT,
+            _F_TESTS_INIT,
         ),
         optional_files={
-            "include_precommit": (".pre-commit-config.yaml",),
-            "include_ci": (".github/workflows/lint-and-test.yml",),
-            "include_pr_template": (".github/pull_request_template.md",),
+            "include_precommit": (_F_PRECOMMIT,),
+            "include_ci": (_F_CI,),
+            "include_pr_template": (_F_PR_TEMPLATE,),
             "include_issue_templates": (
-                ".github/ISSUE_TEMPLATE/bug_report.md",
-                ".github/ISSUE_TEMPLATE/feature_request.md",
+                _F_BUG_REPORT,
+                _F_FEATURE_REQUEST,
             ),
-            "include_codeowners": (".github/CODEOWNERS",),
+            "include_codeowners": (_F_CODEOWNERS,),
             "include_claude_files": (
-                "CLAUDE.md",
-                ".mcp.json",
+                _F_CLAUDE_MD,
+                _F_MCP_JSON,
             ),
         },
     ),
@@ -42,26 +56,26 @@ _PRESETS: dict[str, Preset] = {
         name="python_desktop",
         description="Python desktop app with PySide6, ruff, pytest, and bandit.",
         required_files=(
-            "pyproject.toml",
-            "README.md",
-            ".gitignore",
-            "app/__init__.py",
+            _F_PYPROJECT,
+            _F_README,
+            _F_GITIGNORE,
+            _F_APP_INIT,
             "app/main.py",
             "app/ui/__init__.py",
-            "tests/__init__.py",
+            _F_TESTS_INIT,
         ),
         optional_files={
-            "include_precommit": (".pre-commit-config.yaml",),
-            "include_ci": (".github/workflows/lint-and-test.yml",),
-            "include_pr_template": (".github/pull_request_template.md",),
+            "include_precommit": (_F_PRECOMMIT,),
+            "include_ci": (_F_CI,),
+            "include_pr_template": (_F_PR_TEMPLATE,),
             "include_issue_templates": (
-                ".github/ISSUE_TEMPLATE/bug_report.md",
-                ".github/ISSUE_TEMPLATE/feature_request.md",
+                _F_BUG_REPORT,
+                _F_FEATURE_REQUEST,
             ),
-            "include_codeowners": (".github/CODEOWNERS",),
+            "include_codeowners": (_F_CODEOWNERS,),
             "include_claude_files": (
-                "CLAUDE.md",
-                ".mcp.json",
+                _F_CLAUDE_MD,
+                _F_MCP_JSON,
             ),
         },
     ),
@@ -74,27 +88,27 @@ _PRESETS: dict[str, Preset] = {
         skills_source="github:virppa/repo-scaffold-skills",
         skills_version="v1.0.0",
         required_files=(
-            "pyproject.toml",
-            "README.md",
-            ".gitignore",
-            "app/__init__.py",
-            "tests/__init__.py",
-            "CLAUDE.md",
-            ".mcp.json",
+            _F_PYPROJECT,
+            _F_README,
+            _F_GITIGNORE,
+            _F_APP_INIT,
+            _F_TESTS_INIT,
+            _F_CLAUDE_MD,
+            _F_MCP_JSON,
             ".claude/settings.json",
         ),
         optional_files={
-            "include_precommit": (".pre-commit-config.yaml",),
-            "include_ci": (".github/workflows/lint-and-test.yml",),
-            "include_pr_template": (".github/pull_request_template.md",),
+            "include_precommit": (_F_PRECOMMIT,),
+            "include_ci": (_F_CI,),
+            "include_pr_template": (_F_PR_TEMPLATE,),
             "include_issue_templates": (
-                ".github/ISSUE_TEMPLATE/bug_report.md",
-                ".github/ISSUE_TEMPLATE/feature_request.md",
+                _F_BUG_REPORT,
+                _F_FEATURE_REQUEST,
             ),
-            "include_codeowners": (".github/CODEOWNERS",),
+            "include_codeowners": (_F_CODEOWNERS,),
             "include_claude_files": (
-                "CLAUDE.md",
-                ".mcp.json",
+                _F_CLAUDE_MD,
+                _F_MCP_JSON,
                 ".claude/settings.json",
             ),
         },

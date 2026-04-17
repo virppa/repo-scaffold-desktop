@@ -11,10 +11,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -48,16 +48,16 @@ jobs:
         run: pytest --cov=app --cov-report=xml
 
       - name: SonarCloud scan (informational)
-        if: github.base_ref != 'main'
+        if: github.base_ref != 'main' && github.actor != 'dependabot[bot]'
         continue-on-error: true
-        uses: SonarSource/sonarcloud-github-action@master
+        uses: SonarSource/sonarqube-scan-action@v6.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       - name: SonarCloud scan
-        if: github.base_ref == 'main'
-        uses: SonarSource/sonarcloud-github-action@master
+        if: github.base_ref == 'main' && github.actor != 'dependabot[bot]'
+        uses: SonarSource/sonarqube-scan-action@v6.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

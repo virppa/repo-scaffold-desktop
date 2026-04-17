@@ -23,7 +23,7 @@ addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
 
 [tool.mypy]
 python_version = "3.12"
-disallow_untyped_defs = true
+strict = true
 ignore_missing_imports = true
 
 [tool.bandit]

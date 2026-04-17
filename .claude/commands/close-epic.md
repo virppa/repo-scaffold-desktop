@@ -100,9 +100,11 @@ pytest --cov=app --cov-report=term-missing --tb=short -q 2>&1 | tail -60
 
 Fetch each child issue's title and acceptance criteria with `get_issue(id: "WOR-X")` (limit to sub-tickets identified in step 1).
 
+Read the full content of `CLAUDE.md` now so it can be included inline in the subagent prompt.
+
 Spawn the **epic-reviewer** subagent with a prompt containing:
 1. List of sub-ticket identifiers, titles, and acceptance criteria (full text)
-2. Path to CLAUDE.md: `CLAUDE.md`
+2. Full content of CLAUDE.md (pasted inline — do not pass a file path)
 3. The full git diff
 4. The pytest coverage output
 

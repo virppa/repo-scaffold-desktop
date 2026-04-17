@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from pydantic import BaseModel, field_validator
 
@@ -121,7 +121,7 @@ class EscalationPolicy(BaseModel):
                 f"Unknown human trigger {trigger!r}. "
                 f"Valid values: {sorted(_VALID_HUMAN_TRIGGERS)}"
             )
-        return getattr(self.human_escalate, trigger)
+        return cast(Action, getattr(self.human_escalate, trigger))
 
     def classify_sonar_finding(self, severity: str) -> Action:
         """Return the action for a SonarLint/SonarCloud finding severity.
@@ -135,7 +135,7 @@ class EscalationPolicy(BaseModel):
                 f"Unknown Sonar severity {severity!r}. "
                 f"Valid values: {sorted(_VALID_SONAR_SEVERITIES)}"
             )
-        return getattr(self.sonar, severity)
+        return cast(Action, getattr(self.sonar, severity))
 
     # ------------------------------------------------------------------
     # Factory
