@@ -1,3 +1,18 @@
+Before anything else, run a non-blocking skills staleness check:
+
+1. Read `.claude/settings.json` in the current working directory. If the file does not exist, or it has no `skills_source` or `skills_version` key, skip this check entirely and proceed to the grooming steps below.
+2. Parse `skills_source` (format: `github:<owner>/<repo>`) to extract owner and repo name.
+3. Use WebFetch to call `https://api.github.com/repos/<owner>/<repo>/releases?per_page=50`. If the request fails or returns an error (network unreachable, rate limited, etc.), skip silently and proceed.
+4. From the response array, take the first element's `tag_name` as the latest release. Compare it to `skills_version` from settings:
+   - If equal: no output, proceed.
+   - If `skills_version` is behind: count how many releases in the array have a `tag_name` semantically greater than `skills_version` (treat tags as semver; ignore non-semver tags). Print exactly one line:
+     ```
+     Skills are N version(s) behind (<skills_version> → <latest tag_name>). Run /update-skills to upgrade.
+     ```
+     Then proceed — this notice is non-blocking.
+
+---
+
 Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop project using the Linear MCP server. Run these in parallel:
 - `get_issue($ARGUMENTS, includeRelations: true)` — see existing labels, milestone, parent epic, priority, blocking relations
 - `list_milestones(project: "repo-scaffold-desktop")` — check milestone progress before suggesting assignment
