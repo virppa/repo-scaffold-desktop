@@ -1,0 +1,72 @@
+Finalize the current ticket and create a pull request.
+
+### 1. Test coverage
+Run pytest with coverage:
+```bash
+pytest --cov=app --cov-report=term-missing --tb=short -q
+```
+
+If coverage is below 80%:
+- Identify which code paths are uncovered
+- Write the missing tests before proceeding
+
+### 2. Documentation
+Check if any of the following need updating:
+- New slash commands or workflow steps → update the **Development workflow** section in `CLAUDE.md`
+- New CLI commands or setup steps → update the **Commands** section in `CLAUDE.md`
+- New architectural decisions → update the **Architecture** section in `CLAUDE.md`
+
+Only update docs if the change is meaningful — do not document implementation details.
+
+### 3. Review diff
+Get the current diff against the base branch:
+```bash
+git diff $(git merge-base HEAD origin/$(git rev-parse --abbrev-ref --symbolic-full-name @{u} | cut -d/ -f2-))..HEAD
+```
+
+Review for obvious issues: unrendered template variables, leftover debug code, missing test coverage for new paths.
+
+### 4. Create the pull request
+Derive the Linear identifier from the current branch name (e.g., `WOR-42-short-description` → `WOR-42`).
+
+Fetch the issue with `get_issue(id, includeRelations: true)` to get its milestone and parent epic. If the epic has an in-progress branch (not main), that is the PR target.
+
+**If this ticket has a parent epic with an epic branch:**
+```bash
+gh pr create --base <epic-branch> \
+  --title "WOR-NNN Short description" \
+  --body "..."
+gh pr merge --auto --squash <PR-number>
+```
+
+**If no parent epic (targeting main):**
+```bash
+gh pr create --base main \
+  --title "WOR-NNN Short description" \
+  --body "..."
+```
+
+PR body format:
+- 2–3 bullet summary
+- `**Milestone:** <milestone name>` (if set)
+- `**Epic:** <parent issue title>` (if set)
+- Test plan checklist
+- `Closes WOR-NNN`
+
+### 5. Update Linear
+Mark the issue as **In Review**: `save_issue(id: "WOR-NNN", state: "In Review")`
+
+Fetch the milestone with `list_milestones(project: "{{ linear_project or repo_name }}")`. If progress has reached 100%, note it: "🎉 Milestone '<name>' is now complete."
+
+### 6. Opportunistic issue capture
+
+Surface anything noticed during implementation that falls outside the current ticket's scope:
+- Bugs encountered in code you touched or read
+- Missing features that would naturally complement what was just built
+- Unhandled edge cases or input validation gaps
+
+**Rules:**
+- Only surface things genuinely encountered during implementation — no extra scans
+- Check existing Linear issues first (`list_issues` with `project: "{{ linear_project or repo_name }}"`) to avoid duplicates
+- Maximum 3 suggestions; keep only the most impactful
+- Present suggestions and wait for approval before creating anything

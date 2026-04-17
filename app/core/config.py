@@ -18,6 +18,7 @@ class RepoConfig(BaseModel):
 
     git_init: bool = False
     install_precommit: bool = False
+    linear_project: str = ""
 
     @field_validator("repo_name")
     @classmethod

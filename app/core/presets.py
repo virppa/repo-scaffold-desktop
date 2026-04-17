@@ -13,6 +13,10 @@ _F_FEATURE_REQUEST = ".github/ISSUE_TEMPLATE/feature_request.md"
 _F_CODEOWNERS = ".github/CODEOWNERS"
 _F_CLAUDE_MD = "CLAUDE.md"
 _F_MCP_JSON = ".mcp.json"
+_F_CMD_GROOM = ".claude/commands/groom-ticket.md"
+_F_CMD_START = ".claude/commands/start-ticket.md"
+_F_CMD_FINALIZE = ".claude/commands/finalize-ticket.md"
+_F_CMD_SECURITY = ".claude/commands/security-check.md"
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,10 @@ _PRESETS: dict[str, Preset] = {
             _F_CLAUDE_MD,
             _F_MCP_JSON,
             ".claude/settings.json",
+            _F_CMD_GROOM,
+            _F_CMD_START,
+            _F_CMD_FINALIZE,
+            _F_CMD_SECURITY,
         ),
         optional_files={
             "include_precommit": (_F_PRECOMMIT,),
