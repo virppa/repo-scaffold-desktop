@@ -88,9 +88,6 @@ git push -u origin <branch-name>
 ```
 No worktree needed for solo work.
 
-Then immediately set the issue status to **In Progress** in Linear:
-`save_issue(id: "$ARGUMENTS", state: "In Progress")`
-
 **If the parent epic was previously Backlog** (i.e., this is the first sub-ticket being started in this epic), also promote all other Backlog children to **Todo**:
 ```
 list_issues(project: "repo-scaffold-desktop", parentId: <epicId>, state: "Backlog")
@@ -119,6 +116,65 @@ To work in parallel: open a new Claude Code session in this repo and run
 ```
 
 **STOP HERE. Do not write any code until the human approves this plan.**
+
+---
+
+### 4.5. After human approves the plan — generate the execution manifest
+
+Once the human says to proceed, generate and write an `ExecutionManifest` JSON to disk. This is the handoff artifact the local worker reads — it must not require re-reading Linear or re-planning.
+
+Construct the manifest from the planning context gathered in steps 1–4:
+
+```json
+{
+  "manifest_version": "1.0",
+  "ticket_id": "<TICKET_ID>",
+  "epic_id": "<EPIC_ID or null>",
+  "title": "<ticket title from Linear>",
+  "priority": <0-4 from Linear>,
+  "status": "ReadyForLocal",
+  "parallel_safe": <true if no file conflicts with In-Progress siblings>,
+  "risk_level": "<low|medium|high — from security surface assessment>",
+  "risk_flags": ["<any specific risk notes>"],
+  "implementation_mode": "local",
+  "review_mode": "auto",
+  "base_branch": "<epic-branch or main>",
+  "worker_branch": "<sub-ticket-branch>",
+  "worktree_name": null,
+  "objective": "<one-paragraph restatement from step 1>",
+  "acceptance_criteria": ["<each AC bullet from step 1>"],
+  "implementation_constraints": ["<hard rules from step 2, e.g. do not modify app/ui/>"],
+  "allowed_paths": ["<glob patterns for files to change, from step 2>"],
+  "forbidden_paths": ["app/ui/**", ".env", ".mcp.json", ".claude/settings*"],
+  "related_files_hint": ["<files listed as relevant in step 2>"],
+  "required_checks": ["ruff check .", "mypy app/", "pytest"],
+  "optional_checks": [],
+  "done_definition": "<plain-English done criteria>",
+  "failure_policy": {
+    "on_check_failure": "abort",
+    "max_retries": 0,
+    "escalate_to_cloud": false
+  },
+  "ticket_state_map": {
+    "in_progress_local": "InProgressLocal",
+    "merged_to_epic": "MergedToEpic",
+    "ready_for_review": "EpicReadyForCloudReview",
+    "failed": "Blocked"
+  },
+  "artifact_paths": {
+    "result_json": ".claude/artifacts/<ticket_id_lower>/result.json",
+    "manifest_copy": ".claude/artifacts/<ticket_id_lower>/manifest.json"
+  }
+}
+```
+
+Write this JSON to `.claude/artifacts/<ticket_id_lower>/manifest.json` (e.g. `.claude/artifacts/wor_80/manifest.json`). Create parent dirs as needed.
+
+Then:
+1. Set the ticket to **ReadyForLocal** in Linear: `save_issue(id: "$ARGUMENTS", state: "ReadyForLocal")`
+2. Post a Linear comment with the manifest path: `save_comment(issueId: "$ARGUMENTS", body: "Execution manifest written to .claude/artifacts/<ticket_id_lower>/manifest.json — watcher may now pick up.")`
+
+The cloud preflight is now complete. The local worker will pick this up via `/implement-ticket $ARGUMENTS`.
 
 ---
 
