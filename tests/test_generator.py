@@ -139,7 +139,15 @@ def test_full_agentic_settings_json_contains_hooks(output_dir):
     config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
     generate(config, output_dir)
     content = (output_dir / ".claude" / "settings.json").read_text()
-    for marker in ("PostToolUse", "PreToolUse", "Stop", "ruff", "bandit"):
+    for marker in (
+        "PostToolUse",
+        "PreToolUse",
+        "Stop",
+        "ruff",
+        "bandit",
+        "mypy",
+        "lint-imports",
+    ):
         assert marker in content, (
             f"settings.json missing expected hook marker: {marker}"
         )
