@@ -349,3 +349,75 @@ def test_watcher_verbose_defaults_to_false() -> None:
 def test_watcher_stores_verbose_true() -> None:
     w = Watcher(linear_client=MagicMock(), verbose=True)
     assert w._verbose is True
+
+
+# ---------------------------------------------------------------------------
+# _create_pr — push before gh pr create
+# ---------------------------------------------------------------------------
+
+
+def test_create_pr_pushes_branch_before_gh_pr(tmp_path: Path) -> None:
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        base_branch="main",
+        title="Test ticket",
+        done_definition="It works.",
+    )
+    call_order: list[str] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        if cmd[:2] == ["git", "push"]:
+            call_order.append("push")
+        elif cmd[:3] == ["gh", "pr", "create"]:
+            call_order.append("gh_pr")
+        result = MagicMock()
+        result.stdout = "https://github.com/example/pr/1"
+        return result
+
+    w = Watcher(linear_client=MagicMock())
+    with patch("app.core.watcher.subprocess.run", side_effect=fake_run):
+        w._create_pr(manifest, tmp_path)
+
+    assert call_order == ["push", "gh_pr"]
+
+
+# ---------------------------------------------------------------------------
+# _finalize_worker — PR creation failure marks ticket Blocked, no crash
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_pr_failure_marks_blocked(tmp_path: Path) -> None:
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        base_branch="main",
+    )
+    linear_mock = MagicMock()
+    w = Watcher(linear_client=linear_mock)
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    exc = subprocess.CalledProcessError(1, "gh", stderr="Head sha can't be blank")
+
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", side_effect=exc),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        # Must not raise
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    linear_mock.set_state.assert_called_with("fake-linear-id", "Blocked")
+    linear_mock.post_comment.assert_called_once()
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    assert "WOR-10" in comment_body
+    assert "Head sha can't be blank" in comment_body
+    metrics_mock.record.assert_called_once()

@@ -59,6 +59,7 @@ class LinearClientProtocol(Protocol):
     def list_ready_for_local(self) -> list[dict[str, Any]]: ...
     def get_open_blockers(self, issue_id: str) -> list[str]: ...
     def set_state(self, issue_id: str, state_name: str) -> None: ...
+    def post_comment(self, issue_id: str, body: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -344,12 +345,29 @@ class Watcher:
                 outcome = "failure"
                 self._linear.set_state(linear_id, manifest.ticket_state_map.failed)
             else:
-                pr_url = self._create_pr(manifest, worker.worktree_path)
-                outcome = "success"
-                logger.info("PR created for %s: %s", ticket_id, pr_url)
-                self._linear.set_state(
-                    linear_id, manifest.ticket_state_map.merged_to_epic
-                )
+                try:
+                    pr_url = self._create_pr(manifest, worker.worktree_path)
+                except subprocess.CalledProcessError as exc:
+                    err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
+                    logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
+                    outcome = "failure"
+                    self._linear.set_state(linear_id, manifest.ticket_state_map.failed)
+                    try:
+                        body = (
+                            f"PR creation failed for `{ticket_id}`:"
+                            f"\n```\n{err_detail}\n```"
+                        )
+                        self._linear.post_comment(linear_id, body)
+                    except Exception:
+                        logger.warning(
+                            "Could not post failure comment to Linear for %s", ticket_id
+                        )
+                else:
+                    outcome = "success"
+                    logger.info("PR created for %s: %s", ticket_id, pr_url)
+                    self._linear.set_state(
+                        linear_id, manifest.ticket_state_map.merged_to_epic
+                    )
 
         eff = resolve_effective_mode(self._mode, manifest.implementation_mode)
         self._metrics.record(
@@ -513,6 +531,13 @@ class Watcher:
     # ------------------------------------------------------------------
 
     def _create_pr(self, manifest: ExecutionManifest, worktree_path: Path) -> str:
+        subprocess.run(  # nosec B603 B607
+            ["git", "push", "-u", "origin", manifest.worker_branch],
+            cwd=str(worktree_path),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
         result = subprocess.run(  # nosec B603 B607
             [
                 "gh",
