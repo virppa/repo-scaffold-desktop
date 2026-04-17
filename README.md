@@ -4,21 +4,11 @@ A Python CLI tool for generating opinionated starter repositories for agent-driv
 
 ## Purpose
 
-This project helps create ready-to-use repository scaffolds for solo developers and small teams.
+Creates ready-to-use repository scaffolds for solo developers and small teams, with sensible defaults for CI, pre-commit, issue templates, and Claude/Linear wiring.
 
-The tool makes it faster to start a new project with sensible defaults such as:
-
-- pre-commit setup
-- GitHub Actions CI
-- PR and issue templates
-- CODEOWNERS
-- Claude project files
-- starter folder structures
-- preset-based repository templates
+> Desktop GUI is planned for V2. The CLI is the primary interface for V1.
 
 ## Usage
-
-> Note: Desktop GUI is planned for V2. The CLI is the primary interface for V1.
 
 ```bash
 # Basic generation
@@ -32,6 +22,19 @@ python -m app.cli generate --preset python_basic --repo-name myrepo --output ./o
 python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out \
   --git-init --install-precommit
 
+# User preferences
+python -m app.cli config get
+python -m app.cli config set author-name "Your Name"
+python -m app.cli config set github-username "your-username"
+
+# Watcher daemon (local worker orchestrator)
+python -m app.cli watcher                        # respects each manifest's implementation_mode
+python -m app.cli watcher --worker-mode cloud    # force cloud (Anthropic API)
+python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy)
+
+# Metrics
+python -m app.cli metrics browse   # open metrics DB in Datasette browser UI
+
 # Show all options
 python -m app.cli generate --help
 ```
@@ -39,33 +42,37 @@ python -m app.cli generate --help
 ## Running locally
 
 ```bash
-# Create and activate virtual environment
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-
-# Install dependencies
 pip install -r requirements-dev.txt
-
-# Install pre-commit hooks
 pre-commit install
 ```
 
 ## Architecture
 
-The project is split into clear layers:
-
-- `app/core/` — all business logic: config validation, preset handling, file generation, post-setup
-- `app/ui/` — PySide6 desktop UI (deferred to V2; CLI is V1 primary interface)
-- `templates/` — Jinja2 template files for scaffold output
-- `tests/` — tests for core logic only
+```
+app/core/      # All business logic — no UI here
+app/ui/        # PySide6 only — calls core, contains no logic
+templates/     # Jinja2 template files for scaffold output
+tests/         # Tests against core only
+schemas/       # Exported JSON Schemas for non-Python consumers
+config/        # escalation_policy.toml and other runtime config
+docs/spikes/   # Spike investigation docs
+```
 
 Module responsibilities:
 
 - `config.py` — Pydantic input models and validation
-- `generator.py` — renders templates and writes files to disk
 - `presets.py` — preset definitions (maps preset name → file list + toggles)
+- `generator.py` — renders templates and writes files to disk
 - `post_setup.py` — side effects: `git init`, `pre-commit install`
-- `cli.py` — argparse CLI entry point
+- `user_prefs.py` — `UserPreferences` model + `PrefsStore` (platform-aware JSON persistence)
+- `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract
+- `watcher.py` — orchestrator daemon: polls Linear, manages worktrees, launches workers, creates PRs
+- `linear_client.py` — thin Linear GraphQL client (stdlib `urllib` only); requires `LINEAR_API_KEY`
+- `metrics.py` — SQLite-backed per-ticket cost and execution metrics store
+- `escalation_policy.py` — loads `config/escalation_policy.toml`, classifies failures into watcher actions
+- `cli.py` — CLI entry point
 - `main.py` — PySide6 app entry point (V2)
 
 Data flows one way: CLI → config model → generator → disk. Post-setup runs after generation.
@@ -91,14 +98,6 @@ Data flows one way: CLI → config model → generator → disk. Post-setup runs
 | `--git-init` | Run `git init` in the output directory after generation |
 | `--install-precommit` | Run `pre-commit install` in the output directory |
 
-## Engineering principles
-
-- UI stays thin — no branching logic or file I/O in `app/ui/`
-- Prefer config + templates over conditional generation logic
-- Generated output must be deterministic and easy to diff
-- Side effects (git, pre-commit) live only in `post_setup.py`
-- Avoid over-abstracting V1
-
 ## Stack
 
 - Python 3.12+
@@ -108,43 +107,10 @@ Data flows one way: CLI → config model → generator → disk. Post-setup runs
 - PySide6 — desktop UI (V2)
 - pytest + pytest-cov — testing
 - Ruff — linting and formatting
+- mypy — type checking
 - bandit — security scanning
+- Import Linter — architecture contract enforcement
 - pre-commit — git hooks
-
-## Project structure
-
-```
-repo-scaffold-desktop/
-├─ app/
-│  ├─ cli.py
-│  ├─ main.py
-│  ├─ core/
-│  │  ├─ config.py
-│  │  ├─ generator.py
-│  │  ├─ post_setup.py
-│  │  └─ presets.py
-│  └─ ui/
-│     └─ main_window.py
-├─ templates/
-│  ├─ python_basic/
-│  ├─ python_desktop/
-│  └─ full_agentic/
-├─ tests/
-│  ├─ test_cli.py
-│  ├─ test_config.py
-│  ├─ test_generator.py
-│  ├─ test_post_setup.py
-│  └─ test_presets.py
-├─ .github/
-│  ├─ workflows/
-│  │  ├─ lint-and-test.yml
-│  │  └─ claude-code-review.yml
-│  ├─ ISSUE_TEMPLATE/
-│  └─ pull_request_template.md
-├─ CLAUDE.md
-├─ pyproject.toml
-└─ README.md
-```
 
 ## Local model development
 
@@ -170,7 +136,7 @@ claude --model qwen3-coder:30b
 
 This repo ships with `.mcp.json` configured to use the [Linear MCP server](https://linear.app/docs/mcp), allowing Claude Code agents to read Linear issues directly.
 
-To authenticate on first use, run `/mcp` in Claude Code and follow the OAuth flow.
+To authenticate on first use, run `/mcp` in Claude Code and follow the OAuth flow. Only interact with the **repo-scaffold-desktop** project in Linear.
 
 ## Git and Linear workflow
 
@@ -178,6 +144,8 @@ To authenticate on first use, run `/mcp` in Claude Code and follow the OAuth flo
 - PR title format: `WOR-123 Short description`
 - Intermediate commits: `Part of WOR-123 …`
 - Closing commit or PR body: `Closes WOR-123`
+- Sub-ticket PRs target the epic branch and auto-merge when CI passes
+- Epic PRs target main and always require human review
 
 ## License
 
