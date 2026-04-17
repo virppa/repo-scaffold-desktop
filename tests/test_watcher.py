@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.core.linear_client import LinearError
 from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher import (
     ActiveWorker,
@@ -421,3 +422,78 @@ def test_finalize_worker_pr_failure_marks_blocked(tmp_path: Path) -> None:
     assert "WOR-10" in comment_body
     assert "Head sha can't be blank" in comment_body
     metrics_mock.record.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _safe_set_state — daemon survives LinearError at all set_state sites
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_set_state_failure_nonzero_no_crash(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    linear_mock = MagicMock()
+    linear_mock.set_state.side_effect = LinearError("rate limit")
+    w = Watcher(linear_client=linear_mock)
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics"),
+    ):
+        # returncode != 0 triggers set_state(failed) — must not propagate
+        w._finalize_worker(worker, returncode=1, wall_time=1.0)
+
+
+def test_finalize_worker_set_state_failure_success_path_no_crash(
+    tmp_path: Path,
+) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    linear_mock = MagicMock()
+    linear_mock.set_state.side_effect = LinearError("network error")
+    w = Watcher(linear_client=linear_mock)
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics"),
+    ):
+        # Success path calls set_state(merged_to_epic) — must not propagate
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+
+def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.set_state.side_effect = LinearError("unknown state")
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    fake_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch.object(w, "_create_worktree", return_value=tmp_path),
+        patch.object(w, "_launch_worker", return_value=fake_process),
+    ):
+        # set_state raises — worker must still be launched and added to _active
+        w._start_ticket("WOR-10", "fake-linear-id")
+
+    assert len(w._active) == 1
+    assert w._active[0].ticket_id == "WOR-10"
