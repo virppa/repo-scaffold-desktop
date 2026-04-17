@@ -110,7 +110,9 @@ Each ticket follows these phases. Use the corresponding slash command to enter e
 [watcher picks up ticket] # watcher polls for ReadyForLocal, creates worktree, launches local worker
                           # Linear: ReadyForLocal → InProgressLocal
 
-[Claude implements]       # hooks fire automatically: ruff, mypy, bandit, pytest, lint-imports
+/implement-ticket WOR-123 # local worker entrypoint: reads manifest, implements within allowed_paths,
+                          # runs required_checks, writes result artifact
+                          # hooks fire automatically: ruff, mypy, bandit, pytest, lint-imports
 
 /security-check           # bandit scan + OWASP diff review → PASS / WARNINGS / FAIL
 
