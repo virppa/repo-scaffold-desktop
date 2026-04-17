@@ -135,6 +135,24 @@ def test_full_agentic_required_files_written(output_dir):
     assert (output_dir / ".claude" / "settings.json").exists()
 
 
+def test_full_agentic_settings_json_contains_hooks(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / ".claude" / "settings.json").read_text()
+    for marker in ("PostToolUse", "PreToolUse", "Stop", "ruff", "bandit"):
+        assert marker in content, (
+            f"settings.json missing expected hook marker: {marker}"
+        )
+
+
+def test_full_agentic_pyproject_contains_quality_tools(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text()
+    for tool in ("bandit", "mypy", "lint-imports"):
+        assert tool in content, f"pyproject.toml dev deps missing: {tool}"
+
+
 def test_full_agentic_ci_toggle(output_dir):
     config = RepoConfig(
         repo_name="my-agentic-project", preset="full_agentic", include_ci=True
