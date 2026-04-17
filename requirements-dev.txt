@@ -9,3 +9,4 @@ detect-secrets>=1.4
 deptry>=0.12
 import-linter>=2.0
 mypy>=1.0
+datasette>=0.64

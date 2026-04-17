@@ -22,6 +22,9 @@ python -m app.cli config get
 python -m app.cli config set author-name "Your Name"
 python -m app.cli config set github-username "your-username"
 
+# CLI — metrics
+python -m app.cli metrics browse   # open metrics DB in Datasette browser UI
+
 # Lint and format
 ruff check .
 ruff format .
