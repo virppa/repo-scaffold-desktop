@@ -28,6 +28,7 @@ python -m app.cli watcher --worker-mode cloud    # force cloud (Anthropic API) f
 python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy + RTX 5090)
 # Also: WORKER_MODE=cloud python -m app.cli watcher
 
+
 # CLI — metrics
 python -m app.cli metrics browse   # open metrics DB in Datasette browser UI
 
