@@ -81,6 +81,36 @@ class TestFetchSkills:
         with pytest.raises(ValueError, match="Invalid skills_source"):
             fetch_skills(tmp_path, "notgithub:owner/repo", "v1.0.0")
 
+    def test_skips_file_on_individual_download_error(self, tmp_path, capsys):
+        entries = [
+            {"path": ".claude/commands/groom-ticket.md", "type": "blob"},
+        ]
+        call_count = 0
+
+        def fake_urlopen(req_or_url, timeout=None):  # noqa: ARG001
+            nonlocal call_count
+            cm = MagicMock()
+            cm.__enter__ = lambda s: s
+            cm.__exit__ = MagicMock(return_value=False)
+            if call_count == 0:
+                payload = json.dumps({"tree": entries}).encode()
+                cm.read = MagicMock(return_value=payload)
+            else:
+                raise urllib.error.URLError("timeout")
+            call_count += 1
+            return cm
+
+        with patch(
+            "app.core.post_setup.urllib.request.urlopen", side_effect=fake_urlopen
+        ):
+            written = fetch_skills(
+                tmp_path, "github:virppa/repo-scaffold-skills", "v1.0.0"
+            )
+
+        assert written == []
+        captured = capsys.readouterr()
+        assert "Warning" in captured.out
+
     def test_skips_path_traversal_entries(self, tmp_path, capsys):
         entries = [
             {"path": ".claude/commands/../../../etc/passwd", "type": "blob"},
