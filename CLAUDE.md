@@ -98,22 +98,51 @@ Each ticket follows these phases. Use the corresponding slash command to enter e
 
 ```
 /groom-ticket WOR-123     # PO review: scope, acceptance criteria, splitting
+                          # Linear: Backlog → Groomed
                           # ↓ human approves — Linear updated only after this
 
 /start-ticket WOR-123     # PO + Architect: restate req, plan files/tests, create branch
                           # auto-creates epic branch if needed; shows parallel-safe siblings
+                          # Linear: Groomed → ReadyForLocal (with execution manifest attached)
                           # ↓ human approves plan before any code is written
 
-[Claude implements]       # hooks fire automatically: ruff, bandit, pytest
+[watcher picks up ticket] # watcher polls for ReadyForLocal, creates worktree, launches local worker
+                          # Linear: ReadyForLocal → InProgressLocal
+
+[Claude implements]       # hooks fire automatically: ruff, mypy, bandit, pytest, lint-imports
 
 /security-check           # bandit scan + OWASP diff review → PASS / WARNINGS / FAIL
 
-/finalize-ticket          # coverage check, docs update, PR creation, Linear → In Review
-                          # PR targets epic branch (auto-merge) or main (human review)
+/finalize-ticket          # coverage check, docs update, PR creation
+                          # PR targets epic branch (auto-merges when CI passes)
+                          # Linear: InProgressLocal → MergedToEpic
 
-/close-epic WOR-123       # when all sub-tickets are Done: security + coverage + UI tests,
+/close-epic WOR-123       # when all sub-tickets are MergedToEpic: security + coverage + UI tests,
                           # create epic → main PR (human review required)
+                          # Linear: epic → EpicReadyForCloudReview → MainPRReady → Done
 ```
+
+### Hybrid lifecycle states
+
+Linear workflow states for the hybrid execution model. The watcher daemon uses these as its action triggers:
+
+| State | Set by | Meaning |
+|-------|--------|---------|
+| `Backlog` | default | Not yet groomed or scoped |
+| `Todo` | epic kickoff | Queued in the active epic, not yet started |
+| `Groomed` | `/groom-ticket` | PO has reviewed scope and AC; ready for planning |
+| `ReadyForLocal` | `/start-ticket` | Execution manifest attached; watcher will pick up |
+| `InProgressLocal` | watcher | Local worker session is actively running |
+| `In Progress` | `/start-ticket` (cloud) | Cloud LLM is implementing directly (no local worker) |
+| `In Review` | `/finalize-ticket` | PR open, awaiting CI / human review |
+| `MergedToEpic` | watcher / CI | Sub-ticket PR merged to epic branch |
+| `EpicReadyForCloudReview` | `/close-epic` | All sub-tickets merged; epic PR open for cloud review |
+| `MainPRReady` | `/close-epic` | Epic → main PR is open awaiting human review |
+| `Done` | human merge | Merged to main |
+
+**`local-ready` label:** A tag on the ticket indicating it is safe for local LLM execution — bounded scope, no cloud-only dependencies, no sensitive credentials needed. The watcher checks for this label as a secondary signal alongside `ReadyForLocal` state. A ticket can carry `local-ready` before `/start-ticket` runs to pre-declare it as a local candidate.
+
+**Escalation:** If the local worker fails beyond the configured retry budget, the watcher moves the ticket back to `In Progress` (cloud) and attaches an escalation artifact. See `app/core/escalation_policy.py` for the rules.
 
 ### Branch topology
 
