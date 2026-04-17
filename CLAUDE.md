@@ -69,6 +69,9 @@ Module responsibilities:
 - `user_prefs.py` — `UserPreferences` model + `PrefsStore` (platform-aware JSON persistence)
 - `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract for hybrid execution
 - `escalation_policy.py` — `EscalationPolicy` Pydantic model: loads `config/escalation_policy.toml`, classifies result-artifact flags and Sonar findings into watcher actions
+- `linear_client.py` — thin Linear GraphQL client (stdlib `urllib` only, no third-party HTTP deps); requires `LINEAR_API_KEY` env var
+- `metrics.py` — SQLite-backed store for per-ticket cost and execution metrics; watcher is sole writer, workers emit JSON result files only
+- `watcher.py` — orchestrator daemon: polls Linear for `ReadyForLocal` tickets, manages git worktrees, launches worker sessions, collects result artifacts, creates PRs, updates Linear state
 - `main.py` — PySide6 `QApplication` entry point
 
 Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.
