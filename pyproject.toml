@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
     "jinja2>=3.0",
+    "python-dotenv>=1.0",
 ]
 
 [project.scripts]
@@ -25,6 +26,12 @@ addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
+
+[tool.deptry]
+known_first_party = ["app"]
+
+[tool.deptry.package_module_name_map]
+"python-dotenv" = ["dotenv"]
 
 [tool.bandit]
 targets = ["app"]
