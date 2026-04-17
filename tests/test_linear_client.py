@@ -92,16 +92,18 @@ def test_get_open_blockers_filters_done_issues() -> None:
                 "relations": {
                     "nodes": [
                         {
+                            "type": "blocked_by",
                             "relatedIssue": {
                                 "identifier": "WOR-5",
                                 "state": {"type": "completed"},
-                            }
+                            },
                         },
                         {
+                            "type": "blocked_by",
                             "relatedIssue": {
                                 "identifier": "WOR-6",
                                 "state": {"type": "started"},
-                            }
+                            },
                         },
                     ]
                 }

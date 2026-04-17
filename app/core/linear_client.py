@@ -74,8 +74,9 @@ class LinearClient:
             """
             query GetBlockers($id: String!) {
               issue(id: $id) {
-                relations(filter: { type: { eq: "blocked_by" } }) {
+                relations {
                   nodes {
+                    type
                     relatedIssue {
                       identifier
                       state { type }
@@ -93,7 +94,8 @@ class LinearClient:
         return [
             node["relatedIssue"]["identifier"]
             for node in issue["relations"]["nodes"]
-            if node["relatedIssue"]["state"]["type"] not in _DONE_STATE_TYPES
+            if node["type"] == "blocked_by"
+            and node["relatedIssue"]["state"]["type"] not in _DONE_STATE_TYPES
         ]
 
     def set_state(self, issue_id: str, state_name: str) -> None:
