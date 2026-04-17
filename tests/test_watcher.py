@@ -1,0 +1,274 @@
+"""Tests for the watcher/orchestrator pure logic functions.
+
+Integration tests (actually launching subprocesses, Linear API) are out of scope;
+this file covers the unit-testable, I/O-free helpers.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.core.manifest import ArtifactPaths, ExecutionManifest
+from app.core.watcher import (
+    ActiveWorker,
+    Watcher,
+    build_worker_cmd,
+    build_worker_env,
+    check_allowed_paths_overlap,
+    is_watcher_running,
+    resolve_effective_mode,
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+def _make_manifest(**overrides: Any) -> ExecutionManifest:
+    defaults: dict[str, Any] = {
+        "ticket_id": "WOR-10",
+        "epic_id": "WOR-96",
+        "title": "Test ticket",
+        "priority": 2,
+        "status": "ReadyForLocal",
+        "parallel_safe": True,
+        "risk_level": "low",
+        "implementation_mode": "local",
+        "review_mode": "auto",
+        "base_branch": "wor-96-local-worker-engine",
+        "worker_branch": "wor-10-test-ticket",
+        "objective": "Do the thing.",
+        "artifact_paths": ArtifactPaths.from_ticket_id("WOR-10"),
+        "allowed_paths": ["app/core/foo.py"],
+    }
+    defaults.update(overrides)
+    return ExecutionManifest(**defaults)
+
+
+_SENTINEL: list[str] = ["app/core/bar.py"]
+
+
+def _make_active_worker(
+    ticket_id: str = "WOR-11", allowed_paths: list[str] | None = None
+) -> ActiveWorker:
+    paths = _SENTINEL if allowed_paths is None else allowed_paths
+    manifest = _make_manifest(
+        ticket_id=ticket_id,
+        worker_branch=f"wor-{ticket_id.lower().replace('-', '')}-branch",
+        artifact_paths=ArtifactPaths.from_ticket_id(ticket_id),
+        allowed_paths=paths,
+    )
+    return ActiveWorker(
+        ticket_id=ticket_id,
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=Path(f"/tmp/{ticket_id}"),
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+
+# ---------------------------------------------------------------------------
+# check_allowed_paths_overlap
+# ---------------------------------------------------------------------------
+
+
+def test_overlap_when_paths_share_entry() -> None:
+    active = [_make_active_worker("WOR-11", allowed_paths=["app/core/foo.py"])]
+    candidate = _make_manifest(allowed_paths=["app/core/foo.py"])
+    conflicts = check_allowed_paths_overlap(active, candidate)
+    assert conflicts == ["WOR-11"]
+
+
+def test_no_overlap_when_paths_are_disjoint() -> None:
+    active = [_make_active_worker("WOR-11", allowed_paths=["app/core/bar.py"])]
+    candidate = _make_manifest(allowed_paths=["app/core/foo.py"])
+    assert check_allowed_paths_overlap(active, candidate) == []
+
+
+def test_empty_candidate_paths_conflicts_with_all() -> None:
+    active = [_make_active_worker("WOR-11", allowed_paths=["app/core/bar.py"])]
+    candidate = _make_manifest(allowed_paths=[])
+    conflicts = check_allowed_paths_overlap(active, candidate)
+    assert conflicts == ["WOR-11"]
+
+
+def test_empty_active_paths_conflicts_with_candidate() -> None:
+    active = [_make_active_worker("WOR-11", allowed_paths=[])]
+    candidate = _make_manifest(allowed_paths=["app/core/foo.py"])
+    conflicts = check_allowed_paths_overlap(active, candidate)
+    assert conflicts == ["WOR-11"]
+
+
+def test_multiple_active_partial_overlap() -> None:
+    active = [
+        _make_active_worker("WOR-11", allowed_paths=["app/core/foo.py"]),
+        _make_active_worker("WOR-12", allowed_paths=["app/core/baz.py"]),
+    ]
+    candidate = _make_manifest(allowed_paths=["app/core/foo.py"])
+    conflicts = check_allowed_paths_overlap(active, candidate)
+    assert conflicts == ["WOR-11"]
+
+
+# ---------------------------------------------------------------------------
+# build_worker_env
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_mode_strips_base_url() -> None:
+    base = {
+        "ANTHROPIC_BASE_URL": "http://localhost:8082",
+        "PATH": "/usr/bin",
+        "HOME": "/root",
+    }
+    env = build_worker_env("cloud", base)
+    assert "ANTHROPIC_BASE_URL" not in env
+    assert env["PATH"] == "/usr/bin"
+
+
+def test_cloud_mode_strips_model_var() -> None:
+    base = {"ANTHROPIC_MODEL": "qwen3-coder:30b", "PATH": "/usr/bin"}
+    env = build_worker_env("cloud", base)
+    assert "ANTHROPIC_MODEL" not in env
+
+
+def test_local_mode_injects_base_url() -> None:
+    base = {"PATH": "/usr/bin"}
+    env = build_worker_env("local", base)
+    assert env["ANTHROPIC_BASE_URL"] == "http://localhost:8082"
+
+
+def test_default_mode_passes_env_unchanged() -> None:
+    base = {"ANTHROPIC_BASE_URL": "http://localhost:8082", "PATH": "/usr/bin"}
+    env = build_worker_env("default", base)
+    assert env == base
+
+
+def test_cloud_mode_does_not_inject_base_url_if_absent() -> None:
+    base = {"PATH": "/usr/bin"}
+    env = build_worker_env("cloud", base)
+    assert "ANTHROPIC_BASE_URL" not in env
+
+
+# ---------------------------------------------------------------------------
+# build_worker_cmd
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_cmd_has_no_model_flag() -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud")
+    assert "--model" not in cmd
+    assert "/implement-ticket WOR-10" in " ".join(cmd)
+
+
+def test_local_cmd_includes_model_flag() -> None:
+    cmd = build_worker_cmd("WOR-10", "local")
+    assert "--model" in cmd
+    idx = cmd.index("--model")
+    assert cmd[idx + 1] == "qwen3-coder:30b"
+
+
+def test_cmd_includes_dangerously_skip_permissions() -> None:
+    for mode in ("cloud", "local"):
+        cmd = build_worker_cmd("WOR-10", mode)
+        assert "--dangerously-skip-permissions" in cmd
+
+
+# ---------------------------------------------------------------------------
+# resolve_effective_mode
+# ---------------------------------------------------------------------------
+
+
+def test_worker_mode_overrides_manifest_local() -> None:
+    assert resolve_effective_mode("cloud", "local") == "cloud"
+
+
+def test_worker_mode_overrides_manifest_cloud() -> None:
+    assert resolve_effective_mode("local", "cloud") == "local"
+
+
+def test_default_defers_to_manifest() -> None:
+    assert resolve_effective_mode("default", "local") == "local"
+    assert resolve_effective_mode("default", "cloud") == "cloud"
+
+
+def test_default_hybrid_becomes_cloud() -> None:
+    assert resolve_effective_mode("default", "hybrid") == "cloud"
+
+
+# ---------------------------------------------------------------------------
+# is_watcher_running
+# ---------------------------------------------------------------------------
+
+
+def test_is_watcher_running_no_pid_file(tmp_path: Path) -> None:
+    pid_file = tmp_path / "watcher.pid"
+    assert not is_watcher_running(pid_file)
+
+
+def test_is_watcher_running_stale_pid(tmp_path: Path) -> None:
+    pid_file = tmp_path / "watcher.pid"
+    pid_file.write_text("9999999", encoding="utf-8")  # very unlikely to be real
+    # Should return False (process not running) or True on very unlucky collision;
+    # just verify no exception is raised
+    result = is_watcher_running(pid_file)
+    assert isinstance(result, bool)
+
+
+def test_is_watcher_running_own_pid(tmp_path: Path) -> None:
+    pid_file = tmp_path / "watcher.pid"
+    pid_file.write_text(str(os.getpid()), encoding="utf-8")
+    assert is_watcher_running(pid_file)
+
+
+# ---------------------------------------------------------------------------
+# Watcher._cleanup_orphaned_worktrees
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_orphaned_worktrees_removes_dirs(tmp_path: Path) -> None:
+    worktree_dir = tmp_path / ".claude/worktrees/wor-99-old-ticket"
+    worktree_dir.mkdir(parents=True)
+
+    mock_linear = MagicMock()
+    watcher = Watcher(
+        linear_client=mock_linear,
+        repo_root=tmp_path,
+    )
+
+    with patch.object(watcher, "_cleanup_worktree") as mock_cleanup:
+        watcher._cleanup_orphaned_worktrees()
+        mock_cleanup.assert_called_once_with(worktree_dir)
+
+
+def test_cleanup_orphaned_worktrees_skips_when_base_absent(tmp_path: Path) -> None:
+    mock_linear = MagicMock()
+    watcher = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+    # No exception — base dir simply doesn't exist
+    watcher._cleanup_orphaned_worktrees()
+
+
+# ---------------------------------------------------------------------------
+# Watcher PID file
+# ---------------------------------------------------------------------------
+
+
+def test_write_and_remove_pid_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid_file = tmp_path / ".claude/watcher.pid"
+    monkeypatch.setattr("app.core.watcher._PID_FILE", pid_file)
+
+    mock_linear = MagicMock()
+    watcher = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+    watcher._write_pid_file()
+    assert pid_file.exists()
+    assert pid_file.read_text(encoding="utf-8") == str(os.getpid())
+
+    watcher._remove_pid_file()
+    assert not pid_file.exists()

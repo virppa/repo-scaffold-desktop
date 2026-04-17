@@ -76,3 +76,16 @@ def test_preset_is_immutable():
     preset = get_preset("python_basic")
     with pytest.raises((AttributeError, TypeError)):
         preset.name = "modified"
+
+
+def test_full_agentic_has_skills_config():
+    preset = get_preset("full_agentic")
+    assert preset.skills_source == "github:virppa/repo-scaffold-skills"
+    assert preset.skills_version == "v1.0.0"
+
+
+def test_non_agentic_presets_have_no_skills_config():
+    for name in ("python_basic", "python_desktop"):
+        preset = get_preset(name)
+        assert preset.skills_source is None
+        assert preset.skills_version is None

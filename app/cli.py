@@ -1,15 +1,17 @@
 import argparse
+import os
 import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic import ValidationError
 
 from app.core.config import RepoConfig
 from app.core.generator import generate
 from app.core.metrics import MetricsStore
-from app.core.post_setup import run_git_init, run_precommit_install
-from app.core.presets import _PRESETS
+from app.core.post_setup import fetch_skills, run_git_init, run_precommit_install
+from app.core.presets import _PRESETS, get_preset
 from app.core.user_prefs import PrefsStore, UserPreferences
 
 _PREFS_KEYS = set(UserPreferences.model_fields)
@@ -77,7 +79,42 @@ def _build_parser() -> argparse.ArgumentParser:
     metrics_sub = metrics.add_subparsers(dest="metrics_cmd")
     metrics_sub.add_parser("browse", help="Open metrics DB in Datasette browser UI.")
 
+    watcher = sub.add_parser(
+        "watcher", help="Run the local worker orchestrator daemon."
+    )
+    watcher.add_argument(
+        "--worker-mode",
+        choices=["cloud", "local", "default"],
+        default=None,
+        help=(
+            "Override implementation_mode for all tickets. "
+            "cloud: route to Anthropic API (no ANTHROPIC_BASE_URL injected). "
+            "local: route to LiteLLM proxy with qwen3-coder:30b. "
+            "default: respect each manifest's implementation_mode. "
+            "Also reads WORKER_MODE env var (flag takes precedence)."
+        ),
+    )
+    watcher.add_argument(
+        "--max-workers",
+        type=int,
+        default=1,
+        help="Maximum number of concurrent worker sessions (default: 1).",
+    )
+
     return parser
+
+
+def _run_watcher(args: argparse.Namespace) -> int:
+    from app.core.watcher import Watcher
+
+    mode = args.worker_mode or os.environ.get("WORKER_MODE", "default")
+    watcher = Watcher(worker_mode=mode, max_workers=args.max_workers)
+    try:
+        watcher.run()
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def _run_metrics(args: argparse.Namespace) -> int:
@@ -138,6 +175,7 @@ def _run_config(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_dotenv()
     # Ensure the terminal can emit UTF-8 (e.g. ✓); no-op on StringIO (pytest capsys).
     if hasattr(sys.stdout, "reconfigure"):
         try:
@@ -157,6 +195,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "metrics":
         return _run_metrics(args)
+
+    if args.command == "watcher":
+        return _run_watcher(args)
 
     try:
         config = RepoConfig(
@@ -183,6 +224,16 @@ def main(argv: list[str] | None = None) -> int:
 
     for path in written:
         print(f"✓ {path}")
+
+    preset = get_preset(config.preset)
+    if preset.skills_source is not None and preset.skills_version is not None:
+        skills_written = fetch_skills(
+            args.output,
+            skills_source=preset.skills_source,
+            skills_version=preset.skills_version,
+        )
+        for path in skills_written:
+            print(f"✓ {path}")
 
     try:
         if config.git_init:
