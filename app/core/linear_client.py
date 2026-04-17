@@ -112,6 +112,19 @@ class LinearClient:
             {"issueId": issue_id, "stateId": state_id},
         )
 
+    def post_comment(self, issue_id: str, body: str) -> None:
+        """Post a comment on *issue_id*."""
+        self._query(
+            """
+            mutation CreateComment($issueId: String!, $body: String!) {
+              commentCreate(input: { issueId: $issueId, body: $body }) {
+                success
+              }
+            }
+            """,
+            {"issueId": issue_id, "body": body},
+        )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
