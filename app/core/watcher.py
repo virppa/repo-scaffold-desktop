@@ -333,6 +333,33 @@ class Watcher:
                 "set_state failed for %s (state=%s): %s", ticket_id, state, exc
             )
 
+    def _attempt_pr(
+        self,
+        manifest: ExecutionManifest,
+        worker: ActiveWorker,
+        ticket_id: str,
+        linear_id: str,
+    ) -> Outcome:
+        try:
+            pr_url = self._create_pr(manifest, worker.worktree_path)
+        except subprocess.CalledProcessError as exc:
+            err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
+            logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
+            self._safe_set_state(linear_id, manifest.ticket_state_map.failed, ticket_id)
+            try:
+                body = f"PR creation failed for `{ticket_id}`:\n```\n{err_detail}\n```"
+                self._linear.post_comment(linear_id, body)
+            except Exception:
+                logger.warning(
+                    "Could not post failure comment to Linear for %s", ticket_id
+                )
+            return "failure"
+        logger.info("PR created for %s: %s", ticket_id, pr_url)
+        self._safe_set_state(
+            linear_id, manifest.ticket_state_map.merged_to_epic, ticket_id
+        )
+        return "success"
+
     def _finalize_worker(
         self, worker: ActiveWorker, *, returncode: int, wall_time: float
     ) -> None:
@@ -358,31 +385,7 @@ class Watcher:
                     linear_id, manifest.ticket_state_map.failed, ticket_id
                 )
             else:
-                try:
-                    pr_url = self._create_pr(manifest, worker.worktree_path)
-                except subprocess.CalledProcessError as exc:
-                    err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
-                    logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
-                    outcome = "failure"
-                    self._safe_set_state(
-                        linear_id, manifest.ticket_state_map.failed, ticket_id
-                    )
-                    try:
-                        body = (
-                            f"PR creation failed for `{ticket_id}`:"
-                            f"\n```\n{err_detail}\n```"
-                        )
-                        self._linear.post_comment(linear_id, body)
-                    except Exception:
-                        logger.warning(
-                            "Could not post failure comment to Linear for %s", ticket_id
-                        )
-                else:
-                    outcome = "success"
-                    logger.info("PR created for %s: %s", ticket_id, pr_url)
-                    self._safe_set_state(
-                        linear_id, manifest.ticket_state_map.merged_to_epic, ticket_id
-                    )
+                outcome = self._attempt_pr(manifest, worker, ticket_id, linear_id)
 
         eff = resolve_effective_mode(self._mode, manifest.implementation_mode)
         self._metrics.record(
