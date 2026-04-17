@@ -1,6 +1,90 @@
 {
-  "permissions": {
-    "allow": [],
-    "deny": []
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "CMD=\"$CLAUDE_TOOL_INPUT_COMMAND\"; if echo \"$CMD\" | grep -qE '(rm\\s+-[^\\s]*r|git\\s+push\\s+--force|git\\s+reset\\s+--hard|git\\s+checkout\\s+--|git\\s+clean\\s+-f)'; then echo \"Blocked: dangerous command detected: $CMD\" >&2; exit 1; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if echo \"$FILE\" | grep -qE '(\\.env|\\.mcp\\.json|\\.claude/settings)'; then echo \"Blocked: writes to sensitive file not allowed: $FILE\" >&2; exit 1; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import json,sys,re; d=json.load(sys.stdin); f=d.get('tool_input',{}).get('file_path',''); t=d.get('tool_name',''); skip = not re.search(r'\\.(md|toml|yaml|yml|json)$',f) or 'tests/' in f or f.endswith('.py'); c=(d.get('tool_input',{}).get('content','') if t=='Write' else d.get('tool_input',{}).get('new_string','')); sys.exit(1) if not skip and re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}',c) and print(f'Blocked: email detected in {f}',file=sys.stderr) is None else sys.exit(0)\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pre-commit run --all-files"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]]; then ruff check --fix \"$FILE\" && ruff format \"$FILE\"; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v bandit >/dev/null 2>&1; then bandit -q \"$FILE\" 2>/dev/null || echo \"[bandit] Issues found — run /security-check\"; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v lint-imports >/dev/null 2>&1; then lint-imports 2>/dev/null || echo \"[import-linter] Architecture contract violation — run lint-imports for details\"; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v mypy >/dev/null 2>&1; then mypy --config-file pyproject.toml \"$FILE\" 2>/dev/null || echo \"[mypy] Type errors found — run mypy app/ for details\"; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */app/* || \"$FILE\" == */tests/* ]]; then pytest --tb=short -q; fi"
+          }
+        ]
+      }
+    ]
   }
 }
