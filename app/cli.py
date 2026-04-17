@@ -1,4 +1,6 @@
 import argparse
+import os
+import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
@@ -6,6 +8,7 @@ from pydantic import ValidationError
 
 from app.core.config import RepoConfig
 from app.core.generator import generate
+from app.core.metrics import MetricsStore
 from app.core.post_setup import run_git_init, run_precommit_install
 from app.core.presets import _PRESETS
 from app.core.user_prefs import PrefsStore, UserPreferences
@@ -71,7 +74,70 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run pre-commit install in the output directory.",
     )
 
+    metrics = sub.add_parser("metrics", help="Metrics DB commands.")
+    metrics_sub = metrics.add_subparsers(dest="metrics_cmd")
+    metrics_sub.add_parser("browse", help="Open metrics DB in Datasette browser UI.")
+
+    watcher = sub.add_parser(
+        "watcher", help="Run the local worker orchestrator daemon."
+    )
+    watcher.add_argument(
+        "--worker-mode",
+        choices=["cloud", "local", "default"],
+        default=None,
+        help=(
+            "Override implementation_mode for all tickets. "
+            "cloud: route to Anthropic API (no ANTHROPIC_BASE_URL injected). "
+            "local: route to LiteLLM proxy with qwen3-coder:30b. "
+            "default: respect each manifest's implementation_mode. "
+            "Also reads WORKER_MODE env var (flag takes precedence)."
+        ),
+    )
+    watcher.add_argument(
+        "--max-workers",
+        type=int,
+        default=1,
+        help="Maximum number of concurrent worker sessions (default: 1).",
+    )
+
     return parser
+
+
+def _run_watcher(args: argparse.Namespace) -> int:
+    from app.core.watcher import Watcher
+
+    mode = args.worker_mode or os.environ.get("WORKER_MODE", "default")
+    watcher = Watcher(worker_mode=mode, max_workers=args.max_workers)
+    try:
+        watcher.run()
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _run_metrics(args: argparse.Namespace) -> int:
+    if args.metrics_cmd == "browse":
+        db_path = MetricsStore.get_db_path()
+        if not db_path.exists():
+            print(
+                f"Error: metrics DB not found at {db_path}. "
+                "Run the watcher at least once to create it.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            subprocess.run(["datasette", str(db_path)], check=False)  # nosec B603 B607
+        except FileNotFoundError:
+            print(
+                "Error: datasette not installed. Run: pip install datasette",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+
+    print("Usage: scaffold metrics {browse}", file=sys.stderr)
+    return 1
 
 
 def _run_config(args: argparse.Namespace) -> int:
@@ -124,6 +190,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "config":
         return _run_config(args)
+
+    if args.command == "metrics":
+        return _run_metrics(args)
+
+    if args.command == "watcher":
+        return _run_watcher(args)
 
     try:
         config = RepoConfig(
