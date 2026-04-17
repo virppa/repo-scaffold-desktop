@@ -22,6 +22,8 @@ class Preset:
     required_files: tuple[str, ...]
     # Keys must match RepoConfig boolean toggle field names
     optional_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    skills_source: str | None = None
+    skills_version: str | None = None
 
 
 _PRESETS: dict[str, Preset] = {
@@ -83,6 +85,8 @@ _PRESETS: dict[str, Preset] = {
             "Python project with Claude Code agentic workflow"
             " (Linear MCP, hooks, slash commands)."
         ),
+        skills_source="github:virppa/repo-scaffold-skills",
+        skills_version="v1.0.0",
         required_files=(
             _F_PYPROJECT,
             _F_README,

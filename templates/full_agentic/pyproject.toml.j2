@@ -8,7 +8,7 @@ authors = [{name = "{{ author_name }}", email = "{{ author_email }}"}]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff"]
+dev = ["pytest", "pytest-cov", "ruff", "bandit", "mypy", "lint-imports"]
 
 [tool.ruff]
 line-length = 88

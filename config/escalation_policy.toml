@@ -1,0 +1,33 @@
+# Escalation policy for the local worker engine.
+# The watcher loads this at startup to decide when to escalate a local session
+# to cloud LLM vs. retrying locally. Edit rules here — no code changes needed.
+
+[retry]
+# Stop retrying and escalate after this many consecutive check failures with no progress.
+max_consecutive_failures = 3
+
+[auto_escalate]
+# Result artifact flags that immediately trigger cloud escalation.
+# Each value maps to a boolean field in the worker result JSON.
+scope_drift = "escalate"
+forbidden_path_touched = "escalate"
+import_linter_violation = "escalate"
+security_blocker = "escalate"
+
+[human_escalate]
+# Conditions that require a human or cloud decision (watcher pauses and posts a
+# Linear comment). These are detected from the result artifact or check output.
+architecture_change = "human"
+schema_migration = "human"
+cross_module_refactor = "human"
+auth_payments_touched = "human"
+
+[sonar]
+# Maps SonarLint/SonarCloud finding severity → action taken by the watcher.
+# fix_locally — local worker retries with the finding in context
+# escalate    — watcher stops local session and re-queues for cloud
+blocker = "escalate"
+critical = "escalate"
+major = "fix_locally"
+minor = "fix_locally"
+info = "fix_locally"

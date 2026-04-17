@@ -22,6 +22,16 @@ python -m app.cli config get
 python -m app.cli config set author-name "Your Name"
 python -m app.cli config set github-username "your-username"
 
+# CLI — watcher (local worker orchestrator daemon)
+python -m app.cli watcher                        # respects each manifest's implementation_mode
+python -m app.cli watcher --worker-mode cloud    # force cloud (Anthropic API) for all tickets
+python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy + RTX 5090)
+# Also: WORKER_MODE=cloud python -m app.cli watcher
+
+
+# CLI — metrics
+python -m app.cli metrics browse   # open metrics DB in Datasette browser UI
+
 # Lint and format
 ruff check .
 ruff format .
@@ -58,6 +68,7 @@ Module responsibilities:
 - `post_setup.py` — side effects: `git init`, `pre-commit install`, etc.
 - `user_prefs.py` — `UserPreferences` model + `PrefsStore` (platform-aware JSON persistence)
 - `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract for hybrid execution
+- `escalation_policy.py` — `EscalationPolicy` Pydantic model: loads `config/escalation_policy.toml`, classifies result-artifact flags and Sonar findings into watcher actions
 - `main.py` — PySide6 `QApplication` entry point
 
 Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.
@@ -98,22 +109,53 @@ Each ticket follows these phases. Use the corresponding slash command to enter e
 
 ```
 /groom-ticket WOR-123     # PO review: scope, acceptance criteria, splitting
+                          # Linear: Backlog → Groomed
                           # ↓ human approves — Linear updated only after this
 
 /start-ticket WOR-123     # PO + Architect: restate req, plan files/tests, create branch
                           # auto-creates epic branch if needed; shows parallel-safe siblings
+                          # Linear: Groomed → ReadyForLocal (with execution manifest attached)
                           # ↓ human approves plan before any code is written
 
-[Claude implements]       # hooks fire automatically: ruff, bandit, pytest
+[watcher picks up ticket] # watcher polls for ReadyForLocal, creates worktree, launches local worker
+                          # Linear: ReadyForLocal → InProgressLocal
+
+/implement-ticket WOR-123 # local worker entrypoint: reads manifest, implements within allowed_paths,
+                          # runs required_checks, writes result artifact
+                          # hooks fire automatically: ruff, mypy, bandit, pytest, lint-imports
 
 /security-check           # bandit scan + OWASP diff review → PASS / WARNINGS / FAIL
 
-/finalize-ticket          # coverage check, docs update, PR creation, Linear → In Review
-                          # PR targets epic branch (auto-merge) or main (human review)
+/finalize-ticket          # coverage check, docs update, PR creation
+                          # PR targets epic branch (auto-merges when CI passes)
+                          # Linear: InProgressLocal → MergedToEpic
 
-/close-epic WOR-123       # when all sub-tickets are Done: security + coverage + UI tests,
+/close-epic WOR-123       # when all sub-tickets are MergedToEpic: security + coverage + UI tests,
                           # create epic → main PR (human review required)
+                          # Linear: epic → EpicReadyForCloudReview → MainPRReady → Done
 ```
+
+### Hybrid lifecycle states
+
+Linear workflow states for the hybrid execution model. The watcher daemon uses these as its action triggers:
+
+| State | Set by | Meaning |
+|-------|--------|---------|
+| `Backlog` | default | Not yet groomed or scoped |
+| `Todo` | epic kickoff | Queued in the active epic, not yet started |
+| `Groomed` | `/groom-ticket` | PO has reviewed scope and AC; ready for planning |
+| `ReadyForLocal` | `/start-ticket` | Execution manifest attached; watcher will pick up |
+| `InProgressLocal` | watcher | Local worker session is actively running |
+| `In Progress` | `/start-ticket` (cloud) | Cloud LLM is implementing directly (no local worker) |
+| `In Review` | `/finalize-ticket` | PR open, awaiting CI / human review |
+| `MergedToEpic` | watcher / CI | Sub-ticket PR merged to epic branch |
+| `EpicReadyForCloudReview` | `/close-epic` | All sub-tickets merged; epic PR open for cloud review |
+| `MainPRReady` | `/close-epic` | Epic → main PR is open awaiting human review |
+| `Done` | human merge | Merged to main |
+
+**`local-ready` label:** A tag on the ticket indicating it is safe for local LLM execution — bounded scope, no cloud-only dependencies, no sensitive credentials needed. The watcher checks for this label as a secondary signal alongside `ReadyForLocal` state. A ticket can carry `local-ready` before `/start-ticket` runs to pre-declare it as a local candidate.
+
+**Escalation:** If the local worker fails beyond the configured retry budget, the watcher moves the ticket back to `In Progress` (cloud) and attaches an escalation artifact. See `app/core/escalation_policy.py` for the rules.
 
 ### Branch topology
 
@@ -201,6 +243,23 @@ Only interact with the **repo-scaffold-desktop** project in Linear unless explic
 ## Testing
 
 Test core logic only. Priority: config validation, preset selection, file generation, option toggles, overwrite behavior. Skip UI tests unless the UI contains meaningful logic.
+
+---
+
+## Escalation policy
+
+The watcher reads `config/escalation_policy.toml` at startup to decide when to stop a local worker session and escalate to cloud LLM. Rules are data-driven — no hardcoded logic in the watcher.
+
+**Location:** `config/escalation_policy.toml`
+**Model:** `app/core/escalation_policy.py` — `EscalationPolicy.from_toml()`
+
+Key sections:
+- `[retry]` — `max_consecutive_failures`: how many consecutive check failures before escalating
+- `[auto_escalate]` — flags in the result artifact that trigger automatic cloud escalation (e.g. `scope_drift`, `forbidden_path_touched`)
+- `[human_escalate]` — conditions requiring a human/cloud decision (watcher posts a Linear comment and pauses)
+- `[sonar]` — maps SonarLint/SonarCloud severity → action: `blocker`/`critical` → `escalate`; `major`/`minor`/`info` → `fix_locally`
+
+To change escalation rules, edit `config/escalation_policy.toml` and commit — no code changes required.
 
 ---
 
