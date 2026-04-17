@@ -19,11 +19,11 @@ The `full_agentic` preset template (`templates/full_agentic/.claude/settings.jso
 
 No hooks are included. A scaffolded `full_agentic` repo gets no quality-gate automation.
 
-Additionally, `bandit`, `mypy`, and `lint-imports` are not in the scaffolded `requirements-dev.txt` template, so even if hooks were copied, they would fail for those tools.
+Additionally, `bandit`, `mypy`, and `lint-imports` are absent from the scaffolded `pyproject.toml.j2` dev dependencies (`[project.optional-dependencies] dev` only includes `pytest`, `pytest-cov`, `ruff`), so even if hooks were copied, they would fail for those tools.
 
 ### Skills (slash commands)
 
-Six `.claude/commands/*.md` files exist in this repo: `groom-ticket`, `start-ticket`, `implement-ticket`, `security-check`, `finalize-ticket`, `close-epic`. No template equivalents exist — scaffolded repos receive no slash commands.
+Seven `.claude/commands/*.md` files exist in this repo: `groom-ticket`, `start-ticket`, `implement-ticket`, `security-check`, `finalize-ticket`, `close-epic`, `prioritize`. No template equivalents exist — scaffolded repos receive no slash commands.
 
 **WOR-82 covers this gap** via a `repo-scaffold-skills` standalone repo model: scaffolded repos will reference the skills repo rather than copying command files. This avoids frozen copies that drift. WOR-82 is Todo but scoped correctly.
 
@@ -42,4 +42,4 @@ Six `.claude/commands/*.md` files exist in this repo: `groom-ticket`, `start-tic
 - **Skills**: No action needed beyond WOR-82 (reference-repo model is the right approach).
 - **Hooks**: New sub-ticket needed. The `settings.json.j2` template must be populated with the quality-gate hooks, and the scaffolded `requirements-dev.txt` must include `bandit`, `mypy`, and `lint-imports`. Hooks are project tooling (not methodology), so direct inclusion in the template is appropriate — unlike skills, they don't drift in the same way.
 
-Follow-up: **WOR-102** — Populate `full_agentic` `settings.json.j2` with quality-gate hooks.
+Follow-up: **WOR-103** — Populate `full_agentic` `settings.json.j2` with quality-gate hooks.
