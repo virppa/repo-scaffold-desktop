@@ -2,6 +2,19 @@ Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop
 
 Work through these phases in order:
 
+### Watcher status check
+Check whether the watcher daemon is running by reading `.claude/watcher.pid`:
+```bash
+cat .claude/watcher.pid 2>/dev/null && echo "Watcher: running (PID $(cat .claude/watcher.pid))" || echo "Watcher: not running"
+```
+If not running, print this advisory (do not block or prompt):
+```
+Watcher: not running
+  Start with: python -m app.cli watcher                          # respects each manifest's implementation_mode
+  Start with: python -m app.cli watcher --worker-mode cloud      # force cloud for all tickets
+  Start with: python -m app.cli watcher --worker-mode local      # force local (RTX 5090 required)
+```
+
 ### 0. Clean up local branches
 Run the following to prune stale remote-tracking refs and delete any local branches that have been merged or whose remote is gone:
 ```bash

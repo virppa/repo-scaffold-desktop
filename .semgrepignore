@@ -1,0 +1,2 @@
+# URL is a hardcoded constant (https://api.linear.app/graphql) — not user-controlled.
+app/core/linear_client.py
