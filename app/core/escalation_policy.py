@@ -16,6 +16,14 @@ from pydantic import BaseModel, field_validator
 Action = Literal["escalate", "fix_locally", "human"]
 
 _VALID_SONAR_SEVERITIES = frozenset({"blocker", "critical", "major", "minor", "info"})
+_VALID_HUMAN_TRIGGERS = frozenset(
+    {
+        "architecture_change",
+        "schema_migration",
+        "cross_module_refactor",
+        "auth_payments_touched",
+    }
+)
 _VALID_ACTIONS: frozenset[str] = frozenset({"escalate", "fix_locally", "human"})
 
 DEFAULT_POLICY_PATH = (
@@ -100,6 +108,20 @@ class EscalationPolicy(BaseModel):
         if security_blocker:
             return self.auto_escalate.security_blocker
         return "fix_locally"
+
+    def classify_human_trigger(self, trigger: str) -> Action:
+        """Return the action for a human-escalation trigger name.
+
+        Raises ValueError for unrecognised trigger names so that unknown
+        triggers fail loudly rather than being silently ignored.
+        """
+        trigger = trigger.lower()
+        if trigger not in _VALID_HUMAN_TRIGGERS:
+            raise ValueError(
+                f"Unknown human trigger {trigger!r}. "
+                f"Valid values: {sorted(_VALID_HUMAN_TRIGGERS)}"
+            )
+        return getattr(self.human_escalate, trigger)
 
     def classify_sonar_finding(self, severity: str) -> Action:
         """Return the action for a SonarLint/SonarCloud finding severity.
