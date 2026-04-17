@@ -61,6 +61,39 @@ def test_all_toggles_enabled(output_dir):
     assert (output_dir / ".mcp.json").exists()
 
 
+def test_invalid_repo_name_exits(output_dir, capsys):
+    rc = main(
+        [
+            "generate",
+            "--preset",
+            "python_basic",
+            "--repo-name",
+            "",
+            "--output",
+            str(output_dir),
+        ]
+    )
+    assert rc == 1
+    assert "Error" in capsys.readouterr().err
+
+
+def test_generate_error_exits(output_dir, capsys):
+    with patch("app.cli.generate", side_effect=ValueError("unknown preset")):
+        rc = main(
+            [
+                "generate",
+                "--preset",
+                "python_basic",
+                "--repo-name",
+                "myrepo",
+                "--output",
+                str(output_dir),
+            ]
+        )
+    assert rc == 1
+    assert "unknown preset" in capsys.readouterr().err
+
+
 def test_missing_repo_name_exits(output_dir, capsys):
     with pytest.raises(SystemExit) as exc_info:
         main(
@@ -187,6 +220,29 @@ def test_config_set_output_dir(tmp_path, capsys):
 def test_config_no_subcommand_exits(capsys):
     rc = main(["config"])
     assert rc == 1
+
+
+def test_full_agentic_preset_calls_fetch_skills(output_dir):
+    with patch(
+        "app.cli.fetch_skills", return_value=[".claude/commands/groom-ticket.md"]
+    ) as mock_fetch:
+        rc = main(
+            [
+                "generate",
+                "--preset",
+                "full_agentic",
+                "--repo-name",
+                "myrepo",
+                "--output",
+                str(output_dir),
+            ]
+        )
+    assert rc == 0
+    mock_fetch.assert_called_once_with(
+        output_dir,
+        skills_source="github:virppa/repo-scaffold-skills",
+        skills_version="v1.0.0",
+    )
 
 
 def test_post_setup_error_exits_nonzero(output_dir, capsys):

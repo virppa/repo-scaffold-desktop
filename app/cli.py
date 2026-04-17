@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from app.core.config import RepoConfig
 from app.core.generator import generate
 from app.core.metrics import MetricsStore
-from app.core.post_setup import run_git_init, run_precommit_install
+from app.core.post_setup import fetch_skills, run_git_init, run_precommit_install
 from app.core.presets import _PRESETS
 from app.core.user_prefs import PrefsStore, UserPreferences
 
@@ -222,6 +222,15 @@ def main(argv: list[str] | None = None) -> int:
 
     for path in written:
         print(f"✓ {path}")
+
+    if config.preset == "full_agentic":
+        skills_written = fetch_skills(
+            args.output,
+            skills_source="github:virppa/repo-scaffold-skills",
+            skills_version="v1.0.0",
+        )
+        for path in skills_written:
+            print(f"✓ {path}")
 
     try:
         if config.git_init:
