@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Protocol
 
+from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import ImplementationMode, MetricsStore, Outcome, TicketMetrics
 
@@ -287,7 +288,9 @@ class Watcher:
         )
         worktree_path = self._create_worktree(manifest)
 
-        self._linear.set_state(linear_id, manifest.ticket_state_map.in_progress_local)
+        self._safe_set_state(
+            linear_id, manifest.ticket_state_map.in_progress_local, ticket_id
+        )
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
 
         process = self._launch_worker(manifest, worktree_path, effective_mode)
@@ -322,6 +325,14 @@ class Watcher:
             self._finalize_worker(worker, returncode=rc, wall_time=elapsed)
         self._active = still_running
 
+    def _safe_set_state(self, linear_id: str, state: str, ticket_id: str) -> None:
+        try:
+            self._linear.set_state(linear_id, state)
+        except LinearError as exc:
+            logger.warning(
+                "set_state failed for %s (state=%s): %s", ticket_id, state, exc
+            )
+
     def _finalize_worker(
         self, worker: ActiveWorker, *, returncode: int, wall_time: float
     ) -> None:
@@ -338,12 +349,14 @@ class Watcher:
             if manifest.failure_policy.escalate_to_cloud:
                 logger.info("Escalating %s to cloud per failure policy", ticket_id)
                 escalated = True
-            self._linear.set_state(linear_id, manifest.ticket_state_map.failed)
+            self._safe_set_state(linear_id, manifest.ticket_state_map.failed, ticket_id)
         else:
             checks_ok = self._run_checks(manifest, worker.worktree_path)
             if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
                 outcome = "failure"
-                self._linear.set_state(linear_id, manifest.ticket_state_map.failed)
+                self._safe_set_state(
+                    linear_id, manifest.ticket_state_map.failed, ticket_id
+                )
             else:
                 try:
                     pr_url = self._create_pr(manifest, worker.worktree_path)
@@ -351,7 +364,9 @@ class Watcher:
                     err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
                     logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
                     outcome = "failure"
-                    self._linear.set_state(linear_id, manifest.ticket_state_map.failed)
+                    self._safe_set_state(
+                        linear_id, manifest.ticket_state_map.failed, ticket_id
+                    )
                     try:
                         body = (
                             f"PR creation failed for `{ticket_id}`:"
@@ -365,8 +380,8 @@ class Watcher:
                 else:
                     outcome = "success"
                     logger.info("PR created for %s: %s", ticket_id, pr_url)
-                    self._linear.set_state(
-                        linear_id, manifest.ticket_state_map.merged_to_epic
+                    self._safe_set_state(
+                        linear_id, manifest.ticket_state_map.merged_to_epic, ticket_id
                     )
 
         eff = resolve_effective_mode(self._mode, manifest.implementation_mode)
