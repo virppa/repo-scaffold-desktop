@@ -294,6 +294,7 @@ class Watcher:
             self._mode, manifest.implementation_mode
         )
         worktree_path = self._create_worktree(manifest)
+        self._copy_manifest_to_worktree(manifest, worktree_path)
 
         self._safe_set_state(
             linear_id, manifest.ticket_state_map.in_progress_local, ticket_id
@@ -447,6 +448,14 @@ class Watcher:
         )
         logger.info("Worktree created at %s", worktree_path)
         return worktree_path
+
+    def _copy_manifest_to_worktree(
+        self, manifest: ExecutionManifest, worktree_path: Path
+    ) -> None:
+        src = self._repo_root / manifest.artifact_paths.manifest_copy
+        dest = worktree_path / manifest.artifact_paths.manifest_copy
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
 
     def _preserve_worker_log(self, worker: ActiveWorker) -> None:
         log_src = (
