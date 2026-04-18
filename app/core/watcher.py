@@ -145,6 +145,8 @@ def build_worker_cmd(ticket_id: str, mode: str) -> list[str]:
         '{"mcpServers":{}}',
         "--effort",
         "max",
+        "--output-format",
+        "stream-json",
     ]
     if mode == "local":
         return base + ["--model", _LOCAL_MODEL, "-p", prompt]
