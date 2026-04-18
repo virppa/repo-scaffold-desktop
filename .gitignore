@@ -53,3 +53,7 @@ litellm-local.yaml
 
 # Local LiteLLM config
 litellm-local.yaml
+
+# Claude Code watcher logs
+.claude/*.log
+.claude/*.pid
