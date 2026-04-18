@@ -188,6 +188,39 @@ def test_cmd_bare_mode_uses_worktree_path(tmp_path: Path) -> None:
     assert cmd[idx + 1] == str(tmp_path)
 
 
+def test_cmd_disallowed_tools_appended(tmp_path: Path) -> None:
+    tools = ["Read(*watcher.py)", "Read(*metrics.py)"]
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path, disallowed_tools=tools)
+    assert "--disallowed-tools" in cmd
+    idx = cmd.index("--disallowed-tools")
+    assert cmd[idx + 1] == "Read(*watcher.py),Read(*metrics.py)"
+
+
+def test_cmd_no_disallowed_tools_when_none(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path, disallowed_tools=None)
+    assert "--disallowed-tools" not in cmd
+
+
+def test_build_snippet_tool_restrictions_extracts_basenames() -> None:
+    from app.core.watcher import Watcher
+
+    snippets = [
+        "# app/core/watcher.py lines 574-589\nsome code",
+        "# app/core/metrics.py lines 1-20\nmore code",
+        "# app/core/watcher.py lines 600-620\nduplicate file",
+    ]
+    patterns = Watcher._build_snippet_tool_restrictions(snippets)
+    assert patterns == ["Read(*watcher.py)", "Read(*metrics.py)"]
+
+
+def test_build_snippet_tool_restrictions_ignores_malformed() -> None:
+    from app.core.watcher import Watcher
+
+    snippets = ["no header here", "# missing path\ncode"]
+    patterns = Watcher._build_snippet_tool_restrictions(snippets)
+    assert patterns == []
+
+
 # ---------------------------------------------------------------------------
 # resolve_effective_mode
 # ---------------------------------------------------------------------------
