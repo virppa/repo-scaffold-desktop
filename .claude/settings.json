@@ -81,7 +81,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */app/* || \"$FILE\" == */tests/* ]]; then pytest --tb=short -q; fi"
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */app/* || \"$FILE\" == */tests/* ]]; then pytest --no-cov --tb=short -q; fi"
           }
         ]
       }
