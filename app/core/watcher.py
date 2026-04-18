@@ -113,7 +113,9 @@ def build_worker_env(
 
     cloud   — strips ANTHROPIC_BASE_URL and related vars so the process routes
               to the real Anthropic API.
-    local   — injects ANTHROPIC_BASE_URL pointing to the LiteLLM proxy.
+    local   — injects ANTHROPIC_BASE_URL pointing to the LiteLLM proxy and sets
+              ANTHROPIC_API_KEY=sk-dummy if not already present (LiteLLM doesn't
+              validate the key; this satisfies Claude Code's auth check).
     default — passes base_env unchanged.
     """
     env = dict(base_env)
@@ -122,6 +124,7 @@ def build_worker_env(
             env.pop(var, None)
     elif mode == "local":
         env["ANTHROPIC_BASE_URL"] = _LITELLM_BASE_URL
+        env.setdefault("ANTHROPIC_API_KEY", "sk-dummy")
     return env
 
 

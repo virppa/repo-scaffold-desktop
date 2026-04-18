@@ -12,9 +12,16 @@ cat .claude/watcher.pid 2>/dev/null && echo "Watcher: running (PID $(cat .claude
 If not running, print this advisory (do not block):
 ```
 Watcher: not running
-  Start with: python -m app.cli watcher
-  Start with: python -m app.cli watcher --worker-mode cloud
-  Start with: python -m app.cli watcher --worker-mode local
+
+  Cloud mode (Anthropic API):
+    python -m app.cli watcher --worker-mode cloud
+
+  Local mode (RTX 5090 + Ollama — pre-warm GPU first):
+    ollama run qwen3-coder:30b ""      # loads model into VRAM; exit immediately after
+    python -m app.cli watcher --worker-mode local
+
+  Auto mode (uses each manifest's implementation_mode):
+    python -m app.cli watcher
 ```
 
 ---
