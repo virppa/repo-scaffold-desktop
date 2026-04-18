@@ -361,9 +361,7 @@ class Watcher:
                 )
             return "failure"
         logger.info("PR created for %s: %s", ticket_id, pr_url)
-        self._safe_set_state(
-            linear_id, manifest.ticket_state_map.merged_to_epic, ticket_id
-        )
+        self._safe_set_state(linear_id, manifest.ticket_state_map.in_review, ticket_id)
         return "success"
 
     def _finalize_worker(
@@ -581,7 +579,15 @@ class Watcher:
             text=True,
             check=True,
         )
-        return result.stdout.strip()
+        pr_url = result.stdout.strip()
+        subprocess.run(  # nosec B603 B607
+            ["gh", "pr", "merge", "--auto", "--squash", pr_url],
+            cwd=str(worktree_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return pr_url
 
     # ------------------------------------------------------------------
     # LiteLLM proxy
