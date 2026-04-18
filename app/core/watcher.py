@@ -145,6 +145,7 @@ def build_worker_cmd(ticket_id: str, mode: str) -> list[str]:
         '{"mcpServers":{}}',
         "--effort",
         "max",
+        "--verbose",
         "--output-format",
         "stream-json",
     ]
