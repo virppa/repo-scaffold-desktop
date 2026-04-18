@@ -132,15 +132,13 @@ def build_worker_env(
 def build_worker_cmd(ticket_id: str, mode: str) -> list[str]:
     """Return the claude subprocess command list for the given mode."""
     prompt = f"/implement-ticket {ticket_id}"
-    # --bare: skips CLAUDE.md, auto-memory, hooks, LSP, and background
-    # prefetches — saves ~10-15K tokens of system-prompt overhead. Auth still
-    # works via ANTHROPIC_API_KEY env var. Skills still resolve (/implement-ticket).
     # --strict-mcp-config + empty config prevents Claude Code from loading
     # .mcp.json in the worktree, which would block for ~180s trying to
     # authenticate the Linear HTTP MCP server via OAuth in non-interactive mode.
+    # Note: --bare is intentionally omitted — it strips .claude/commands/ loading,
+    # making /implement-ticket an unknown command.
     base = [
         "claude",
-        "--bare",
         "--dangerously-skip-permissions",
         "--strict-mcp-config",
         "--mcp-config",
