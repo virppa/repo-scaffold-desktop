@@ -132,16 +132,13 @@ def build_worker_env(
 def build_worker_cmd(ticket_id: str, mode: str) -> list[str]:
     """Return the claude subprocess command list for the given mode."""
     prompt = f"/implement-ticket {ticket_id}"
-    # --bare skips CLAUDE.md, auto-memory, hooks, LSP — saves ~5-10K context tokens.
-    # --add-dir . re-enables .claude/commands/ discovery so /implement-ticket resolves.
     # --strict-mcp-config + empty config prevents Claude Code from loading
     # .mcp.json in the worktree, which would block for ~180s trying to
     # authenticate the Linear HTTP MCP server via OAuth in non-interactive mode.
+    # Note: --bare breaks .claude/commands/ even with --add-dir .
+    # Context savings require --system-prompt-file approach (WOR-119).
     base = [
         "claude",
-        "--bare",
-        "--add-dir",
-        ".",
         "--dangerously-skip-permissions",
         "--strict-mcp-config",
         "--mcp-config",
