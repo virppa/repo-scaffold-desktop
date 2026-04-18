@@ -77,6 +77,8 @@ class ActiveWorker:
     worktree_path: Path
     process: subprocess.Popen[bytes]
     start_time: float = field(default_factory=time.monotonic)
+    backed_up_plans: list[Path] = field(default_factory=list)
+    retry_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +393,8 @@ class Watcher:
             self._safe_set_state(linear_id, manifest.ticket_state_map.failed, ticket_id)
         else:
             checks_ok = self._run_checks(manifest, worker.worktree_path)
+            if not checks_ok:
+                worker.retry_count += 1
             if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
                 outcome = "failure"
                 self._safe_set_state(
@@ -412,6 +416,7 @@ class Watcher:
                 local_wall_time=wall_time,
                 escalated_to_cloud=escalated,
                 outcome=outcome,
+                retry_count=worker.retry_count,
             )
         )
 
