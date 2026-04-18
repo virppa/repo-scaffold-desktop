@@ -612,6 +612,7 @@ class Watcher:
         logger.info(
             "Starting LiteLLM proxy (port %d)… (log: %s)", _LITELLM_PORT, log_path
         )
+        env = {**os.environ, "PYTHONUTF8": "1"}
         self._litellm_proc = subprocess.Popen(  # nosec B603 B607
             [
                 "litellm",
@@ -623,6 +624,7 @@ class Watcher:
             ],
             stdout=log_file,
             stderr=log_file,
+            env=env,
         )
         self._wait_for_litellm_ready()
 
