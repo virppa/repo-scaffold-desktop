@@ -29,16 +29,6 @@
         ]
       }
     ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "pre-commit run --all-files"
-          }
-        ]
-      }
-    ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write",
@@ -54,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v bandit >/dev/null 2>&1; then bandit -q \"$FILE\" 2>/dev/null || echo \"[bandit] Issues found — run /security-check\"; fi"
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v bandit >/dev/null 2>&1; then bandit -q \"$FILE\" 2>/dev/null || echo \"[bandit] Issues found \u00e2\u20ac\u201d run /security-check\"; fi"
           }
         ]
       },
@@ -63,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v lint-imports >/dev/null 2>&1; then lint-imports 2>/dev/null || echo \"[import-linter] Architecture contract violation — run lint-imports for details\"; fi"
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v lint-imports >/dev/null 2>&1; then lint-imports 2>/dev/null || echo \"[import-linter] Architecture contract violation \u00e2\u20ac\u201d run lint-imports for details\"; fi"
           }
         ]
       },
