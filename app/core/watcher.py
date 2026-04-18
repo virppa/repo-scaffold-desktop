@@ -606,7 +606,12 @@ class Watcher:
                 "and configure it."
             )
 
-        logger.info("Starting LiteLLM proxy (port %d)…", _LITELLM_PORT)
+        log_path = self._repo_root / ".claude" / "litellm.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, "wb")  # noqa: SIM115
+        logger.info(
+            "Starting LiteLLM proxy (port %d)… (log: %s)", _LITELLM_PORT, log_path
+        )
         self._litellm_proc = subprocess.Popen(  # nosec B603 B607
             [
                 "litellm",
@@ -616,23 +621,32 @@ class Watcher:
                 str(_LITELLM_PORT),
                 "--drop_params",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
         )
         self._wait_for_litellm_ready()
 
-    def _wait_for_litellm_ready(self, timeout: float = 30.0) -> None:
-        """Poll TCP until LiteLLM's port accepts connections."""
+    def _wait_for_litellm_ready(self, timeout: float = 60.0) -> None:
+        """Poll TCP until LiteLLM's port accepts connections or process dies."""
         import socket
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if self._litellm_proc and self._litellm_proc.poll() is not None:
+                rc = self._litellm_proc.returncode
+                raise RuntimeError(
+                    f"LiteLLM proxy exited (rc={rc}). "
+                    f"Check .claude/litellm.log for details."
+                )
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(2)
                 if sock.connect_ex(("localhost", _LITELLM_PORT)) == 0:
                     return
             time.sleep(0.5)
-        raise TimeoutError(f"LiteLLM proxy not ready after {timeout}s")
+        raise TimeoutError(
+            f"LiteLLM proxy not ready after {timeout}s. "
+            f"Check .claude/litellm.log for details."
+        )
 
     # ------------------------------------------------------------------
     # Graceful shutdown
