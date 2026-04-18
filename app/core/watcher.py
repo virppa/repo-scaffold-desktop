@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import shutil
 import signal
 import subprocess  # nosec B404
 import sys
@@ -407,6 +408,7 @@ class Watcher:
             )
         )
 
+        self._preserve_worker_log(worker)
         self._cleanup_worktree(worker.worktree_path)
 
     # ------------------------------------------------------------------
@@ -445,6 +447,20 @@ class Watcher:
         )
         logger.info("Worktree created at %s", worktree_path)
         return worktree_path
+
+    def _preserve_worker_log(self, worker: ActiveWorker) -> None:
+        log_src = (
+            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
+        )
+        if not log_src.exists():
+            return
+        artifact_dir = (
+            self._repo_root / worker.manifest.artifact_paths.result_json
+        ).parent
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        dest = artifact_dir / log_src.name
+        shutil.copy2(log_src, dest)
+        logger.info("Worker log preserved at %s", dest)
 
     def _cleanup_worktree(self, worktree_path: Path) -> None:
         try:
@@ -560,6 +576,27 @@ class Watcher:
             capture_output=True,
             text=True,
         )
+        ahead = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "log",
+                f"origin/{manifest.base_branch}..{manifest.worker_branch}",
+                "--oneline",
+            ],
+            cwd=str(worktree_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if not ahead.stdout.strip():
+            raise subprocess.CalledProcessError(
+                1,
+                "git log",
+                stderr=(
+                    f"No commits on {manifest.worker_branch} ahead of "
+                    f"{manifest.base_branch} — worker did not commit any changes"
+                ),
+            )
         result = subprocess.run(  # nosec B603 B607
             [
                 "gh",
