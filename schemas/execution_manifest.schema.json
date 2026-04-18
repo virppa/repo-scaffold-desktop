@@ -58,6 +58,11 @@
           "title": "In Progress Local",
           "type": "string"
         },
+        "in_review": {
+          "default": "In Review",
+          "title": "In Review",
+          "type": "string"
+        },
         "merged_to_epic": {
           "default": "MergedToEpic",
           "title": "Merged To Epic",

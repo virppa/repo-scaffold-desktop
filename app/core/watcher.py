@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import shutil
 import signal
 import subprocess  # nosec B404
 import sys
@@ -131,16 +132,19 @@ def build_worker_env(
 def build_worker_cmd(ticket_id: str, mode: str) -> list[str]:
     """Return the claude subprocess command list for the given mode."""
     prompt = f"/implement-ticket {ticket_id}"
+    # --strict-mcp-config + empty config prevents Claude Code from loading
+    # .mcp.json in the worktree, which would block for ~180s trying to
+    # authenticate the Linear HTTP MCP server via OAuth in non-interactive mode.
+    base = [
+        "claude",
+        "--dangerously-skip-permissions",
+        "--strict-mcp-config",
+        "--mcp-config",
+        '{"mcpServers":{}}',
+    ]
     if mode == "local":
-        return [
-            "claude",
-            "--dangerously-skip-permissions",
-            "--model",
-            _LOCAL_MODEL,
-            "-p",
-            prompt,
-        ]
-    return ["claude", "--dangerously-skip-permissions", "-p", prompt]
+        return base + ["--model", _LOCAL_MODEL, "-p", prompt]
+    return base + ["-p", prompt]
 
 
 def resolve_effective_mode(worker_mode: str, manifest_mode: str) -> str:
@@ -358,9 +362,7 @@ class Watcher:
                 )
             return "failure"
         logger.info("PR created for %s: %s", ticket_id, pr_url)
-        self._safe_set_state(
-            linear_id, manifest.ticket_state_map.merged_to_epic, ticket_id
-        )
+        self._safe_set_state(linear_id, manifest.ticket_state_map.in_review, ticket_id)
         return "success"
 
     def _finalize_worker(
@@ -406,6 +408,7 @@ class Watcher:
             )
         )
 
+        self._preserve_worker_log(worker)
         self._cleanup_worktree(worker.worktree_path)
 
     # ------------------------------------------------------------------
@@ -444,6 +447,20 @@ class Watcher:
         )
         logger.info("Worktree created at %s", worktree_path)
         return worktree_path
+
+    def _preserve_worker_log(self, worker: ActiveWorker) -> None:
+        log_src = (
+            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
+        )
+        if not log_src.exists():
+            return
+        artifact_dir = (
+            self._repo_root / worker.manifest.artifact_paths.result_json
+        ).parent
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        dest = artifact_dir / log_src.name
+        shutil.copy2(log_src, dest)
+        logger.info("Worker log preserved at %s", dest)
 
     def _cleanup_worktree(self, worktree_path: Path) -> None:
         try:
@@ -559,6 +576,27 @@ class Watcher:
             capture_output=True,
             text=True,
         )
+        ahead = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "log",
+                f"origin/{manifest.base_branch}..{manifest.worker_branch}",
+                "--oneline",
+            ],
+            cwd=str(worktree_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if not ahead.stdout.strip():
+            raise subprocess.CalledProcessError(
+                1,
+                "git log",
+                stderr=(
+                    f"No commits on {manifest.worker_branch} ahead of "
+                    f"{manifest.base_branch} — worker did not commit any changes"
+                ),
+            )
         result = subprocess.run(  # nosec B603 B607
             [
                 "gh",
@@ -578,7 +616,15 @@ class Watcher:
             text=True,
             check=True,
         )
-        return result.stdout.strip()
+        pr_url = result.stdout.strip()
+        subprocess.run(  # nosec B603 B607
+            ["gh", "pr", "merge", "--auto", "--squash", pr_url],
+            cwd=str(worktree_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return pr_url
 
     # ------------------------------------------------------------------
     # LiteLLM proxy
@@ -603,7 +649,13 @@ class Watcher:
                 "and configure it."
             )
 
-        logger.info("Starting LiteLLM proxy (port %d)…", _LITELLM_PORT)
+        log_path = self._repo_root / ".claude" / "litellm.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_file = open(log_path, "wb")  # noqa: SIM115
+        logger.info(
+            "Starting LiteLLM proxy (port %d)… (log: %s)", _LITELLM_PORT, log_path
+        )
+        env = {**os.environ, "PYTHONUTF8": "1"}
         self._litellm_proc = subprocess.Popen(  # nosec B603 B607
             [
                 "litellm",
@@ -613,11 +665,33 @@ class Watcher:
                 str(_LITELLM_PORT),
                 "--drop_params",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=log_file,
+            env=env,
         )
-        # Give the proxy a moment to bind
-        time.sleep(3)
+        self._wait_for_litellm_ready()
+
+    def _wait_for_litellm_ready(self, timeout: float = 60.0) -> None:
+        """Poll TCP until LiteLLM's port accepts connections or process dies."""
+        import socket
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if self._litellm_proc and self._litellm_proc.poll() is not None:
+                rc = self._litellm_proc.returncode
+                raise RuntimeError(
+                    f"LiteLLM proxy exited (rc={rc}). "
+                    f"Check .claude/litellm.log for details."
+                )
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(2)
+                if sock.connect_ex(("localhost", _LITELLM_PORT)) == 0:
+                    return
+            time.sleep(0.5)
+        raise TimeoutError(
+            f"LiteLLM proxy not ready after {timeout}s. "
+            f"Check .claude/litellm.log for details."
+        )
 
     # ------------------------------------------------------------------
     # Graceful shutdown

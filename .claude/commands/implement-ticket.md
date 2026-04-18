@@ -65,6 +65,19 @@ If any required check fails:
 
 Run each command in `optional_checks` for information only — failures do not block.
 
+### 4.5. Commit changes
+
+After all required checks pass, stage and commit everything:
+
+```bash
+git add -A
+git commit -m "Part of <ticket_id>: <one-line summary of what was implemented>"
+```
+
+If there is nothing to commit (no changes made), write a failed result artifact with `failure_reason: "No changes were made — nothing to commit"` and stop.
+
+If the commit is rejected by a pre-commit hook, fix the issue and retry the commit once. If it still fails, write a failed result artifact with the hook output as `failure_reason`.
+
 ### 5. Write the result artifact
 
 Write a JSON result file to `artifact_paths.result_json`. Create parent dirs as needed.
