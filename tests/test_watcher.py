@@ -490,6 +490,7 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
         patch.object(w, "_create_worktree", return_value=tmp_path),
+        patch.object(w, "_copy_manifest_to_worktree"),
         patch.object(w, "_launch_worker", return_value=fake_process),
     ):
         # set_state raises — worker must still be launched and added to _active
