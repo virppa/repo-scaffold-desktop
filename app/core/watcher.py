@@ -131,7 +131,11 @@ def build_worker_env(
 
 
 def build_worker_cmd(
-    ticket_id: str, mode: str, worktree_path: Path, prompt: str | None = None
+    ticket_id: str,
+    mode: str,
+    worktree_path: Path,
+    prompt: str | None = None,
+    disallowed_tools: list[str] | None = None,
 ) -> list[str]:
     """Return the claude subprocess command list for the given mode.
 
@@ -139,6 +143,9 @@ def build_worker_cmd(
     slash-command shortcut (requires commands to be loaded by Claude Code).
     In --bare mode the shortcut is unavailable, so callers should pass the
     expanded implement-ticket.md content with $ARGUMENTS substituted.
+
+    disallowed_tools — list of tool-call patterns passed to --disallowed-tools
+    (e.g. ["Read(*watcher.py)", "Read(*metrics.py)"]) to enforce context_snippets.
     """
     if prompt is None:
         prompt = f"/implement-ticket {ticket_id}"
@@ -161,6 +168,8 @@ def build_worker_cmd(
         "--output-format",
         "stream-json",
     ]
+    if disallowed_tools:
+        base += ["--disallowed-tools", ",".join(disallowed_tools)]
     if mode == "local":
         return base + ["--model", _LOCAL_MODEL, "-p", prompt]
     return base + ["-p", prompt]
@@ -588,6 +597,30 @@ class Watcher:
             logger.warning("Could not read skill file %s; using shortcut", skill_path)
             return None
 
+    @staticmethod
+    def _build_snippet_tool_restrictions(snippets: list[str]) -> list[str]:
+        """Return --disallowed-tools patterns derived from context_snippets headers.
+
+        Each snippet starts with a comment line like:
+            # app/core/watcher.py lines 574-589
+        We extract the basename and return glob patterns that block Read on those
+        files regardless of the absolute path the worker uses.
+        """
+        import re
+
+        seen: set[str] = set()
+        patterns: list[str] = []
+        header_re = re.compile(r"^#\s+(\S+)\s+lines?\s+\d")
+        for snippet in snippets:
+            first_line = snippet.splitlines()[0] if snippet else ""
+            m = header_re.match(first_line)
+            if m:
+                basename = Path(m.group(1)).name
+                if basename not in seen:
+                    seen.add(basename)
+                    patterns.append(f"Read(*{basename})")
+        return patterns
+
     def _launch_worker(
         self,
         manifest: ExecutionManifest,
@@ -595,8 +628,28 @@ class Watcher:
         effective_mode: str,
     ) -> subprocess.Popen[bytes]:
         prompt = self._expand_skill(manifest.ticket_id)
+
+        disallowed_tools: list[str] | None = None
+        if manifest.context_snippets:
+            disallowed_tools = self._build_snippet_tool_restrictions(
+                manifest.context_snippets
+            )
+            if disallowed_tools and prompt:
+                file_list = ", ".join(
+                    p.removeprefix("Read(*").removesuffix(")") for p in disallowed_tools
+                )
+                warning = (
+                    f"CRITICAL: The following files are pre-loaded as context_snippets "
+                    f"in the manifest: {file_list}. "
+                    f"DO NOT use the Read tool on these files — "
+                    f"the tool is blocked and attempting to read them will "
+                    f"abort the task. "
+                    f"Use only the snippets already provided.\n\n"
+                )
+                prompt = warning + (prompt or "")
+
         cmd = build_worker_cmd(
-            manifest.ticket_id, effective_mode, worktree_path, prompt
+            manifest.ticket_id, effective_mode, worktree_path, prompt, disallowed_tools
         )
         env = build_worker_env(effective_mode, dict(os.environ))
 
