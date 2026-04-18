@@ -41,7 +41,7 @@ _LITELLM_PORT = 8082
 _LITELLM_CONFIG = "litellm-local.yaml"
 _LOCAL_MODEL = "qwen3-coder:30b"
 _LITELLM_BASE_URL = f"http://localhost:{_LITELLM_PORT}"
-_WORKTREE_BASE = Path(".claude/worktrees")
+_WORKTREE_BASE = Path("worktrees")
 
 _ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(
     {
@@ -439,7 +439,7 @@ class Watcher:
         worktree_name = manifest.worktree_name or manifest.worker_branch
         if ".." in Path(worktree_name).parts:
             raise ValueError(f"Invalid worktree name: {worktree_name!r}")
-        worktree_path = self._repo_root / _WORKTREE_BASE / worktree_name
+        worktree_path = self._repo_root.parent / _WORKTREE_BASE / worktree_name
         subprocess.run(  # nosec B603 B607
             [
                 "git",
@@ -512,7 +512,7 @@ class Watcher:
 
     def _cleanup_orphaned_worktrees(self) -> None:
         """Remove any leftover watcher-managed worktrees from a prior run."""
-        base = self._repo_root / _WORKTREE_BASE
+        base = self._repo_root.parent / _WORKTREE_BASE
         if not base.exists():
             return
         for worktree_dir in base.iterdir():

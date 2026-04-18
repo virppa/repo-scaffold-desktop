@@ -234,7 +234,7 @@ def test_is_watcher_running_own_pid(tmp_path: Path) -> None:
 
 
 def test_cleanup_orphaned_worktrees_removes_dirs(tmp_path: Path) -> None:
-    worktree_dir = tmp_path / ".claude/worktrees/wor-99-old-ticket"
+    worktree_dir = tmp_path.parent / "worktrees/wor-99-old-ticket"
     worktree_dir.mkdir(parents=True)
 
     mock_linear = MagicMock()
