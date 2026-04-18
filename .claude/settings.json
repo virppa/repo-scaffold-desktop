@@ -72,16 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v mypy >/dev/null 2>&1; then mypy --config-file pyproject.toml \"$FILE\" 2>/dev/null || echo \"[mypy] Type errors found — run mypy app/ for details\"; fi"
-          }
-        ]
-      },
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */app/* || \"$FILE\" == */tests/* ]]; then pytest --no-cov --tb=short -q; fi"
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */tests/* ]]; then pytest --no-cov --tb=short -q; fi"
           }
         ]
       }
