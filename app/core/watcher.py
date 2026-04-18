@@ -220,6 +220,7 @@ class Watcher:
         self._verbose = verbose
         self._worker_counter = 0
         self._worker_counter_lock = threading.Lock()
+        self._retry_counters: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -295,6 +296,7 @@ class Watcher:
         )
         worktree_path = self._create_worktree(manifest)
         self._copy_manifest_to_worktree(manifest, worktree_path)
+        self._write_worker_pytest_config(worktree_path)
 
         self._safe_set_state(
             linear_id, manifest.ticket_state_map.in_progress_local, ticket_id
@@ -456,6 +458,15 @@ class Watcher:
         dest = worktree_path / manifest.artifact_paths.manifest_copy
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
+
+    def _write_worker_pytest_config(self, worktree_path: Path) -> None:
+        """Write pytest.ini overriding pyproject.toml addopts in the worktree.
+
+        pytest.ini takes precedence over pyproject.toml, so this strips
+        --cov-fail-under from every pytest call the worker makes. Coverage
+        is still enforced by CI on the PR.
+        """
+        (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
 
     def _preserve_worker_log(self, worker: ActiveWorker) -> None:
         log_src = (
