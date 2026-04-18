@@ -166,6 +166,11 @@ class ExecutionManifest(BaseModel):
     related_files_hint: list[str] = Field(default_factory=list)
     """Files likely relevant to this ticket (informational, not a whitelist)."""
 
+    context_snippets: list[str] | None = None
+    """Pre-injected code snippets from the cloud producer. Each entry is a
+    verbatim excerpt (file path + lines) the worker should treat as already-read.
+    Reduces full-file reads and saves context window for implementation."""
+
     # ------------------------------------------------------------------
     # Checks
     # ------------------------------------------------------------------

@@ -19,6 +19,13 @@ ABORT: Unsupported manifest_version '<version>'. This worker supports 1.0 only.
 Confirm the following fields are present before continuing:
 - `ticket_id`, `worker_branch`, `base_branch`, `objective`, `artifact_paths`
 
+### 0.5. Load context snippets (if present)
+
+If `manifest.context_snippets` is non-null and non-empty, treat each entry as
+a pre-loaded code excerpt — do NOT re-read these sections from disk unless you
+need context beyond what is shown. The snippets are verbatim source with file
+path and line numbers in the header comment.
+
 ### 1. Verify branch
 
 Confirm the current git branch matches `worker_branch` from the manifest:
