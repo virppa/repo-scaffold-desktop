@@ -131,16 +131,19 @@ def build_worker_env(
 def build_worker_cmd(ticket_id: str, mode: str) -> list[str]:
     """Return the claude subprocess command list for the given mode."""
     prompt = f"/implement-ticket {ticket_id}"
+    # --strict-mcp-config + empty config prevents Claude Code from loading
+    # .mcp.json in the worktree, which would block for ~180s trying to
+    # authenticate the Linear HTTP MCP server via OAuth in non-interactive mode.
+    base = [
+        "claude",
+        "--dangerously-skip-permissions",
+        "--strict-mcp-config",
+        "--mcp-config",
+        '{"mcpServers":{}}',
+    ]
     if mode == "local":
-        return [
-            "claude",
-            "--dangerously-skip-permissions",
-            "--model",
-            _LOCAL_MODEL,
-            "-p",
-            prompt,
-        ]
-    return ["claude", "--dangerously-skip-permissions", "-p", prompt]
+        return base + ["--model", _LOCAL_MODEL, "-p", prompt]
+    return base + ["-p", prompt]
 
 
 def resolve_effective_mode(worker_mode: str, manifest_mode: str) -> str:
@@ -616,8 +619,20 @@ class Watcher:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        # Give the proxy a moment to bind
-        time.sleep(3)
+        self._wait_for_litellm_ready()
+
+    def _wait_for_litellm_ready(self, timeout: float = 30.0) -> None:
+        """Poll TCP until LiteLLM's port accepts connections."""
+        import socket
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(2)
+                if sock.connect_ex(("localhost", _LITELLM_PORT)) == 0:
+                    return
+            time.sleep(0.5)
+        raise TimeoutError(f"LiteLLM proxy not ready after {timeout}s")
 
     # ------------------------------------------------------------------
     # Graceful shutdown
