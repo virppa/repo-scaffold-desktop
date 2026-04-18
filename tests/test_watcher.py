@@ -425,6 +425,87 @@ def test_finalize_worker_pr_failure_marks_blocked(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# retry_count wiring in _finalize_worker
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_retry_count_zero_on_success(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    call_kwargs = metrics_mock.record.call_args[0][0]
+    assert call_kwargs.retry_count == 0
+
+
+def test_finalize_worker_retry_count_increments_on_check_failure(
+    tmp_path: Path,
+) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+
+    # Simulate two check-failure cycles by calling _finalize_worker twice with
+    # the same worker (increments retry_count each time checks fail).
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=False),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics"),
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    assert worker.retry_count == 2
+
+
+def test_finalize_worker_retry_count_two_failures_then_success(
+    tmp_path: Path,
+) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    # Two failures then success
+    check_results = [False, False, True]
+    with (
+        patch.object(w, "_run_checks", side_effect=check_results),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    call_kwargs = metrics_mock.record.call_args[0][0]
+    assert call_kwargs.retry_count == 2
+
+
+# ---------------------------------------------------------------------------
 # _safe_set_state — daemon survives LinearError at all set_state sites
 # ---------------------------------------------------------------------------
 
