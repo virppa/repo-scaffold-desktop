@@ -630,7 +630,7 @@ class Watcher:
         prompt = self._expand_skill(manifest.ticket_id)
 
         disallowed_tools: list[str] | None = None
-        if manifest.context_snippets:
+        if manifest.context_snippets and effective_mode == "cloud":
             disallowed_tools = self._build_snippet_tool_restrictions(
                 manifest.context_snippets
             )
