@@ -217,6 +217,21 @@
       "title": "Related Files Hint",
       "type": "array"
     },
+    "context_snippets": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Context Snippets"
+    },
     "required_checks": {
       "items": {
         "type": "string"

@@ -162,23 +162,30 @@ def test_cloud_mode_does_not_inject_base_url_if_absent() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cloud_cmd_has_no_model_flag() -> None:
-    cmd = build_worker_cmd("WOR-10", "cloud")
+def test_cloud_cmd_has_no_model_flag(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path)
     assert "--model" not in cmd
     assert "/implement-ticket WOR-10" in " ".join(cmd)
 
 
-def test_local_cmd_includes_model_flag() -> None:
-    cmd = build_worker_cmd("WOR-10", "local")
+def test_local_cmd_includes_model_flag(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "local", tmp_path)
     assert "--model" in cmd
     idx = cmd.index("--model")
     assert cmd[idx + 1] == "qwen3-coder:30b"
 
 
-def test_cmd_includes_dangerously_skip_permissions() -> None:
+def test_cmd_includes_dangerously_skip_permissions(tmp_path: Path) -> None:
     for mode in ("cloud", "local"):
-        cmd = build_worker_cmd("WOR-10", mode)
+        cmd = build_worker_cmd("WOR-10", mode, tmp_path)
         assert "--dangerously-skip-permissions" in cmd
+
+
+def test_cmd_bare_mode_uses_worktree_path(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "local", tmp_path)
+    assert "--bare" in cmd
+    idx = cmd.index("--add-dir")
+    assert cmd[idx + 1] == str(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +241,7 @@ def test_is_watcher_running_own_pid(tmp_path: Path) -> None:
 
 
 def test_cleanup_orphaned_worktrees_removes_dirs(tmp_path: Path) -> None:
-    worktree_dir = tmp_path / ".claude/worktrees/wor-99-old-ticket"
+    worktree_dir = tmp_path.parent / "worktrees/wor-99-old-ticket"
     worktree_dir.mkdir(parents=True)
 
     mock_linear = MagicMock()

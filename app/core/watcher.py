@@ -41,7 +41,7 @@ _LITELLM_PORT = 8082
 _LITELLM_CONFIG = "litellm-local.yaml"
 _LOCAL_MODEL = "qwen3-coder:30b"
 _LITELLM_BASE_URL = f"http://localhost:{_LITELLM_PORT}"
-_WORKTREE_BASE = Path(".claude/worktrees")
+_WORKTREE_BASE = Path("worktrees")
 
 _ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(
     {
@@ -77,6 +77,7 @@ class ActiveWorker:
     worktree_path: Path
     process: subprocess.Popen[bytes]
     start_time: float = field(default_factory=time.monotonic)
+    backed_up_plans: list[Path] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -129,22 +130,36 @@ def build_worker_env(
     return env
 
 
-def build_worker_cmd(ticket_id: str, mode: str) -> list[str]:
-    """Return the claude subprocess command list for the given mode."""
-    prompt = f"/implement-ticket {ticket_id}"
-    # --strict-mcp-config + empty config prevents Claude Code from loading
-    # .mcp.json in the worktree, which would block for ~180s trying to
-    # authenticate the Linear HTTP MCP server via OAuth in non-interactive mode.
-    # Note: --bare breaks .claude/commands/ even with --add-dir .
-    # Context savings require --system-prompt-file approach (WOR-119).
+def build_worker_cmd(
+    ticket_id: str, mode: str, worktree_path: Path, prompt: str | None = None
+) -> list[str]:
+    """Return the claude subprocess command list for the given mode.
+
+    prompt — pre-expanded skill content; defaults to the /implement-ticket
+    slash-command shortcut (requires commands to be loaded by Claude Code).
+    In --bare mode the shortcut is unavailable, so callers should pass the
+    expanded implement-ticket.md content with $ARGUMENTS substituted.
+    """
+    if prompt is None:
+        prompt = f"/implement-ticket {ticket_id}"
+    # --bare strips auto-memory, hooks, and CLAUDE.md auto-discovery, keeping
+    # the system prompt lean. --add-dir re-adds the worktree CLAUDE.md.
+    # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
+    # from blocking ~180s on OAuth in non-interactive mode.
     base = [
         "claude",
         "--dangerously-skip-permissions",
+        "--bare",
+        "--add-dir",
+        str(worktree_path),
         "--strict-mcp-config",
         "--mcp-config",
         '{"mcpServers":{}}',
         "--effort",
         "max",
+        "--verbose",
+        "--output-format",
+        "stream-json",
     ]
     if mode == "local":
         return base + ["--model", _LOCAL_MODEL, "-p", prompt]
@@ -307,6 +322,7 @@ class Watcher:
         )
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
 
+        backed_up_plans = self._backup_plan_files()
         process = self._launch_worker(manifest, worktree_path, effective_mode)
         self._active.append(
             ActiveWorker(
@@ -315,6 +331,7 @@ class Watcher:
                 manifest=manifest,
                 worktree_path=worktree_path,
                 process=process,
+                backed_up_plans=backed_up_plans,
             )
         )
 
@@ -415,6 +432,7 @@ class Watcher:
             )
         )
 
+        self._restore_plan_files(worker.backed_up_plans)
         self._preserve_worker_log(worker)
         self._cleanup_worktree(worker.worktree_path)
 
@@ -437,7 +455,7 @@ class Watcher:
         worktree_name = manifest.worktree_name or manifest.worker_branch
         if ".." in Path(worktree_name).parts:
             raise ValueError(f"Invalid worktree name: {worktree_name!r}")
-        worktree_path = self._repo_root / _WORKTREE_BASE / worktree_name
+        worktree_path = self._repo_root.parent / _WORKTREE_BASE / worktree_name
         subprocess.run(  # nosec B603 B607
             [
                 "git",
@@ -462,6 +480,38 @@ class Watcher:
         dest = worktree_path / manifest.artifact_paths.manifest_copy
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
+
+    def _backup_plan_files(self) -> list[Path]:
+        """Move ~/.claude/plans/*.md aside so the worker doesn't enter plan mode.
+
+        Claude Code enters plan mode whenever it finds a plan file in the plans
+        directory at startup. Workers must never enter plan mode — they run
+        non-interactively and ExitPlanMode would silently terminate the session.
+        Returns the list of backup paths so the caller can restore them later.
+        """
+        plans_dir = Path.home() / ".claude" / "plans"
+        if not plans_dir.exists():
+            return []
+        backup_dir = plans_dir.parent / "plans_worker_backup"
+        backup_dir.mkdir(exist_ok=True)
+        moved: list[Path] = []
+        for plan_file in plans_dir.glob("*.md"):
+            dest = backup_dir / plan_file.name
+            shutil.move(str(plan_file), dest)
+            moved.append(dest)
+        if moved:
+            logger.debug("Backed up %d plan file(s) to %s", len(moved), backup_dir)
+        return moved
+
+    def _restore_plan_files(self, backed_up: list[Path]) -> None:
+        """Restore plan files moved by _backup_plan_files."""
+        if not backed_up:
+            return
+        plans_dir = Path.home() / ".claude" / "plans"
+        plans_dir.mkdir(exist_ok=True)
+        for plan_file in backed_up:
+            shutil.move(str(plan_file), plans_dir / plan_file.name)
+        logger.debug("Restored %d plan file(s)", len(backed_up))
 
     def _write_worker_pytest_config(self, worktree_path: Path) -> None:
         """Write pytest.ini overriding pyproject.toml addopts in the worktree.
@@ -510,7 +560,7 @@ class Watcher:
 
     def _cleanup_orphaned_worktrees(self) -> None:
         """Remove any leftover watcher-managed worktrees from a prior run."""
-        base = self._repo_root / _WORKTREE_BASE
+        base = self._repo_root.parent / _WORKTREE_BASE
         if not base.exists():
             return
         for worktree_dir in base.iterdir():
@@ -523,13 +573,31 @@ class Watcher:
     # Worker subprocess
     # ------------------------------------------------------------------
 
+    def _expand_skill(self, ticket_id: str) -> str | None:
+        """Return the implement-ticket skill content with $ARGUMENTS substituted.
+
+        Returns None if the skill file cannot be read (caller falls back to
+        the /implement-ticket shortcut).
+        """
+        skill_path = self._repo_root / ".claude" / "commands" / "implement-ticket.md"
+        try:
+            return skill_path.read_text(encoding="utf-8").replace(
+                "$ARGUMENTS", ticket_id
+            )
+        except OSError:
+            logger.warning("Could not read skill file %s; using shortcut", skill_path)
+            return None
+
     def _launch_worker(
         self,
         manifest: ExecutionManifest,
         worktree_path: Path,
         effective_mode: str,
     ) -> subprocess.Popen[bytes]:
-        cmd = build_worker_cmd(manifest.ticket_id, effective_mode)
+        prompt = self._expand_skill(manifest.ticket_id)
+        cmd = build_worker_cmd(
+            manifest.ticket_id, effective_mode, worktree_path, prompt
+        )
         env = build_worker_env(effective_mode, dict(os.environ))
 
         log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"
