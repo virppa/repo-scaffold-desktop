@@ -15,7 +15,7 @@ Watcher: not running
     python -m app.cli watcher --worker-mode cloud
 
   Local mode (RTX 5090 + Ollama — pre-warm GPU first):
-    ollama run qwen3-coder:30b ""      # loads model into VRAM; exit immediately after
+    ollama run --keepalive 0 qwen3-coder:30b ""      # loads model into VRAM indefinitely; exit immediately after
     python -m app.cli watcher --worker-mode local
 
   Auto mode (uses each manifest's implementation_mode):
