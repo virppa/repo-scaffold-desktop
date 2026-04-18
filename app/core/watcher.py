@@ -130,17 +130,22 @@ def build_worker_env(
     return env
 
 
-def build_worker_cmd(ticket_id: str, mode: str) -> list[str]:
+def build_worker_cmd(ticket_id: str, mode: str, worktree_path: Path) -> list[str]:
     """Return the claude subprocess command list for the given mode."""
     prompt = f"/implement-ticket {ticket_id}"
-    # --strict-mcp-config + empty config prevents Claude Code from loading
-    # .mcp.json in the worktree, which would block for ~180s trying to
-    # authenticate the Linear HTTP MCP server via OAuth in non-interactive mode.
-    # Note: --bare breaks .claude/commands/ even with --add-dir .
-    # Context savings require --system-prompt-file approach (WOR-119).
+    # --bare strips auto-memory, hooks, and CLAUDE.md auto-discovery, keeping
+    # the system prompt lean. --add-dir re-adds the worktree's CLAUDE.md.
+    # --plugin-dir loads the project's .claude/commands/ (implement-ticket skill).
+    # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
+    # from blocking ~180s on OAuth in non-interactive mode.
     base = [
         "claude",
         "--dangerously-skip-permissions",
+        "--bare",
+        "--add-dir",
+        str(worktree_path),
+        "--plugin-dir",
+        str(worktree_path / ".claude"),
         "--strict-mcp-config",
         "--mcp-config",
         '{"mcpServers":{}}',
@@ -568,7 +573,7 @@ class Watcher:
         worktree_path: Path,
         effective_mode: str,
     ) -> subprocess.Popen[bytes]:
-        cmd = build_worker_cmd(manifest.ticket_id, effective_mode)
+        cmd = build_worker_cmd(manifest.ticket_id, effective_mode, worktree_path)
         env = build_worker_env(effective_mode, dict(os.environ))
 
         log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"
