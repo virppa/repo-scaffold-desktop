@@ -130,12 +130,20 @@ def build_worker_env(
     return env
 
 
-def build_worker_cmd(ticket_id: str, mode: str, worktree_path: Path) -> list[str]:
-    """Return the claude subprocess command list for the given mode."""
-    prompt = f"/implement-ticket {ticket_id}"
+def build_worker_cmd(
+    ticket_id: str, mode: str, worktree_path: Path, prompt: str | None = None
+) -> list[str]:
+    """Return the claude subprocess command list for the given mode.
+
+    prompt — pre-expanded skill content; defaults to the /implement-ticket
+    slash-command shortcut (requires commands to be loaded by Claude Code).
+    In --bare mode the shortcut is unavailable, so callers should pass the
+    expanded implement-ticket.md content with $ARGUMENTS substituted.
+    """
+    if prompt is None:
+        prompt = f"/implement-ticket {ticket_id}"
     # --bare strips auto-memory, hooks, and CLAUDE.md auto-discovery, keeping
-    # the system prompt lean. --add-dir re-adds the worktree's CLAUDE.md.
-    # --plugin-dir loads the project's .claude/commands/ (implement-ticket skill).
+    # the system prompt lean. --add-dir re-adds the worktree CLAUDE.md.
     # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
     # from blocking ~180s on OAuth in non-interactive mode.
     base = [
@@ -144,8 +152,6 @@ def build_worker_cmd(ticket_id: str, mode: str, worktree_path: Path) -> list[str
         "--bare",
         "--add-dir",
         str(worktree_path),
-        "--plugin-dir",
-        str(worktree_path / ".claude"),
         "--strict-mcp-config",
         "--mcp-config",
         '{"mcpServers":{}}',
@@ -567,13 +573,31 @@ class Watcher:
     # Worker subprocess
     # ------------------------------------------------------------------
 
+    def _expand_skill(self, ticket_id: str) -> str | None:
+        """Return the implement-ticket skill content with $ARGUMENTS substituted.
+
+        Returns None if the skill file cannot be read (caller falls back to
+        the /implement-ticket shortcut).
+        """
+        skill_path = self._repo_root / ".claude" / "commands" / "implement-ticket.md"
+        try:
+            return skill_path.read_text(encoding="utf-8").replace(
+                "$ARGUMENTS", ticket_id
+            )
+        except OSError:
+            logger.warning("Could not read skill file %s; using shortcut", skill_path)
+            return None
+
     def _launch_worker(
         self,
         manifest: ExecutionManifest,
         worktree_path: Path,
         effective_mode: str,
     ) -> subprocess.Popen[bytes]:
-        cmd = build_worker_cmd(manifest.ticket_id, effective_mode, worktree_path)
+        prompt = self._expand_skill(manifest.ticket_id)
+        cmd = build_worker_cmd(
+            manifest.ticket_id, effective_mode, worktree_path, prompt
+        )
         env = build_worker_env(effective_mode, dict(os.environ))
 
         log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"

@@ -184,8 +184,8 @@ def test_cmd_includes_dangerously_skip_permissions(tmp_path: Path) -> None:
 def test_cmd_bare_mode_uses_worktree_path(tmp_path: Path) -> None:
     cmd = build_worker_cmd("WOR-10", "local", tmp_path)
     assert "--bare" in cmd
-    idx = cmd.index("--plugin-dir")
-    assert cmd[idx + 1] == str(tmp_path / ".claude")
+    idx = cmd.index("--add-dir")
+    assert cmd[idx + 1] == str(tmp_path)
 
 
 # ---------------------------------------------------------------------------
