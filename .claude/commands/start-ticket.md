@@ -2,6 +2,27 @@ Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop
 
 Work through these phases in order:
 
+### Spike gate
+Check whether the issue carries a label whose name matches **Spike** (case-insensitive).
+
+If the Spike label is present:
+1. Set state to In Progress: `save_issue(id: "$ARGUMENTS", state: "In Progress")`
+2. Post a comment: `save_comment(issueId: "$ARGUMENTS", body: "Spike ticket — implementing interactively (no watcher manifest). See CLAUDE.md spike workflow.")`
+3. Print the following and **STOP** — do not create a branch, do not write a manifest:
+
+```
+This ticket is labelled Spike — interactive implementation required.
+
+Spike tickets bypass the watcher. Implement them interactively:
+  1. Create a branch: git checkout -b <branch-name>
+  2. Investigate and document findings in docs/spikes/<name>.md
+  3. Commit findings with: git commit -m "Part of $ARGUMENTS: ..."
+  4. Run /finalize-ticket to open a PR (review_mode: human — no auto-merge)
+  5. Human reviews before merge; close the Linear ticket manually after merge
+```
+
+**Do not write a ReadyForLocal manifest for Spike tickets.**
+
 ### Watcher status check
 Check whether the watcher daemon is running by reading `.claude/watcher.pid`:
 ```bash
