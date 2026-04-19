@@ -13,7 +13,7 @@ from typing import Any, cast
 
 _LINEAR_API_URL = "https://api.linear.app/graphql"
 
-_DONE_STATE_TYPES = frozenset({"completed", "cancelled"})
+DONE_STATE_TYPES = frozenset({"completed", "cancelled"})
 
 
 class LinearError(Exception):
@@ -95,7 +95,7 @@ class LinearClient:
             node["relatedIssue"]["identifier"]
             for node in issue["relations"]["nodes"]
             if node["type"] == "blocked_by"
-            and node["relatedIssue"]["state"]["type"] not in _DONE_STATE_TYPES
+            and node["relatedIssue"]["state"]["type"] not in DONE_STATE_TYPES
         ]
 
     def set_state(self, issue_id: str, state_name: str) -> None:
@@ -126,6 +126,35 @@ class LinearClient:
             {"issueId": issue_id, "body": body},
         )
         self._check_success(data, "commentCreate", issue_id)
+
+    def get_issue_state_type(self, identifier: str) -> str | None:
+        """Return the Linear state.type for a ticket by its human identifier.
+
+        Returns one of: 'triage', 'backlog', 'unstarted', 'started',
+        'completed', 'cancelled'. Returns None if not found.
+        """
+        data = self._query(
+            """
+            query GetIssueStateByIdentifier($identifier: String!, $teamName: String!) {
+              issues(
+                filter: {
+                  identifier: { eq: $identifier }
+                  team: { name: { eq: $teamName } }
+                }
+                first: 1
+              ) {
+                nodes {
+                  state { type }
+                }
+              }
+            }
+            """,
+            {"identifier": identifier, "teamName": self._team},
+        )
+        nodes = data.get("issues", {}).get("nodes", [])
+        if not nodes:
+            return None
+        return cast(str, nodes[0]["state"]["type"])
 
     # ------------------------------------------------------------------
     # Internal helpers

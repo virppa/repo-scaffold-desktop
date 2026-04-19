@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Protocol
 
-from app.core.linear_client import LinearError
+from app.core.linear_client import DONE_STATE_TYPES, LinearError
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import ImplementationMode, MetricsStore, Outcome, TicketMetrics
 
@@ -62,6 +62,7 @@ class LinearClientProtocol(Protocol):
     def get_open_blockers(self, issue_id: str) -> list[str]: ...
     def set_state(self, issue_id: str, state_name: str) -> None: ...
     def post_comment(self, issue_id: str, body: str) -> None: ...
+    def get_issue_state_type(self, identifier: str) -> str | None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +277,7 @@ class Watcher:
         try:
             while self._running:
                 self._reap_finished_workers()
+                self._promote_waiting_tickets()
                 if len(self._active) < self._max_workers:
                     self._dispatch_next_ticket()
                 time.sleep(self._POLL_INTERVAL)
@@ -283,6 +285,101 @@ class Watcher:
             self._wait_for_active_workers()
             self._remove_pid_file()
             logger.info("Watcher stopped cleanly")
+
+    # ------------------------------------------------------------------
+    # WaitingForDeps promotion
+    # ------------------------------------------------------------------
+
+    def _transition_waiting_manifest(
+        self, manifest: ExecutionManifest, manifest_path: Path, new_status: str
+    ) -> None:
+        updated = manifest.model_copy(update={"status": new_status})
+        updated.to_json(manifest_path)
+        logger.debug(
+            "Manifest for %s written with status=%s", manifest.ticket_id, new_status
+        )
+
+    def _promote_waiting_tickets(self) -> None:
+        """Promote WaitingForDeps manifests to ReadyForLocal when all blockers complete.
+
+        Scans .claude/artifacts/*/manifest.json each poll cycle. For each manifest
+        with status=='WaitingForDeps', checks whether all blocked_by_tickets have
+        reached a completed/cancelled state in Linear. If so, writes the manifest
+        back to disk with status='ReadyForLocal' and advances the Linear ticket.
+
+        # TODO: detect when a predecessor goes to 'Blocked' (failed) and surface it
+        # as a comment rather than waiting forever.
+        """
+        artifacts_root = self._repo_root / ".claude" / "artifacts"
+        if not artifacts_root.exists():
+            return
+
+        for manifest_path in sorted(artifacts_root.glob("*/manifest.json")):
+            try:
+                manifest = ExecutionManifest.from_json(manifest_path)
+            except Exception as exc:
+                logger.warning("Could not load manifest at %s: %s", manifest_path, exc)
+                continue
+
+            if manifest.status != "WaitingForDeps":
+                continue
+
+            if not manifest.blocked_by_tickets:
+                logger.warning(
+                    "%s has status=WaitingForDeps but no blocked_by_tickets; "
+                    "promoting to ReadyForLocal",
+                    manifest.ticket_id,
+                )
+                self._transition_waiting_manifest(
+                    manifest, manifest_path, "ReadyForLocal"
+                )
+                self._notify_promotion(manifest)
+                continue
+
+            all_satisfied = True
+            for blocker_id in manifest.blocked_by_tickets:
+                try:
+                    state_type = self._linear.get_issue_state_type(blocker_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not fetch state for blocker %s of %s: %s",
+                        blocker_id,
+                        manifest.ticket_id,
+                        exc,
+                    )
+                    all_satisfied = False
+                    break
+
+                if state_type is None or state_type not in DONE_STATE_TYPES:
+                    all_satisfied = False
+                    break
+
+            if all_satisfied:
+                logger.info(
+                    "All blockers for %s satisfied — promoting to ReadyForLocal",
+                    manifest.ticket_id,
+                )
+                self._transition_waiting_manifest(
+                    manifest, manifest_path, "ReadyForLocal"
+                )
+                self._notify_promotion(manifest)
+
+    def _notify_promotion(self, manifest: ExecutionManifest) -> None:
+        if not manifest.linear_id:
+            return
+        self._safe_set_state(manifest.linear_id, "ReadyForLocal", manifest.ticket_id)
+        try:
+            self._linear.post_comment(
+                manifest.linear_id,
+                f"All predecessors merged. `{manifest.ticket_id}` promoted to "
+                f"ReadyForLocal — watcher will pick up on next poll.",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not post promotion comment for %s: %s",
+                manifest.ticket_id,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Poll and dispatch

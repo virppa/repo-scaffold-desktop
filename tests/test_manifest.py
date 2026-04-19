@@ -352,3 +352,30 @@ def test_committed_schema_file_matches_model(tmp_path):
         "schemas/execution_manifest.schema.json is out of date. "
         "Regenerate it with the command in the test docstring."
     )
+
+
+# ---------------------------------------------------------------------------
+# New fields: linear_id and blocked_by_tickets
+# ---------------------------------------------------------------------------
+
+
+def test_blocked_by_tickets_defaults_to_empty():
+    m = _make_manifest()
+    assert m.blocked_by_tickets == []
+
+
+def test_linear_id_defaults_to_none():
+    m = _make_manifest()
+    assert m.linear_id is None
+
+
+def test_blocked_by_tickets_roundtrip():
+    m = _make_manifest(blocked_by_tickets=["WOR-45", "WOR-48"])
+    m2 = ExecutionManifest.model_validate_json(m.model_dump_json())
+    assert m2.blocked_by_tickets == ["WOR-45", "WOR-48"]
+
+
+def test_linear_id_roundtrip():
+    m = _make_manifest(linear_id="uuid-abc-123")
+    m2 = ExecutionManifest.model_validate_json(m.model_dump_json())
+    assert m2.linear_id == "uuid-abc-123"
