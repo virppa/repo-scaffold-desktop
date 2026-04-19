@@ -919,13 +919,21 @@ class Watcher:
             check=True,
         )
         pr_url = result.stdout.strip()
-        subprocess.run(  # nosec B603 B607
+        merge_result = subprocess.run(  # nosec B603 B607
             ["gh", "pr", "merge", "--auto", "--squash", pr_url],
             cwd=str(worktree_path),
             capture_output=True,
             text=True,
             check=False,
         )
+        if merge_result.returncode != 0:
+            output = (merge_result.stderr or merge_result.stdout).strip()
+            logger.warning(
+                "gh pr merge --auto failed for %s (rc=%d): %s",
+                pr_url,
+                merge_result.returncode,
+                output,
+            )
         return pr_url
 
     # ------------------------------------------------------------------
