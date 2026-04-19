@@ -134,7 +134,9 @@ Skipped (already past Groomed):
 
 ### 5. After human approves — create branches and write manifests
 
-For each **Batch 1** ticket (in parallel — do not wait between tickets):
+Process **all batches** (Batch 1 and Batch 2+). The watcher will auto-promote Batch 2+ tickets once their predecessors merge.
+
+**For each Batch 1 ticket (in parallel — do not wait between tickets):**
 
 **5a. Create the sub-ticket branch**
 ```bash
@@ -157,6 +159,8 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
   "title": "<ticket title>",
   "priority": <0-4>,
   "status": "ReadyForLocal",
+  "linear_id": null,
+  "blocked_by_tickets": [],
   "parallel_safe": true,
   "risk_level": "<low|medium|high>",
   "risk_flags": ["<any specific risk notes>"],
@@ -192,13 +196,30 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
 }
 ```
 
-**5c. Update Linear**
+**5c. Update Linear (Batch 1 only)**
 1. `save_issue(id: "<ticket_id>", state: "ReadyForLocal")`
 2. `save_comment(issueId: "<ticket_id>", body: "Execution manifest written to .claude/artifacts/<ticket_id_lower>/manifest.json — watcher may now pick up.")`
 
-Repeat 5a–5c for every Batch 1 ticket before moving on.
+---
 
-For **Batch 2+** tickets: do nothing in Linear — leave them at `Todo`. They will be queued in a follow-up `/start-epic` run (or manual `/start-ticket`) once their Batch 1 predecessors have merged.
+**For each Batch 2+ ticket (also create branch and write manifest — do NOT set ReadyForLocal yet):**
+
+**5d. Create the sub-ticket branch** (same git commands as 5a — branch must exist so the watcher can create a worktree later)
+
+**5e. Write the deferred manifest**
+
+Write to `.claude/artifacts/<ticket_id_lower>/manifest.json` with these key differences:
+- `"status": "WaitingForDeps"` — watcher will promote once blockers merge
+- `"linear_id": "<UUID from get_issue — NOT the WOR-XX identifier>"` — required for the watcher to call set_state when promoting
+- `"blocked_by_tickets": ["WOR-45"]` — list the Batch 1 ticket(s) whose file sets conflict with this ticket
+- `"parallel_safe": false`
+
+All other fields the same as the Batch 1 template above.
+
+**5f. Post a Linear comment (no state change)**
+`save_comment(issueId: "<ticket_id>", body: "Execution manifest written — watcher will auto-promote to ReadyForLocal once WOR-45 merges.")`
+
+Leave the ticket in `Todo` state — the watcher will advance it to `ReadyForLocal` automatically.
 
 ---
 
@@ -208,13 +229,13 @@ Print:
 
 ```
 Queued for watcher:
-  WOR-45  wor-45-add-yaml-preset        → ReadyForLocal  (manifest: .claude/artifacts/wor_45/manifest.json)
-  WOR-48  wor-48-jinja-template-helpers → ReadyForLocal  (manifest: .claude/artifacts/wor_48/manifest.json)
-  WOR-51  wor-51-test-coverage-gap      → ReadyForLocal  (manifest: .claude/artifacts/wor_51/manifest.json)
+  WOR-45  wor-45-add-yaml-preset        → ReadyForLocal    (manifest: .claude/artifacts/wor_45/manifest.json)
+  WOR-48  wor-48-jinja-template-helpers → ReadyForLocal    (manifest: .claude/artifacts/wor_48/manifest.json)
+  WOR-51  wor-51-test-coverage-gap      → ReadyForLocal    (manifest: .claude/artifacts/wor_51/manifest.json)
 
-Deferred (run /start-epic $ARGUMENTS again after batch 1 merges):
-  WOR-46  wor-46-config-schema-update
-  WOR-52  wor-52-generator-refactor
+Deferred (watcher will auto-promote when predecessors merge):
+  WOR-46  wor-46-config-schema-update   → WaitingForDeps  (blocked by: WOR-45)
+  WOR-52  wor-52-generator-refactor     → WaitingForDeps  (blocked by: WOR-48)
 ```
 
-**STOP HERE. Do NOT run `/implement-ticket` for any ticket. The watcher daemon will pick up all `ReadyForLocal` tickets automatically.**
+**STOP HERE. Do NOT run `/implement-ticket` for any ticket. The watcher daemon will pick up all `ReadyForLocal` tickets automatically and promote `WaitingForDeps` tickets as their predecessors merge.**

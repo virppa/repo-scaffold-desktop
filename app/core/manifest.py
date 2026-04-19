@@ -190,6 +190,19 @@ class ExecutionManifest(BaseModel):
     failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
 
     # ------------------------------------------------------------------
+    # Dependency tracking (WaitingForDeps promotion)
+    # ------------------------------------------------------------------
+    linear_id: str | None = None
+    """Linear UUID for this ticket (not the WOR-XX human identifier).
+    Required when status == 'WaitingForDeps' so the watcher can call
+    set_state without a prior Linear poll."""
+
+    blocked_by_tickets: list[str] = Field(default_factory=list)
+    """Human identifiers (e.g. ['WOR-45']) of tickets that must reach a
+    Linear completed/cancelled state before this manifest is promoted to
+    ReadyForLocal. Only meaningful when status == 'WaitingForDeps'."""
+
+    # ------------------------------------------------------------------
     # State mapping and artifacts
     # ------------------------------------------------------------------
     ticket_state_map: TicketStateMap = Field(default_factory=TicketStateMap)
