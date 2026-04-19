@@ -590,6 +590,8 @@ class Watcher:
             else:
                 outcome = self._attempt_pr(manifest, worker, ticket_id, linear_id)
 
+        sonar_count = self._fetch_sonar_findings(manifest.worker_branch)
+
         log_path = (
             worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
         )
@@ -610,6 +612,7 @@ class Watcher:
                 outcome=outcome,
                 retry_count=worker.retry_count,
                 context_compactions=context_compactions,
+                sonar_findings_count=sonar_count,
             )
         )
 
@@ -934,6 +937,55 @@ class Watcher:
                 )
                 all_passed = False
         return all_passed
+
+    # ------------------------------------------------------------------
+    # SonarCloud findings count (Option B: REST API, best-effort)
+    # ------------------------------------------------------------------
+
+    def _fetch_sonar_findings(self, branch: str) -> int | None:
+        # Calls the SonarCloud measures API for the worker branch right after PR
+        # creation.  The CI scan usually hasn't run yet at this point, so None is
+        # the common case for new branches; this becomes non-NULL once SonarCloud
+        # has processed a previous push to the same branch.  Requires SONAR_TOKEN
+        # and SONAR_PROJECT_KEY env vars; returns None silently if either is absent
+        # or if the API call fails for any reason.
+        #
+        # Uses http.client.HTTPSConnection (always TLS) rather than urlopen so that
+        # the scheme is statically known and not subject to file:// redirection.
+        import base64
+        import ssl
+        import urllib.parse
+        import urllib.request
+
+        token = os.environ.get("SONAR_TOKEN")
+        project_key = os.environ.get("SONAR_PROJECT_KEY")
+        if not token or not project_key:
+            return None
+
+        params = urllib.parse.urlencode(
+            {"component": project_key, "branch": branch, "metricKeys": "violations"}
+        )
+        url = f"https://sonarcloud.io/api/measures/component?{params}"
+        creds = base64.b64encode(f"{token}:".encode()).decode()
+        req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
+        ctx = ssl.create_default_context()
+        try:
+            with urllib.request.urlopen(  # nosec B310  # nosemgrep
+                req, timeout=10, context=ctx
+            ) as resp:
+                data: dict[str, object] = json.loads(resp.read())
+            component = data.get("component") or {}
+            measures = (component if isinstance(component, dict) else {}).get(
+                "measures", []
+            )
+            for m in measures if isinstance(measures, list) else []:
+                if isinstance(m, dict) and m.get("metric") == "violations":
+                    return int(m["value"])
+        except Exception:
+            logger.debug(
+                "Could not fetch Sonar findings for branch %s", branch, exc_info=True
+            )
+        return None
 
     # ------------------------------------------------------------------
     # PR creation
