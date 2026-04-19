@@ -6,6 +6,7 @@ this file covers the unit-testable, I/O-free helpers.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -19,6 +20,7 @@ from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher import (
     ActiveWorker,
     Watcher,
+    _parse_worker_usage,
     _tee_worker_output,
     build_worker_cmd,
     build_worker_env,
@@ -579,3 +581,175 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
 
     assert len(w._active) == 1
     assert w._active[0].ticket_id == "WOR-10"
+
+
+# ---------------------------------------------------------------------------
+# _parse_worker_usage
+# ---------------------------------------------------------------------------
+
+
+def _write_log(tmp_path: Path, lines: list[str]) -> Path:
+    log = tmp_path / "worker_wor-99.log"
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return log
+
+
+def test_parse_worker_usage_success(tmp_path: Path) -> None:
+    result_line = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 0,
+            },
+            "context_compactions": 3,
+        }
+    )
+    log = _write_log(tmp_path, ['{"type":"other","x":1}', result_line])
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens == 1200
+    assert compactions == 3
+
+
+def test_parse_worker_usage_no_context_compactions(tmp_path: Path) -> None:
+    result_line = json.dumps(
+        {"type": "result", "usage": {"input_tokens": 500, "output_tokens": 50}}
+    )
+    log = _write_log(tmp_path, [result_line])
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens == 550
+    assert compactions is None
+
+
+def test_parse_worker_usage_missing_log(tmp_path: Path) -> None:
+    tokens, compactions = _parse_worker_usage(tmp_path / "no_such_file.log")
+    assert tokens is None
+    assert compactions is None
+
+
+def test_parse_worker_usage_no_result_line(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps({"type": "tool_use", "name": "Bash"}),
+            json.dumps({"type": "assistant", "content": "hello"}),
+        ],
+    )
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens is None
+    assert compactions is None
+
+
+def test_parse_worker_usage_malformed_json(tmp_path: Path) -> None:
+    log = tmp_path / "worker.log"
+    log.write_text("not json at all\n{broken\n", encoding="utf-8")
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens is None
+    assert compactions is None
+
+
+def test_parse_worker_usage_mixed_valid_invalid_lines(tmp_path: Path) -> None:
+    result_line = json.dumps(
+        {
+            "type": "result",
+            "usage": {"input_tokens": 300, "output_tokens": 100},
+            "context_compactions": 1,
+        }
+    )
+    log = tmp_path / "worker.log"
+    log.write_text("garbage line\n" + result_line + "\n", encoding="utf-8")
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens == 400
+    assert compactions == 1
+
+
+def test_parse_worker_usage_returns_first_result_line(tmp_path: Path) -> None:
+    first = json.dumps(
+        {"type": "result", "usage": {"input_tokens": 10, "output_tokens": 5}}
+    )
+    second = json.dumps(
+        {"type": "result", "usage": {"input_tokens": 999, "output_tokens": 999}}
+    )
+    log = _write_log(tmp_path, [first, second])
+    tokens, _ = _parse_worker_usage(log)
+    assert tokens == 15
+
+
+def test_parse_worker_usage_empty_file(tmp_path: Path) -> None:
+    log = tmp_path / "empty.log"
+    log.write_text("", encoding="utf-8")
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens is None
+    assert compactions is None
+
+
+# ---------------------------------------------------------------------------
+# _finalize_worker — local_tokens + context_compactions wired from log
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_passes_usage_to_metrics(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-10.log"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 2000, "output_tokens": 400},
+                "context_compactions": 5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.local_tokens == 2400
+    assert m.context_compactions == 5
+
+
+def test_finalize_worker_usage_none_when_no_log(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.local_tokens is None
+    assert m.context_compactions is None
