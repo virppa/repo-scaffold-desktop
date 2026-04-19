@@ -717,3 +717,86 @@ def test_promote_no_linear_id_updates_disk_only(tmp_path: Path) -> None:
     assert on_disk.status == "ReadyForLocal"
     mock_linear.set_state.assert_not_called()
     mock_linear.post_comment.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _preserve_worker_artifacts
+# ---------------------------------------------------------------------------
+
+
+def test_preserve_worker_artifacts_copies_log_and_result(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+
+    worktree = tmp_path / "worktrees" / "wor-10"
+    worktree.mkdir(parents=True)
+
+    log_src = worktree / ".claude" / "worker_wor-10.log"
+    log_src.parent.mkdir(parents=True)
+    log_src.write_text("log content")
+
+    result_src = worktree / ".claude" / "artifacts" / "wor_10" / "result.json"
+    result_src.parent.mkdir(parents=True)
+    result_src.write_text('{"status": "success"}')
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    w._preserve_worker_artifacts(worker)
+
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+    assert (artifact_dir / "worker_wor-10.log").read_text() == "log content"
+    assert (artifact_dir / "result.json").read_text() == '{"status": "success"}'
+
+
+def test_preserve_worker_artifacts_missing_result_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+
+    worktree = tmp_path / "worktrees" / "wor-10"
+    worktree.mkdir(parents=True)
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher"):
+        w._preserve_worker_artifacts(worker)
+
+    assert any("No result artifact" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# _rebase_worktree_from_base
+# ---------------------------------------------------------------------------
+
+
+def test_rebase_worktree_from_base_warns_on_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+
+    def _raise(*args: Any, **kwargs: Any) -> None:
+        raise subprocess.CalledProcessError(1, "git", stderr="conflict")
+
+    with (
+        patch("subprocess.run", side_effect=_raise),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        w._rebase_worktree_from_base(tmp_path, "some-epic-branch")
+
+    assert any("Could not rebase" in r.message for r in caplog.records)

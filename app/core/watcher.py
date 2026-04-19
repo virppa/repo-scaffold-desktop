@@ -543,7 +543,7 @@ class Watcher:
         )
 
         self._restore_plan_files(worker.backed_up_plans)
-        self._preserve_worker_log(worker)
+        self._preserve_worker_artifacts(worker)
         self._cleanup_worktree(worker.worktree_path)
 
     # ------------------------------------------------------------------
@@ -581,7 +581,45 @@ class Watcher:
             text=True,
         )
         logger.info("Worktree created at %s", worktree_path)
+        self._rebase_worktree_from_base(worktree_path, manifest.base_branch)
         return worktree_path
+
+    def _rebase_worktree_from_base(self, worktree_path: Path, base_branch: str) -> None:
+        """Fetch and rebase the worktree from origin/<base_branch>.
+
+        Ensures the worker starts from the latest epic state, not a stale
+        snapshot from when the branch was created.  Logs a warning on failure
+        rather than raising — a stale start is preferable to no start at all.
+        """
+        try:
+            subprocess.run(  # nosec B603 B607
+                ["git", "-C", str(worktree_path), "fetch", "origin", base_branch],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(  # nosec B603 B607
+                [
+                    "git",
+                    "-C",
+                    str(worktree_path),
+                    "rebase",
+                    f"origin/{base_branch}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.debug(
+                "Worktree at %s rebased onto origin/%s", worktree_path, base_branch
+            )
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "Could not rebase worktree onto origin/%s (worker will start from "
+                "branch tip instead): %s",
+                base_branch,
+                (exc.stderr or exc.stdout or str(exc)).strip(),
+            )
 
     def _copy_manifest_to_worktree(
         self, manifest: ExecutionManifest, worktree_path: Path
@@ -632,19 +670,35 @@ class Watcher:
         """
         (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
 
-    def _preserve_worker_log(self, worker: ActiveWorker) -> None:
-        log_src = (
-            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-        )
-        if not log_src.exists():
-            return
+    def _preserve_worker_artifacts(self, worker: ActiveWorker) -> None:
+        """Copy worker log and result.json from the worktree to the repo artifact dir.
+
+        The worktree is removed after this call, so any file not copied here is lost.
+        """
         artifact_dir = (
             self._repo_root / worker.manifest.artifact_paths.result_json
         ).parent
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        dest = artifact_dir / log_src.name
-        shutil.copy2(log_src, dest)
-        logger.info("Worker log preserved at %s", dest)
+
+        log_src = (
+            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
+        )
+        if log_src.exists():
+            shutil.copy2(log_src, artifact_dir / log_src.name)
+            logger.info("Worker log preserved at %s", artifact_dir / log_src.name)
+
+        result_src = worker.worktree_path / worker.manifest.artifact_paths.result_json
+        if result_src.exists():
+            shutil.copy2(result_src, artifact_dir / result_src.name)
+            logger.info(
+                "Result artifact preserved at %s", artifact_dir / result_src.name
+            )
+        else:
+            logger.warning(
+                "No result artifact found at %s for %s",
+                result_src,
+                worker.ticket_id,
+            )
 
     def _cleanup_worktree(self, worktree_path: Path) -> None:
         try:
