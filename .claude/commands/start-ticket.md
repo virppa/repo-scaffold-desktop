@@ -88,6 +88,7 @@ If no siblings are In Progress, skip this block silently.
 - List what new tests are needed (file, test name, what it verifies)
 - Flag any security surface introduced: new I/O, user input handling, file operations, subprocess calls
 - Note edge cases and overwrite behavior to consider
+- Assess local-model suitability: is the scope bounded (≤3 small/medium files, straightforward wiring)? Or does it touch large/complex modules (e.g. watcher.py, generator.py) requiring multi-step reasoning across many dependencies? Record your conclusion — it determines `implementation_mode` in the manifest.
 
 ### 3. Create the branch and update Linear
 Using the branch name from Linear's "Copy branch name" format (usually `WOR-NNN-short-description`):
@@ -123,6 +124,7 @@ Summarize as:
 Branch: <branch-name> (off <epic-branch | main>)
 Milestone: <milestone name> (<progress>%)
 Epic: <parent issue title or "none">
+Implementation mode: <local|cloud> — local-ready label <present → local / absent → cloud>
 Files to change:
   - path/to/file.py — what changes
 Tests to write:
@@ -158,7 +160,7 @@ Construct the manifest from the planning context gathered in steps 1–4:
   "parallel_safe": <true if no file conflicts with In-Progress siblings>,
   "risk_level": "<low|medium|high — from security surface assessment>",
   "risk_flags": ["<any specific risk notes>"],
-  "implementation_mode": "local",
+  "implementation_mode": "<local if ticket has local-ready label, otherwise cloud>",
   "review_mode": "auto",
   "base_branch": "<epic-branch or main>",
   "worker_branch": "<sub-ticket-branch>",
