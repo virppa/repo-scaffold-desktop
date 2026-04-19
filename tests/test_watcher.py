@@ -1082,6 +1082,146 @@ def test_finalize_worker_usage_none_when_no_log(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# _fetch_sonar_findings
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_sonar_findings_returns_none_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SONAR_TOKEN", raising=False)
+    monkeypatch.delenv("SONAR_PROJECT_KEY", raising=False)
+    w = Watcher(linear_client=MagicMock())
+    assert w._fetch_sonar_findings("wor-10-some-branch") is None
+
+
+def test_fetch_sonar_findings_returns_none_without_project_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SONAR_TOKEN", "fake-token")
+    monkeypatch.delenv("SONAR_PROJECT_KEY", raising=False)
+    w = Watcher(linear_client=MagicMock())
+    assert w._fetch_sonar_findings("wor-10-some-branch") is None
+
+
+def _make_sonar_resp_mock(payload: bytes) -> MagicMock:
+    """Return a context-manager mock whose .read() returns payload."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = payload
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+def test_fetch_sonar_findings_returns_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SONAR_TOKEN", "fake-token")
+    monkeypatch.setenv("SONAR_PROJECT_KEY", "my-org_my-project")
+    api_payload = json.dumps(
+        {"component": {"measures": [{"metric": "violations", "value": "7"}]}}
+    ).encode()
+
+    w = Watcher(linear_client=MagicMock())
+    mock_resp = _make_sonar_resp_mock(api_payload)
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        count = w._fetch_sonar_findings("wor-10-some-branch")
+
+    assert count == 7
+
+
+def test_fetch_sonar_findings_returns_none_when_metric_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SONAR_TOKEN", "fake-token")
+    monkeypatch.setenv("SONAR_PROJECT_KEY", "my-project")
+    api_payload = json.dumps(
+        {"component": {"measures": [{"metric": "coverage", "value": "80.0"}]}}
+    ).encode()
+
+    w = Watcher(linear_client=MagicMock())
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_make_sonar_resp_mock(api_payload),
+    ):
+        count = w._fetch_sonar_findings("wor-10-some-branch")
+
+    assert count is None
+
+
+def test_fetch_sonar_findings_returns_none_on_api_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+
+    monkeypatch.setenv("SONAR_TOKEN", "fake-token")
+    monkeypatch.setenv("SONAR_PROJECT_KEY", "my-project")
+    w = Watcher(linear_client=MagicMock())
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.URLError("connection refused"),
+    ):
+        count = w._fetch_sonar_findings("wor-10-some-branch")
+    assert count is None
+
+
+# ---------------------------------------------------------------------------
+# _finalize_worker — sonar_findings_count wired to metrics
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_sonar_count_wired_to_metrics(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_fetch_sonar_findings", return_value=3),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.sonar_findings_count == 3
+
+
+def test_finalize_worker_sonar_count_none_when_unavailable(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_fetch_sonar_findings", return_value=None),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.sonar_findings_count is None
+
+
+# ---------------------------------------------------------------------------
+# Per-type concurrency — cloud pool full does not block local dispatch
+# ---------------------------------------------------------------------------
+
+
 def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
     """A saturated cloud pool must not prevent a local ticket from being dispatched."""
     local_manifest = _make_manifest(
