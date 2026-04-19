@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.metrics import EpicSummary, MetricsStore, TicketMetrics
+from app.core.metrics import (
+    CheckRunEntry,
+    CheckStats,
+    EpicSummary,
+    MetricsStore,
+    TicketMetrics,
+)
 
 
 def _store(tmp_path) -> MetricsStore:
@@ -219,3 +225,80 @@ class TestProjectIsolation:
         )
         summary = store.epic_summary("WOR-10", "proj-a")
         assert summary.cloud_tokens_total == 100
+
+
+def _check_run(ticket_id: str = "WOR-1", **kwargs) -> CheckRunEntry:
+    defaults: dict = {
+        "ticket_id": ticket_id,
+        "project_id": "proj-a",
+        "check_cmd": "pytest",
+        "outcome": "passed",
+        "duration_s": 5.0,
+    }
+    defaults.update(kwargs)
+    return CheckRunEntry(**defaults)
+
+
+class TestCheckRunLog:
+    def test_record_and_check_stats_basic(self, tmp_path):
+        store = _store(tmp_path)
+        store.record_check_run(
+            _check_run(check_cmd="pytest", outcome="passed", duration_s=10.0)
+        )
+        store.record_check_run(
+            _check_run(check_cmd="pytest", outcome="failed", duration_s=8.0)
+        )
+        stats = store.get_check_stats("proj-a")
+        assert len(stats) == 1
+        s = stats[0]
+        assert isinstance(s, CheckStats)
+        assert s.check_cmd == "pytest"
+        assert s.total_runs == 2
+        assert s.pass_count == 1
+        assert s.fail_count == 1
+        assert s.pass_pct == pytest.approx(50.0)
+        assert s.avg_duration_s == pytest.approx(9.0)
+        assert s.max_duration_s == pytest.approx(10.0)
+
+    def test_multiple_checks_ordered_slowest_first(self, tmp_path):
+        store = _store(tmp_path)
+        store.record_check_run(
+            _check_run(check_cmd="mypy app/", outcome="passed", duration_s=20.0)
+        )
+        store.record_check_run(
+            _check_run(check_cmd="ruff check .", outcome="passed", duration_s=2.0)
+        )
+        store.record_check_run(
+            _check_run(check_cmd="pytest", outcome="passed", duration_s=10.0)
+        )
+        stats = store.get_check_stats("proj-a")
+        assert [s.check_cmd for s in stats] == ["mypy app/", "pytest", "ruff check ."]
+
+    def test_null_duration_handled(self, tmp_path):
+        store = _store(tmp_path)
+        store.record_check_run(_check_run(duration_s=None))
+        stats = store.get_check_stats("proj-a")
+        assert stats[0].avg_duration_s is None
+        assert stats[0].max_duration_s is None
+
+    def test_empty_project_returns_empty_list(self, tmp_path):
+        store = _store(tmp_path)
+        assert store.get_check_stats("proj-z") == []
+
+    def test_project_isolation(self, tmp_path):
+        store = _store(tmp_path)
+        store.record_check_run(_check_run(project_id="proj-a", duration_s=5.0))
+        store.record_check_run(_check_run(project_id="proj-b", duration_s=99.0))
+        a_stats = store.get_check_stats("proj-a")
+        b_stats = store.get_check_stats("proj-b")
+        assert len(a_stats) == 1 and len(b_stats) == 1
+        assert a_stats[0].avg_duration_s == pytest.approx(5.0)
+        assert b_stats[0].avg_duration_s == pytest.approx(99.0)
+
+    def test_check_run_log_does_not_affect_ticket_metrics(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        store.record_check_run(_check_run())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.ticket_id == "WOR-1"
