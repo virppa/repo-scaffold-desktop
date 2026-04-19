@@ -188,6 +188,11 @@ def test_cmd_bare_mode_uses_worktree_path(tmp_path: Path) -> None:
     assert cmd[idx + 1] == str(tmp_path)
 
 
+def test_cloud_cmd_has_no_bare_flag(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path)
+    assert "--bare" not in cmd
+
+
 def test_cmd_disallowed_tools_appended(tmp_path: Path) -> None:
     tools = ["Read(*watcher.py)", "Read(*metrics.py)"]
     cmd = build_worker_cmd("WOR-10", "cloud", tmp_path, disallowed_tools=tools)
