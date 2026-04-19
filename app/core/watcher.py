@@ -398,6 +398,15 @@ class Watcher:
             ticket_id: str = ticket["identifier"]
             if any(w.ticket_id == ticket_id for w in self._active):
                 continue
+            labels = [
+                node["name"] for node in ticket.get("labels", {}).get("nodes", [])
+            ]
+            if any(label.lower() == "spike" for label in labels):
+                logger.warning(
+                    "Skipping %s — Spike label detected; implement interactively",
+                    ticket_id,
+                )
+                continue
             try:
                 self._start_ticket(ticket_id, ticket["id"])
                 return  # one ticket per dispatch cycle

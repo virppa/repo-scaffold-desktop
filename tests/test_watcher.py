@@ -849,6 +849,84 @@ def test_rebase_worktree_from_base_warns_on_failure(
 
 
 # ---------------------------------------------------------------------------
+# _dispatch_next_ticket — Spike label guard
+# ---------------------------------------------------------------------------
+
+
+def _spike_ticket(label_name: str = "Spike") -> dict[str, Any]:
+    return {
+        "id": "fake-linear-id",
+        "identifier": "WOR-99",
+        "title": "Some spike",
+        "labels": {"nodes": [{"name": label_name}]},
+    }
+
+
+def _regular_ticket() -> dict[str, Any]:
+    return {
+        "id": "fake-linear-id",
+        "identifier": "WOR-99",
+        "title": "Regular ticket",
+        "labels": {"nodes": [{"name": "local-ready"}]},
+    }
+
+
+def test_dispatch_skips_spike_labelled_ticket(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    mock_linear = MagicMock()
+    mock_linear.list_ready_for_local.return_value = [_spike_ticket("Spike")]
+    w = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+
+    with (
+        patch.object(w, "_start_ticket") as mock_start,
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        w._dispatch_next_ticket()
+
+    mock_start.assert_not_called()
+    assert any("Spike" in msg and "WOR-99" in msg for msg in caplog.messages)
+
+
+@pytest.mark.parametrize("label_name", ["spike", "SPIKE", "Spike"])
+def test_dispatch_skips_spike_label_case_insensitive(
+    tmp_path: Path, label_name: str
+) -> None:
+    mock_linear = MagicMock()
+    mock_linear.list_ready_for_local.return_value = [_spike_ticket(label_name)]
+    w = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+
+    with patch.object(w, "_start_ticket") as mock_start:
+        w._dispatch_next_ticket()
+
+    mock_start.assert_not_called()
+
+
+def test_dispatch_proceeds_for_non_spike_ticket(tmp_path: Path) -> None:
+    mock_linear = MagicMock()
+    mock_linear.list_ready_for_local.return_value = [_regular_ticket()]
+    w = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+
+    with patch.object(w, "_start_ticket") as mock_start:
+        w._dispatch_next_ticket()
+
+    mock_start.assert_called_once_with("WOR-99", "fake-linear-id")
+
+
+def test_dispatch_missing_labels_field_no_crash(tmp_path: Path) -> None:
+    mock_linear = MagicMock()
+    mock_linear.list_ready_for_local.return_value = [
+        {"id": "fake-linear-id", "identifier": "WOR-99", "title": "No labels"}
+    ]
+    w = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+
+    with patch.object(w, "_start_ticket") as mock_start:
+        w._dispatch_next_ticket()
+
+    mock_start.assert_called_once_with("WOR-99", "fake-linear-id")
+
+
+# ---------------------------------------------------------------------------
 # _promote_waiting_tickets — context_snippets cleared on promotion
 # ---------------------------------------------------------------------------
 
