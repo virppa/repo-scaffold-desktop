@@ -27,6 +27,10 @@ python -m app.cli watcher                        # respects each manifest's impl
 python -m app.cli watcher --worker-mode cloud    # force cloud (Anthropic API) for all tickets
 python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy + RTX 5090)
 # Also: WORKER_MODE=cloud python -m app.cli watcher
+# Concurrency (pools are independent — local is never starved by cloud burst):
+python -m app.cli watcher --max-local-workers 1  # default 1; GPU serial bottleneck
+python -m app.cli watcher --max-cloud-workers 3  # default 3; parallelisable
+python -m app.cli watcher --max-workers 2        # backward-compat alias: sets both to 2
 
 
 # CLI — metrics
