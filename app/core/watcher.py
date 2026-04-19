@@ -17,6 +17,7 @@ Worker modes:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shlex
@@ -67,6 +68,30 @@ class LinearClientProtocol(Protocol):
 # ---------------------------------------------------------------------------
 # Active worker tracking
 # ---------------------------------------------------------------------------
+
+
+def _parse_worker_usage(log_path: Path) -> tuple[int | None, int | None]:
+    """Read stream-json worker log and return (local_tokens, context_compactions)."""
+    try:
+        with log_path.open(encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") == "result":
+                    usage = obj.get("usage") or {}
+                    local_tokens = (usage.get("input_tokens") or 0) + (
+                        usage.get("output_tokens") or 0
+                    )
+                    context_compactions = obj.get("context_compactions")
+                    return local_tokens, context_compactions
+    except Exception:
+        return None, None
+    return None, None
 
 
 @dataclass
@@ -403,6 +428,10 @@ class Watcher:
             else:
                 outcome = self._attempt_pr(manifest, worker, ticket_id, linear_id)
 
+        log_path = (
+            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
+        )
+        local_tokens, context_compactions = _parse_worker_usage(log_path)
         eff = resolve_effective_mode(self._mode, manifest.implementation_mode)
         self._metrics.record(
             TicketMetrics(
@@ -413,10 +442,12 @@ class Watcher:
                 local_used=(eff == "local"),
                 local_model=(_LOCAL_MODEL if eff == "local" else None),
                 cloud_used=(eff == "cloud"),
+                local_tokens=local_tokens,
                 local_wall_time=wall_time,
                 escalated_to_cloud=escalated,
                 outcome=outcome,
                 retry_count=worker.retry_count,
+                context_compactions=context_compactions,
             )
         )
 
