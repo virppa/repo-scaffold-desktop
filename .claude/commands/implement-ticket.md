@@ -119,13 +119,18 @@ Also copy the manifest to `artifact_paths.manifest_copy` for audit purposes.
 ### 6. Update Linear
 
 **On success:**
-- `save_issue(id: "<ticket_id>", state: "<ticket_state_map.merged_to_epic>")` — only after the PR is created (run `/finalize-ticket` to create the PR first)
-- Actually: at this point just leave the ticket in `InProgressLocal` — `/finalize-ticket` will create the PR and advance the state
+Leave the ticket in `InProgressLocal`. The watcher reads the result artifact and handles PR creation and state transitions — do NOT call `/finalize-ticket`.
 
 **On failure:**
 - If `failure_policy.escalate_to_cloud` is `true`: `save_issue(id: "<ticket_id>", state: "In Progress")` and post a Linear comment: `"Local worker failed after <N> checks. Escalating to cloud. See result artifact: <artifact_paths.result_json>"`
 - Otherwise: `save_issue(id: "<ticket_id>", state: "Blocked")` and post a comment with the failure reason
 
-### 7. On success — proceed to finalize
+### 7. Exit
 
-Run `/finalize-ticket` to create the PR targeting the epic branch and advance the ticket state to `MergedToEpic` (after CI passes).
+Exit cleanly after writing the result artifact. The watcher will:
+1. Detect the result artifact (rc=0)
+2. Run `required_checks` in the worktree
+3. Create the PR targeting `base_branch`
+4. Advance the Linear ticket state to `in_review`, then `merged_to_epic` once CI passes
+
+**Do NOT run `/finalize-ticket`** — calling it from a watcher-spawned session creates a duplicate PR and bypasses the correct state machine.
