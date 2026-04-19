@@ -153,10 +153,12 @@ def build_worker_cmd(
     # the system prompt lean. --add-dir re-adds the worktree CLAUDE.md.
     # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
     # from blocking ~180s on OAuth in non-interactive mode.
+    # NOTE: --bare also strips OAuth credential loading, so it must NOT be used
+    # for cloud mode where the worker authenticates via OAuth (Claude Max).
+    # Local mode uses a dummy API key via LiteLLM, so --bare is safe there.
     base = [
         "claude",
         "--dangerously-skip-permissions",
-        "--bare",
         "--add-dir",
         str(worktree_path),
         "--strict-mcp-config",
@@ -168,6 +170,8 @@ def build_worker_cmd(
         "--output-format",
         "stream-json",
     ]
+    if mode == "local":
+        base.insert(2, "--bare")
     if disallowed_tools:
         base += ["--disallowed-tools", ",".join(disallowed_tools)]
     if mode == "local":
