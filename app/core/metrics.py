@@ -18,9 +18,22 @@ from pydantic import BaseModel, Field
 
 ImplementationMode = Literal["local", "cloud", "hybrid"]
 Outcome = Literal["success", "failure", "escalated", "aborted"]
+CheckOutcome = Literal["passed", "failed"]
 
 _APP_DIR = "repo-scaffold"
 _DB_NAME = "metrics.db"
+
+_CREATE_CHECK_RUN_LOG = """
+CREATE TABLE IF NOT EXISTS check_run_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id   TEXT NOT NULL,
+    project_id  TEXT NOT NULL,
+    check_cmd   TEXT NOT NULL,
+    outcome     TEXT NOT NULL,
+    duration_s  REAL,
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS ticket_metrics (
@@ -108,6 +121,32 @@ class EpicSummary(BaseModel):
     sonar_findings_total: int
 
 
+class CheckRunEntry(BaseModel):
+    """A single execution of one required_check command."""
+
+    model_config = {"extra": "forbid"}
+
+    ticket_id: str
+    project_id: str
+    check_cmd: str
+    outcome: CheckOutcome
+    duration_s: float | None = Field(default=None, description="Wall time in seconds")
+
+
+class CheckStats(BaseModel):
+    """Aggregated pass/fail and timing stats for one check command."""
+
+    model_config = {"extra": "forbid"}
+
+    check_cmd: str
+    total_runs: int
+    pass_count: int
+    fail_count: int
+    pass_pct: float = Field(description="0–100")
+    avg_duration_s: float | None
+    max_duration_s: float | None
+
+
 class MetricsStore:
     """SQLite-backed store for ticket execution metrics."""
 
@@ -129,6 +168,7 @@ class MetricsStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.execute(_CREATE_TABLE)
+            conn.execute(_CREATE_CHECK_RUN_LOG)
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -231,6 +271,57 @@ class MetricsStore:
             files_changed_total=row["files_changed_total"],
             sonar_findings_total=row["sonar_findings_total"],
         )
+
+    def record_check_run(self, entry: CheckRunEntry) -> None:
+        """Append a single check execution row to check_run_log."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO check_run_log
+                    (ticket_id, project_id, check_cmd, outcome, duration_s)
+                VALUES
+                    (:ticket_id, :project_id, :check_cmd, :outcome, :duration_s)
+                """,
+                entry.model_dump(),
+            )
+
+    def get_check_stats(self, project_id: str) -> list[CheckStats]:
+        """Aggregated pass/fail and timing stats per check command, slowest first."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    check_cmd,
+                    COUNT(*) AS total_runs,
+                    SUM(CASE WHEN outcome = 'passed' THEN 1 ELSE 0 END) AS pass_count,
+                    SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS fail_count,
+                    ROUND(
+                        100.0
+                        * SUM(CASE WHEN outcome = 'passed' THEN 1 ELSE 0 END)
+                        / COUNT(*),
+                        1
+                    ) AS pass_pct,
+                    AVG(duration_s) AS avg_duration_s,
+                    MAX(duration_s) AS max_duration_s
+                FROM check_run_log
+                WHERE project_id = ?
+                GROUP BY check_cmd
+                ORDER BY avg_duration_s DESC NULLS LAST
+                """,
+                (project_id,),
+            ).fetchall()
+        return [
+            CheckStats(
+                check_cmd=r["check_cmd"],
+                total_runs=r["total_runs"],
+                pass_count=r["pass_count"],
+                fail_count=r["fail_count"],
+                pass_pct=r["pass_pct"] if r["pass_pct"] is not None else 0.0,
+                avg_duration_s=r["avg_duration_s"],
+                max_duration_s=r["max_duration_s"],
+            )
+            for r in rows
+        ]
 
 
 def _row_to_metrics(row: sqlite3.Row) -> TicketMetrics:
