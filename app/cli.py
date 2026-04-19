@@ -95,10 +95,25 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     watcher.add_argument(
-        "--max-workers",
+        "--max-local-workers",
         type=int,
         default=1,
-        help="Maximum number of concurrent worker sessions (default: 1).",
+        help="Maximum concurrent local worker sessions (default: 1).",
+    )
+    watcher.add_argument(
+        "--max-cloud-workers",
+        type=int,
+        default=3,
+        help="Maximum concurrent cloud worker sessions (default: 3).",
+    )
+    watcher.add_argument(
+        "--max-workers",
+        type=int,
+        default=None,
+        help=(
+            "Backward-compatible alias: sets both --max-local-workers and "
+            "--max-cloud-workers to the same value."
+        ),
     )
     watcher.add_argument(
         "--verbose",
@@ -124,8 +139,16 @@ def _run_watcher(args: argparse.Namespace) -> int:
         stream=sys.stderr,
     )
     mode = args.worker_mode or os.environ.get("WORKER_MODE", "default")
+    max_local = args.max_local_workers
+    max_cloud = args.max_cloud_workers
+    if args.max_workers is not None:
+        max_local = args.max_workers
+        max_cloud = args.max_workers
     watcher = Watcher(
-        worker_mode=mode, max_workers=args.max_workers, verbose=args.verbose
+        worker_mode=mode,
+        max_local_workers=max_local,
+        max_cloud_workers=max_cloud,
+        verbose=args.verbose,
     )
     try:
         watcher.run()

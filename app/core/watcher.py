@@ -255,7 +255,8 @@ class Watcher:
     def __init__(
         self,
         worker_mode: str = "default",
-        max_workers: int = 1,
+        max_local_workers: int = 1,
+        max_cloud_workers: int = 3,
         linear_client: LinearClientProtocol | None = None,
         metrics_store: MetricsStore | None = None,
         repo_root: Path | None = None,
@@ -268,12 +269,14 @@ class Watcher:
             linear_client = LinearClient()
 
         self._mode = worker_mode
-        self._max_workers = max_workers
+        self._max_local_workers = max_local_workers
+        self._max_cloud_workers = max_cloud_workers
         self._linear = linear_client
         self._metrics = metrics_store or MetricsStore()
         self._repo_root = (repo_root or Path.cwd()).resolve()
         self._project_id = project_id
-        self._active: list[ActiveWorker] = []
+        self._local_active: list[ActiveWorker] = []
+        self._cloud_active: list[ActiveWorker] = []
         self._running = True
         self._litellm_proc: subprocess.Popen[bytes] | None = None
         self._verbose = verbose
@@ -295,16 +298,19 @@ class Watcher:
             self._ensure_litellm_running()
 
         logger.info(
-            "Watcher started (mode=%s, max_workers=%d)",
+            "Watcher started (mode=%s, max_local_workers=%d, max_cloud_workers=%d)",
             self._mode,
-            self._max_workers,
+            self._max_local_workers,
+            self._max_cloud_workers,
         )
 
         try:
             while self._running:
                 self._reap_finished_workers()
                 self._promote_waiting_tickets()
-                if len(self._active) < self._max_workers:
+                local_has_capacity = len(self._local_active) < self._max_local_workers
+                cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
+                if local_has_capacity or cloud_has_capacity:
                     self._dispatch_next_ticket()
                 time.sleep(self._POLL_INTERVAL)
         finally:
@@ -422,7 +428,8 @@ class Watcher:
 
         for ticket in tickets:
             ticket_id: str = ticket["identifier"]
-            if any(w.ticket_id == ticket_id for w in self._active):
+            all_active = self._local_active + self._cloud_active
+            if any(w.ticket_id == ticket_id for w in all_active):
                 continue
             try:
                 self._start_ticket(ticket_id, ticket["id"])
@@ -439,7 +446,8 @@ class Watcher:
             logger.info("Skipping %s — open blockers: %s", ticket_id, open_blockers)
             return
 
-        conflicts = check_allowed_paths_overlap(self._active, manifest)
+        all_active = self._local_active + self._cloud_active
+        conflicts = check_allowed_paths_overlap(all_active, manifest)
         if conflicts:
             logger.info(
                 "Deferring %s — allowed_paths overlap with active workers: %s",
@@ -451,6 +459,26 @@ class Watcher:
         effective_mode = resolve_effective_mode(
             self._mode, manifest.implementation_mode
         )
+
+        if effective_mode == "local":
+            if len(self._local_active) >= self._max_local_workers:
+                logger.info(
+                    "Deferring %s — local pool full (%d/%d)",
+                    ticket_id,
+                    len(self._local_active),
+                    self._max_local_workers,
+                )
+                return
+        else:
+            if len(self._cloud_active) >= self._max_cloud_workers:
+                logger.info(
+                    "Deferring %s — cloud pool full (%d/%d)",
+                    ticket_id,
+                    len(self._cloud_active),
+                    self._max_cloud_workers,
+                )
+                return
+
         worktree_path = self._create_worktree(manifest)
         self._copy_manifest_to_worktree(manifest, worktree_path)
         self._write_worker_pytest_config(worktree_path)
@@ -462,24 +490,26 @@ class Watcher:
 
         backed_up_plans = self._backup_plan_files()
         process = self._launch_worker(manifest, worktree_path, effective_mode)
-        self._active.append(
-            ActiveWorker(
-                ticket_id=ticket_id,
-                linear_id=linear_id,
-                manifest=manifest,
-                worktree_path=worktree_path,
-                process=process,
-                backed_up_plans=backed_up_plans,
-            )
+        worker = ActiveWorker(
+            ticket_id=ticket_id,
+            linear_id=linear_id,
+            manifest=manifest,
+            worktree_path=worktree_path,
+            process=process,
+            backed_up_plans=backed_up_plans,
         )
+        if effective_mode == "local":
+            self._local_active.append(worker)
+        else:
+            self._cloud_active.append(worker)
 
     # ------------------------------------------------------------------
     # Worker lifecycle
     # ------------------------------------------------------------------
 
-    def _reap_finished_workers(self) -> None:
+    def _reap_pool(self, workers: list[ActiveWorker]) -> list[ActiveWorker]:
         still_running: list[ActiveWorker] = []
-        for worker in self._active:
+        for worker in workers:
             rc = worker.process.poll()
             if rc is None:
                 still_running.append(worker)
@@ -492,7 +522,11 @@ class Watcher:
                 elapsed,
             )
             self._finalize_worker(worker, returncode=rc, wall_time=elapsed)
-        self._active = still_running
+        return still_running
+
+    def _reap_finished_workers(self) -> None:
+        self._local_active = self._reap_pool(self._local_active)
+        self._cloud_active = self._reap_pool(self._cloud_active)
 
     def _safe_set_state(self, linear_id: str, state: str, ticket_id: str) -> None:
         try:
@@ -1046,10 +1080,11 @@ class Watcher:
         self._running = False
 
     def _wait_for_active_workers(self) -> None:
-        if not self._active:
+        all_active = self._local_active + self._cloud_active
+        if not all_active:
             return
-        logger.info("Waiting for %d active worker(s) to finish…", len(self._active))
-        for worker in self._active:
+        logger.info("Waiting for %d active worker(s) to finish…", len(all_active))
+        for worker in all_active:
             try:
                 worker.process.wait(timeout=600)
             except subprocess.TimeoutExpired:

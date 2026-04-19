@@ -621,11 +621,11 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
         patch.object(w, "_copy_manifest_to_worktree"),
         patch.object(w, "_launch_worker", return_value=fake_process),
     ):
-        # set_state raises — worker must still be launched and added to _active
+        # set_state raises — worker must still be launched and added to _local_active
         w._start_ticket("WOR-10", "fake-linear-id")
 
-    assert len(w._active) == 1
-    assert w._active[0].ticket_id == "WOR-10"
+    assert len(w._local_active) == 1
+    assert w._local_active[0].ticket_id == "WOR-10"
 
 
 # ---------------------------------------------------------------------------
@@ -1075,3 +1075,64 @@ def test_finalize_worker_usage_none_when_no_log(tmp_path: Path) -> None:
     m = metrics_mock.record.call_args[0][0]
     assert m.local_tokens is None
     assert m.context_compactions is None
+
+
+# ---------------------------------------------------------------------------
+# Per-type concurrency — cloud pool full does not block local dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
+    """A saturated cloud pool must not prevent a local ticket from being dispatched."""
+    local_manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        implementation_mode="local",
+        allowed_paths=["app/core/local_only.py"],
+    )
+    cloud_manifest = _make_manifest(
+        ticket_id="WOR-99",
+        worker_branch="wor-99-cloud-ticket",
+        implementation_mode="cloud",
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-99"),
+        allowed_paths=["app/core/cloud_only.py"],
+    )
+
+    mock_linear = MagicMock()
+    mock_linear.get_open_blockers.return_value = []
+
+    # max_cloud_workers=1 so one occupant fills the cloud pool; local cap=1
+    watcher = Watcher(
+        linear_client=mock_linear,
+        max_local_workers=1,
+        max_cloud_workers=1,
+    )
+
+    # Pre-fill the cloud pool
+    watcher._cloud_active.append(
+        ActiveWorker(
+            ticket_id="WOR-99",
+            linear_id="fake-cloud-id",
+            manifest=cloud_manifest,
+            worktree_path=tmp_path,
+            process=MagicMock(spec=subprocess.Popen),
+        )
+    )
+
+    fake_local_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(watcher, "_load_manifest", return_value=local_manifest),
+        patch.object(watcher, "_create_worktree", return_value=tmp_path),
+        patch.object(watcher, "_copy_manifest_to_worktree"),
+        patch.object(watcher, "_write_worker_pytest_config"),
+        patch.object(watcher, "_launch_worker", return_value=fake_local_process),
+    ):
+        watcher._start_ticket("WOR-10", "fake-local-id")
+
+    # Local ticket dispatched despite cloud pool being full
+    assert len(watcher._local_active) == 1
+    assert watcher._local_active[0].ticket_id == "WOR-10"
+    # Cloud pool unchanged
+    assert len(watcher._cloud_active) == 1
+    assert watcher._cloud_active[0].ticket_id == "WOR-99"
