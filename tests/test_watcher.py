@@ -6,6 +6,7 @@ this file covers the unit-testable, I/O-free helpers.
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -426,6 +427,51 @@ def test_create_pr_pushes_branch_before_gh_pr(tmp_path: Path) -> None:
         w._create_pr(manifest, tmp_path)
 
     assert call_order == ["push", "gh_pr"]
+
+
+def test_create_pr_logs_warning_on_auto_merge_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        base_branch="main",
+        title="Test ticket",
+        done_definition="It works.",
+    )
+    pr_url = "https://github.com/example/pr/1"
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            result.returncode = 1
+            result.stderr = "auto-merge is not enabled for this repository"
+            result.stdout = ""
+        elif cmd[:3] == ["gh", "pr", "create"]:
+            result.stdout = pr_url
+        elif cmd[:2] == ["git", "log"]:
+            result.stdout = "abc1234 some commit"
+        else:
+            result.stdout = pr_url
+        return result
+
+    w = Watcher(linear_client=MagicMock())
+    with (
+        patch("app.core.watcher.subprocess.run", side_effect=fake_run),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        returned_url = w._create_pr(manifest, tmp_path)
+
+    assert returned_url == pr_url
+    assert any(
+        "gh pr merge --auto failed" in msg
+        and pr_url in msg
+        and "rc=1" in msg
+        and "auto-merge is not enabled" in msg
+        for msg in caplog.messages
+    )
 
 
 # ---------------------------------------------------------------------------
