@@ -800,3 +800,23 @@ def test_rebase_worktree_from_base_warns_on_failure(
         w._rebase_worktree_from_base(tmp_path, "some-epic-branch")
 
     assert any("Could not rebase" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# _promote_waiting_tickets — context_snippets cleared on promotion
+# ---------------------------------------------------------------------------
+
+
+def test_promote_clears_context_snippets(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest(
+        context_snippets=["# app/core/foo.py:1-10\nsome code"]
+    )
+    _write_manifest(manifest, artifacts)
+
+    watcher, _ = _make_watcher_with_mock_linear(tmp_path, {"WOR-45": "completed"})
+    watcher._promote_waiting_tickets()
+
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "ReadyForLocal"
+    assert on_disk.context_snippets is None

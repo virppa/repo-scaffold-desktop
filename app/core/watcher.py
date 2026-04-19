@@ -293,7 +293,9 @@ class Watcher:
     def _transition_waiting_manifest(
         self, manifest: ExecutionManifest, manifest_path: Path, new_status: str
     ) -> None:
-        updated = manifest.model_copy(update={"status": new_status})
+        updated = manifest.model_copy(
+            update={"status": new_status, "context_snippets": None}
+        )
         updated.to_json(manifest_path)
         logger.debug(
             "Manifest for %s written with status=%s", manifest.ticket_id, new_status
