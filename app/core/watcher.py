@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Protocol
 
-from app.core.linear_client import LinearError
+from app.core.linear_client import DONE_STATE_TYPES, LinearError
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import ImplementationMode, MetricsStore, Outcome, TicketMetrics
 
@@ -41,7 +41,7 @@ _LITELLM_PORT = 8082
 _LITELLM_CONFIG = "litellm-local.yaml"
 _LOCAL_MODEL = "qwen3-coder:30b"
 _LITELLM_BASE_URL = f"http://localhost:{_LITELLM_PORT}"
-_WORKTREE_BASE = Path(".claude/worktrees")
+_WORKTREE_BASE = Path("worktrees")
 
 _ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(
     {
@@ -62,6 +62,7 @@ class LinearClientProtocol(Protocol):
     def get_open_blockers(self, issue_id: str) -> list[str]: ...
     def set_state(self, issue_id: str, state_name: str) -> None: ...
     def post_comment(self, issue_id: str, body: str) -> None: ...
+    def get_issue_state_type(self, identifier: str) -> str | None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -131,23 +132,50 @@ def build_worker_env(
     return env
 
 
-def build_worker_cmd(ticket_id: str, mode: str) -> list[str]:
-    """Return the claude subprocess command list for the given mode."""
-    prompt = f"/implement-ticket {ticket_id}"
-    # --strict-mcp-config + empty config prevents Claude Code from loading
-    # .mcp.json in the worktree, which would block for ~180s trying to
-    # authenticate the Linear HTTP MCP server via OAuth in non-interactive mode.
-    # Note: --bare breaks .claude/commands/ even with --add-dir .
-    # Context savings require --system-prompt-file approach (WOR-119).
+def build_worker_cmd(
+    ticket_id: str,
+    mode: str,
+    worktree_path: Path,
+    prompt: str | None = None,
+    disallowed_tools: list[str] | None = None,
+) -> list[str]:
+    """Return the claude subprocess command list for the given mode.
+
+    prompt — pre-expanded skill content; defaults to the /implement-ticket
+    slash-command shortcut (requires commands to be loaded by Claude Code).
+    In --bare mode the shortcut is unavailable, so callers should pass the
+    expanded implement-ticket.md content with $ARGUMENTS substituted.
+
+    disallowed_tools — list of tool-call patterns passed to --disallowed-tools
+    (e.g. ["Read(*watcher.py)", "Read(*metrics.py)"]) to enforce context_snippets.
+    """
+    if prompt is None:
+        prompt = f"/implement-ticket {ticket_id}"
+    # --bare strips auto-memory, hooks, and CLAUDE.md auto-discovery, keeping
+    # the system prompt lean. --add-dir re-adds the worktree CLAUDE.md.
+    # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
+    # from blocking ~180s on OAuth in non-interactive mode.
+    # NOTE: --bare also strips OAuth credential loading, so it must NOT be used
+    # for cloud mode where the worker authenticates via OAuth (Claude Max).
+    # Local mode uses a dummy API key via LiteLLM, so --bare is safe there.
     base = [
         "claude",
         "--dangerously-skip-permissions",
+        "--add-dir",
+        str(worktree_path),
         "--strict-mcp-config",
         "--mcp-config",
         '{"mcpServers":{}}',
         "--effort",
         "max",
+        "--verbose",
+        "--output-format",
+        "stream-json",
     ]
+    if mode == "local":
+        base.insert(2, "--bare")
+    if disallowed_tools:
+        base += ["--disallowed-tools", ",".join(disallowed_tools)]
     if mode == "local":
         return base + ["--model", _LOCAL_MODEL, "-p", prompt]
     return base + ["-p", prompt]
@@ -250,6 +278,7 @@ class Watcher:
         try:
             while self._running:
                 self._reap_finished_workers()
+                self._promote_waiting_tickets()
                 if len(self._active) < self._max_workers:
                     self._dispatch_next_ticket()
                 time.sleep(self._POLL_INTERVAL)
@@ -257,6 +286,103 @@ class Watcher:
             self._wait_for_active_workers()
             self._remove_pid_file()
             logger.info("Watcher stopped cleanly")
+
+    # ------------------------------------------------------------------
+    # WaitingForDeps promotion
+    # ------------------------------------------------------------------
+
+    def _transition_waiting_manifest(
+        self, manifest: ExecutionManifest, manifest_path: Path, new_status: str
+    ) -> None:
+        updated = manifest.model_copy(
+            update={"status": new_status, "context_snippets": None}
+        )
+        updated.to_json(manifest_path)
+        logger.debug(
+            "Manifest for %s written with status=%s", manifest.ticket_id, new_status
+        )
+
+    def _promote_waiting_tickets(self) -> None:
+        """Promote WaitingForDeps manifests to ReadyForLocal when all blockers complete.
+
+        Scans .claude/artifacts/*/manifest.json each poll cycle. For each manifest
+        with status=='WaitingForDeps', checks whether all blocked_by_tickets have
+        reached a completed/cancelled state in Linear. If so, writes the manifest
+        back to disk with status='ReadyForLocal' and advances the Linear ticket.
+
+        # TODO: detect when a predecessor goes to 'Blocked' (failed) and surface it
+        # as a comment rather than waiting forever.
+        """
+        artifacts_root = self._repo_root / ".claude" / "artifacts"
+        if not artifacts_root.exists():
+            return
+
+        for manifest_path in sorted(artifacts_root.glob("*/manifest.json")):
+            try:
+                manifest = ExecutionManifest.from_json(manifest_path)
+            except Exception as exc:
+                logger.warning("Could not load manifest at %s: %s", manifest_path, exc)
+                continue
+
+            if manifest.status != "WaitingForDeps":
+                continue
+
+            if not manifest.blocked_by_tickets:
+                logger.warning(
+                    "%s has status=WaitingForDeps but no blocked_by_tickets; "
+                    "promoting to ReadyForLocal",
+                    manifest.ticket_id,
+                )
+                self._transition_waiting_manifest(
+                    manifest, manifest_path, "ReadyForLocal"
+                )
+                self._notify_promotion(manifest)
+                continue
+
+            all_satisfied = True
+            for blocker_id in manifest.blocked_by_tickets:
+                try:
+                    state_type = self._linear.get_issue_state_type(blocker_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not fetch state for blocker %s of %s: %s",
+                        blocker_id,
+                        manifest.ticket_id,
+                        exc,
+                    )
+                    all_satisfied = False
+                    break
+
+                if state_type is None or state_type not in DONE_STATE_TYPES:
+                    all_satisfied = False
+                    break
+
+            if all_satisfied:
+                logger.info(
+                    "All blockers for %s satisfied — promoting to ReadyForLocal",
+                    manifest.ticket_id,
+                )
+                self._transition_waiting_manifest(
+                    manifest, manifest_path, "ReadyForLocal"
+                )
+                self._notify_promotion(manifest)
+
+    def _notify_promotion(self, manifest: ExecutionManifest) -> None:
+        if not manifest.linear_id:
+            return
+        self._safe_set_state(manifest.linear_id, "ReadyForLocal", manifest.ticket_id)
+        try:
+            self._linear.post_comment(
+                manifest.linear_id,
+                f"All predecessors merged. `{manifest.ticket_id}` promoted to "
+                f"ReadyForLocal — watcher will pick up on next poll.",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not post promotion comment for %s: %s",
+                manifest.ticket_id,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # Poll and dispatch
@@ -309,6 +435,7 @@ class Watcher:
         )
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
 
+        backed_up_plans = self._backup_plan_files()
         process = self._launch_worker(manifest, worktree_path, effective_mode)
         self._active.append(
             ActiveWorker(
@@ -317,6 +444,7 @@ class Watcher:
                 manifest=manifest,
                 worktree_path=worktree_path,
                 process=process,
+                backed_up_plans=backed_up_plans,
             )
         )
 
@@ -420,7 +548,8 @@ class Watcher:
             )
         )
 
-        self._preserve_worker_log(worker)
+        self._restore_plan_files(worker.backed_up_plans)
+        self._preserve_worker_artifacts(worker)
         self._cleanup_worktree(worker.worktree_path)
 
     # ------------------------------------------------------------------
@@ -442,7 +571,7 @@ class Watcher:
         worktree_name = manifest.worktree_name or manifest.worker_branch
         if ".." in Path(worktree_name).parts:
             raise ValueError(f"Invalid worktree name: {worktree_name!r}")
-        worktree_path = self._repo_root / _WORKTREE_BASE / worktree_name
+        worktree_path = self._repo_root.parent / _WORKTREE_BASE / worktree_name
         subprocess.run(  # nosec B603 B607
             [
                 "git",
@@ -458,7 +587,45 @@ class Watcher:
             text=True,
         )
         logger.info("Worktree created at %s", worktree_path)
+        self._rebase_worktree_from_base(worktree_path, manifest.base_branch)
         return worktree_path
+
+    def _rebase_worktree_from_base(self, worktree_path: Path, base_branch: str) -> None:
+        """Fetch and rebase the worktree from origin/<base_branch>.
+
+        Ensures the worker starts from the latest epic state, not a stale
+        snapshot from when the branch was created.  Logs a warning on failure
+        rather than raising — a stale start is preferable to no start at all.
+        """
+        try:
+            subprocess.run(  # nosec B603 B607
+                ["git", "-C", str(worktree_path), "fetch", "origin", base_branch],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(  # nosec B603 B607
+                [
+                    "git",
+                    "-C",
+                    str(worktree_path),
+                    "rebase",
+                    f"origin/{base_branch}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.debug(
+                "Worktree at %s rebased onto origin/%s", worktree_path, base_branch
+            )
+        except subprocess.CalledProcessError as exc:
+            logger.warning(
+                "Could not rebase worktree onto origin/%s (worker will start from "
+                "branch tip instead): %s",
+                base_branch,
+                (exc.stderr or exc.stdout or str(exc)).strip(),
+            )
 
     def _copy_manifest_to_worktree(
         self, manifest: ExecutionManifest, worktree_path: Path
@@ -467,6 +634,38 @@ class Watcher:
         dest = worktree_path / manifest.artifact_paths.manifest_copy
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dest)
+
+    def _backup_plan_files(self) -> list[Path]:
+        """Move ~/.claude/plans/*.md aside so the worker doesn't enter plan mode.
+
+        Claude Code enters plan mode whenever it finds a plan file in the plans
+        directory at startup. Workers must never enter plan mode — they run
+        non-interactively and ExitPlanMode would silently terminate the session.
+        Returns the list of backup paths so the caller can restore them later.
+        """
+        plans_dir = Path.home() / ".claude" / "plans"
+        if not plans_dir.exists():
+            return []
+        backup_dir = plans_dir.parent / "plans_worker_backup"
+        backup_dir.mkdir(exist_ok=True)
+        moved: list[Path] = []
+        for plan_file in plans_dir.glob("*.md"):
+            dest = backup_dir / plan_file.name
+            shutil.move(str(plan_file), dest)
+            moved.append(dest)
+        if moved:
+            logger.debug("Backed up %d plan file(s) to %s", len(moved), backup_dir)
+        return moved
+
+    def _restore_plan_files(self, backed_up: list[Path]) -> None:
+        """Restore plan files moved by _backup_plan_files."""
+        if not backed_up:
+            return
+        plans_dir = Path.home() / ".claude" / "plans"
+        plans_dir.mkdir(exist_ok=True)
+        for plan_file in backed_up:
+            shutil.move(str(plan_file), plans_dir / plan_file.name)
+        logger.debug("Restored %d plan file(s)", len(backed_up))
 
     def _write_worker_pytest_config(self, worktree_path: Path) -> None:
         """Write pytest.ini overriding pyproject.toml addopts in the worktree.
@@ -477,19 +676,35 @@ class Watcher:
         """
         (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
 
-    def _preserve_worker_log(self, worker: ActiveWorker) -> None:
-        log_src = (
-            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-        )
-        if not log_src.exists():
-            return
+    def _preserve_worker_artifacts(self, worker: ActiveWorker) -> None:
+        """Copy worker log and result.json from the worktree to the repo artifact dir.
+
+        The worktree is removed after this call, so any file not copied here is lost.
+        """
         artifact_dir = (
             self._repo_root / worker.manifest.artifact_paths.result_json
         ).parent
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        dest = artifact_dir / log_src.name
-        shutil.copy2(log_src, dest)
-        logger.info("Worker log preserved at %s", dest)
+
+        log_src = (
+            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
+        )
+        if log_src.exists():
+            shutil.copy2(log_src, artifact_dir / log_src.name)
+            logger.info("Worker log preserved at %s", artifact_dir / log_src.name)
+
+        result_src = worker.worktree_path / worker.manifest.artifact_paths.result_json
+        if result_src.exists():
+            shutil.copy2(result_src, artifact_dir / result_src.name)
+            logger.info(
+                "Result artifact preserved at %s", artifact_dir / result_src.name
+            )
+        else:
+            logger.warning(
+                "No result artifact found at %s for %s",
+                result_src,
+                worker.ticket_id,
+            )
 
     def _cleanup_worktree(self, worktree_path: Path) -> None:
         try:
@@ -515,7 +730,7 @@ class Watcher:
 
     def _cleanup_orphaned_worktrees(self) -> None:
         """Remove any leftover watcher-managed worktrees from a prior run."""
-        base = self._repo_root / _WORKTREE_BASE
+        base = self._repo_root.parent / _WORKTREE_BASE
         if not base.exists():
             return
         for worktree_dir in base.iterdir():
@@ -528,13 +743,75 @@ class Watcher:
     # Worker subprocess
     # ------------------------------------------------------------------
 
+    def _expand_skill(self, ticket_id: str) -> str | None:
+        """Return the implement-ticket skill content with $ARGUMENTS substituted.
+
+        Returns None if the skill file cannot be read (caller falls back to
+        the /implement-ticket shortcut).
+        """
+        skill_path = self._repo_root / ".claude" / "commands" / "implement-ticket.md"
+        try:
+            return skill_path.read_text(encoding="utf-8").replace(
+                "$ARGUMENTS", ticket_id
+            )
+        except OSError:
+            logger.warning("Could not read skill file %s; using shortcut", skill_path)
+            return None
+
+    @staticmethod
+    def _build_snippet_tool_restrictions(snippets: list[str]) -> list[str]:
+        """Return --disallowed-tools patterns derived from context_snippets headers.
+
+        Each snippet starts with a comment line like:
+            # app/core/watcher.py lines 574-589
+        We extract the basename and return glob patterns that block Read on those
+        files regardless of the absolute path the worker uses.
+        """
+        import re
+
+        seen: set[str] = set()
+        patterns: list[str] = []
+        header_re = re.compile(r"^#\s+(\S+)\s+lines?\s+\d")
+        for snippet in snippets:
+            first_line = snippet.splitlines()[0] if snippet else ""
+            m = header_re.match(first_line)
+            if m:
+                basename = Path(m.group(1)).name
+                if basename not in seen:
+                    seen.add(basename)
+                    patterns.append(f"Read(*{basename})")
+        return patterns
+
     def _launch_worker(
         self,
         manifest: ExecutionManifest,
         worktree_path: Path,
         effective_mode: str,
     ) -> subprocess.Popen[bytes]:
-        cmd = build_worker_cmd(manifest.ticket_id, effective_mode)
+        prompt = self._expand_skill(manifest.ticket_id)
+
+        disallowed_tools: list[str] | None = None
+        if manifest.context_snippets and effective_mode == "cloud":
+            disallowed_tools = self._build_snippet_tool_restrictions(
+                manifest.context_snippets
+            )
+            if disallowed_tools and prompt:
+                file_list = ", ".join(
+                    p.removeprefix("Read(*").removesuffix(")") for p in disallowed_tools
+                )
+                warning = (
+                    f"CRITICAL: The following files are pre-loaded as context_snippets "
+                    f"in the manifest: {file_list}. "
+                    f"DO NOT use the Read tool on these files — "
+                    f"the tool is blocked and attempting to read them will "
+                    f"abort the task. "
+                    f"Use only the snippets already provided.\n\n"
+                )
+                prompt = warning + (prompt or "")
+
+        cmd = build_worker_cmd(
+            manifest.ticket_id, effective_mode, worktree_path, prompt, disallowed_tools
+        )
         env = build_worker_env(effective_mode, dict(os.environ))
 
         log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"

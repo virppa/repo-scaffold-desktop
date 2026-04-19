@@ -42,6 +42,7 @@ As a Product Owner, evaluate the issue before development begins:
    - **Milestone** — which project milestone to assign. **First check `list_milestones` progress — do not assign to any milestone at 100%; it is complete and closed to new work.** Suggest the next appropriate open milestone instead. If no existing milestone fits (e.g. clear post-V1 work), flag this and suggest creating a new one with name and description.
    - **Priority** — 1=Urgent / 2=High / 3=Normal / 4=Low
    - **Blockers** — any issues that must ship first (by WOR-NNN identifier)
+   - **local-ready label** — assess whether this ticket is safe for local LLM execution. Recommend adding the `local-ready` label if ALL of the following are true: (a) scope touches ≤3 files, none of which are large/complex orchestration modules (e.g. watcher.py, generator.py); (b) the task is straightforward wiring or additive changes requiring minimal cross-file reasoning; (c) no cloud-only dependencies or sensitive credentials needed. If any condition fails, recommend withholding the label — the watcher will route it to cloud. State your reasoning explicitly.
 
 **STOP HERE.** Present your analysis and wait for human approval before making any changes.
 
@@ -49,7 +50,7 @@ As a Product Owner, evaluate the issue before development begins:
 
 After the human approves, take all of the following actions in Linear:
 
-1. **Labels** — set the Type and Stream labels on the issue using `save_issue` (use label names, not IDs)
+1. **Labels** — set the Type and Stream labels on the issue using `save_issue` (use label names, not IDs). If `local-ready` was recommended, add it to the labels list too.
 2. **Epic** — set `parentId` to the approved epic identifier using `save_issue`. If a new epic was proposed and approved, create it first with `save_issue` (no parentId, with Type+Stream labels), then set it as parent on this issue
 3. **Milestone** — assign with `save_issue`. If a new milestone was approved, create it first with `save_milestone(project: "repo-scaffold-desktop", name: "...", description: "...")`, then assign
 4. **Priority** — update if the current value is wrong or missing

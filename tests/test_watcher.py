@@ -162,23 +162,68 @@ def test_cloud_mode_does_not_inject_base_url_if_absent() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_cloud_cmd_has_no_model_flag() -> None:
-    cmd = build_worker_cmd("WOR-10", "cloud")
+def test_cloud_cmd_has_no_model_flag(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path)
     assert "--model" not in cmd
     assert "/implement-ticket WOR-10" in " ".join(cmd)
 
 
-def test_local_cmd_includes_model_flag() -> None:
-    cmd = build_worker_cmd("WOR-10", "local")
+def test_local_cmd_includes_model_flag(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "local", tmp_path)
     assert "--model" in cmd
     idx = cmd.index("--model")
     assert cmd[idx + 1] == "qwen3-coder:30b"
 
 
-def test_cmd_includes_dangerously_skip_permissions() -> None:
+def test_cmd_includes_dangerously_skip_permissions(tmp_path: Path) -> None:
     for mode in ("cloud", "local"):
-        cmd = build_worker_cmd("WOR-10", mode)
+        cmd = build_worker_cmd("WOR-10", mode, tmp_path)
         assert "--dangerously-skip-permissions" in cmd
+
+
+def test_cmd_bare_mode_uses_worktree_path(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "local", tmp_path)
+    assert "--bare" in cmd
+    idx = cmd.index("--add-dir")
+    assert cmd[idx + 1] == str(tmp_path)
+
+
+def test_cloud_cmd_has_no_bare_flag(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path)
+    assert "--bare" not in cmd
+
+
+def test_cmd_disallowed_tools_appended(tmp_path: Path) -> None:
+    tools = ["Read(*watcher.py)", "Read(*metrics.py)"]
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path, disallowed_tools=tools)
+    assert "--disallowed-tools" in cmd
+    idx = cmd.index("--disallowed-tools")
+    assert cmd[idx + 1] == "Read(*watcher.py),Read(*metrics.py)"
+
+
+def test_cmd_no_disallowed_tools_when_none(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path, disallowed_tools=None)
+    assert "--disallowed-tools" not in cmd
+
+
+def test_build_snippet_tool_restrictions_extracts_basenames() -> None:
+    from app.core.watcher import Watcher
+
+    snippets = [
+        "# app/core/watcher.py lines 574-589\nsome code",
+        "# app/core/metrics.py lines 1-20\nmore code",
+        "# app/core/watcher.py lines 600-620\nduplicate file",
+    ]
+    patterns = Watcher._build_snippet_tool_restrictions(snippets)
+    assert patterns == ["Read(*watcher.py)", "Read(*metrics.py)"]
+
+
+def test_build_snippet_tool_restrictions_ignores_malformed() -> None:
+    from app.core.watcher import Watcher
+
+    snippets = ["no header here", "# missing path\ncode"]
+    patterns = Watcher._build_snippet_tool_restrictions(snippets)
+    assert patterns == []
 
 
 # ---------------------------------------------------------------------------
@@ -234,7 +279,7 @@ def test_is_watcher_running_own_pid(tmp_path: Path) -> None:
 
 
 def test_cleanup_orphaned_worktrees_removes_dirs(tmp_path: Path) -> None:
-    worktree_dir = tmp_path / ".claude/worktrees/wor-99-old-ticket"
+    worktree_dir = tmp_path.parent / "worktrees/wor-99-old-ticket"
     worktree_dir.mkdir(parents=True)
 
     mock_linear = MagicMock()
@@ -579,3 +624,280 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
 
     assert len(w._active) == 1
     assert w._active[0].ticket_id == "WOR-10"
+
+
+# ---------------------------------------------------------------------------
+# _promote_waiting_tickets
+# ---------------------------------------------------------------------------
+
+
+def _make_waiting_manifest(
+    ticket_id: str = "WOR-46",
+    blocked_by: list[str] | None = None,
+    linear_id: str | None = "fake-linear-uuid",
+    **overrides: Any,
+) -> ExecutionManifest:
+    return _make_manifest(
+        ticket_id=ticket_id,
+        status="WaitingForDeps",
+        linear_id=linear_id,
+        blocked_by_tickets=blocked_by if blocked_by is not None else ["WOR-45"],
+        worker_branch=f"wor-{ticket_id.lower().replace('-', '')}-branch",
+        artifact_paths=ArtifactPaths.from_ticket_id(ticket_id),
+        **overrides,
+    )
+
+
+def _write_manifest(manifest: ExecutionManifest, artifacts_root: Path) -> Path:
+    slug = manifest.ticket_id.lower().replace("-", "_")
+    path = artifacts_root / slug / "manifest.json"
+    return manifest.to_json(path)
+
+
+def _make_watcher_with_mock_linear(
+    tmp_path: Path, state_type_map: dict[str, str | None] | None = None
+) -> tuple[Watcher, MagicMock]:
+    mock_linear = MagicMock()
+    if state_type_map is not None:
+        mock_linear.get_issue_state_type.side_effect = lambda id_: state_type_map.get(
+            id_
+        )
+    watcher = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+    return watcher, mock_linear
+
+
+def test_promote_all_blockers_completed_promotes_to_ready(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest()
+    _write_manifest(manifest, artifacts)
+
+    watcher, mock_linear = _make_watcher_with_mock_linear(
+        tmp_path, {"WOR-45": "completed"}
+    )
+    watcher._promote_waiting_tickets()
+
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "ReadyForLocal"
+    mock_linear.set_state.assert_called_once_with("fake-linear-uuid", "ReadyForLocal")
+    mock_linear.post_comment.assert_called_once()
+
+
+def test_promote_blocker_not_done_skips(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest()
+    _write_manifest(manifest, artifacts)
+
+    watcher, mock_linear = _make_watcher_with_mock_linear(
+        tmp_path, {"WOR-45": "started"}
+    )
+    watcher._promote_waiting_tickets()
+
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "WaitingForDeps"
+    mock_linear.set_state.assert_not_called()
+
+
+def test_promote_partial_blockers_skips(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest(blocked_by=["WOR-45", "WOR-47"])
+    _write_manifest(manifest, artifacts)
+
+    watcher, mock_linear = _make_watcher_with_mock_linear(
+        tmp_path, {"WOR-45": "completed", "WOR-47": "started"}
+    )
+    watcher._promote_waiting_tickets()
+
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "WaitingForDeps"
+    mock_linear.set_state.assert_not_called()
+
+
+def test_promote_cancelled_blocker_counts_as_done(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest()
+    _write_manifest(manifest, artifacts)
+
+    watcher, mock_linear = _make_watcher_with_mock_linear(
+        tmp_path, {"WOR-45": "cancelled"}
+    )
+    watcher._promote_waiting_tickets()
+
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "ReadyForLocal"
+
+
+def test_promote_empty_blocked_by_promotes_immediately(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest(blocked_by=[])
+    _write_manifest(manifest, artifacts)
+
+    watcher, mock_linear = _make_watcher_with_mock_linear(tmp_path)
+    watcher._promote_waiting_tickets()
+
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "ReadyForLocal"
+    mock_linear.get_issue_state_type.assert_not_called()
+
+
+def test_promote_skips_non_waiting_manifests(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    ready_manifest = _make_manifest(status="ReadyForLocal")
+    _write_manifest(ready_manifest, artifacts)
+
+    watcher, mock_linear = _make_watcher_with_mock_linear(tmp_path)
+    watcher._promote_waiting_tickets()
+
+    mock_linear.get_issue_state_type.assert_not_called()
+    mock_linear.set_state.assert_not_called()
+
+
+def test_promote_linear_fetch_error_treated_as_unsatisfied(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest()
+    _write_manifest(manifest, artifacts)
+
+    mock_linear = MagicMock()
+    mock_linear.get_issue_state_type.side_effect = LinearError("network failure")
+    watcher = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+    watcher._promote_waiting_tickets()
+
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "WaitingForDeps"
+    mock_linear.set_state.assert_not_called()
+
+
+def test_promote_writes_updated_manifest_to_disk(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest()
+    path = _write_manifest(manifest, artifacts)
+
+    watcher, _ = _make_watcher_with_mock_linear(tmp_path, {"WOR-45": "completed"})
+    watcher._promote_waiting_tickets()
+
+    reloaded = ExecutionManifest.from_json(path)
+    assert reloaded.status == "ReadyForLocal"
+    assert reloaded.ticket_id == "WOR-46"
+
+
+def test_promote_no_artifacts_root_no_error(tmp_path: Path) -> None:
+    watcher, _ = _make_watcher_with_mock_linear(tmp_path)
+    watcher._promote_waiting_tickets()  # should not raise
+
+
+def test_promote_no_linear_id_updates_disk_only(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest(linear_id=None)
+    _write_manifest(manifest, artifacts)
+
+    watcher, mock_linear = _make_watcher_with_mock_linear(
+        tmp_path, {"WOR-45": "completed"}
+    )
+    watcher._promote_waiting_tickets()
+
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "ReadyForLocal"
+    mock_linear.set_state.assert_not_called()
+    mock_linear.post_comment.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _preserve_worker_artifacts
+# ---------------------------------------------------------------------------
+
+
+def test_preserve_worker_artifacts_copies_log_and_result(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+
+    worktree = tmp_path / "worktrees" / "wor-10"
+    worktree.mkdir(parents=True)
+
+    log_src = worktree / ".claude" / "worker_wor-10.log"
+    log_src.parent.mkdir(parents=True)
+    log_src.write_text("log content")
+
+    result_src = worktree / ".claude" / "artifacts" / "wor_10" / "result.json"
+    result_src.parent.mkdir(parents=True)
+    result_src.write_text('{"status": "success"}')
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    w._preserve_worker_artifacts(worker)
+
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+    assert (artifact_dir / "worker_wor-10.log").read_text() == "log content"
+    assert (artifact_dir / "result.json").read_text() == '{"status": "success"}'
+
+
+def test_preserve_worker_artifacts_missing_result_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+
+    worktree = tmp_path / "worktrees" / "wor-10"
+    worktree.mkdir(parents=True)
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher"):
+        w._preserve_worker_artifacts(worker)
+
+    assert any("No result artifact" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# _rebase_worktree_from_base
+# ---------------------------------------------------------------------------
+
+
+def test_rebase_worktree_from_base_warns_on_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+
+    def _raise(*args: Any, **kwargs: Any) -> None:
+        raise subprocess.CalledProcessError(1, "git", stderr="conflict")
+
+    with (
+        patch("subprocess.run", side_effect=_raise),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        w._rebase_worktree_from_base(tmp_path, "some-epic-branch")
+
+    assert any("Could not rebase" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# _promote_waiting_tickets — context_snippets cleared on promotion
+# ---------------------------------------------------------------------------
+
+
+def test_promote_clears_context_snippets(tmp_path: Path) -> None:
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest(
+        context_snippets=["# app/core/foo.py:1-10\nsome code"]
+    )
+    _write_manifest(manifest, artifacts)
+
+    watcher, _ = _make_watcher_with_mock_linear(tmp_path, {"WOR-45": "completed"})
+    watcher._promote_waiting_tickets()
+
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "ReadyForLocal"
+    assert on_disk.context_snippets is None

@@ -217,6 +217,21 @@
       "title": "Related Files Hint",
       "type": "array"
     },
+    "context_snippets": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Context Snippets"
+    },
     "required_checks": {
       "items": {
         "type": "string"
@@ -238,6 +253,25 @@
     },
     "failure_policy": {
       "$ref": "#/$defs/FailurePolicy"
+    },
+    "linear_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Linear Id"
+    },
+    "blocked_by_tickets": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Blocked By Tickets",
+      "type": "array"
     },
     "ticket_state_map": {
       "$ref": "#/$defs/TicketStateMap"

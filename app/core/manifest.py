@@ -166,6 +166,11 @@ class ExecutionManifest(BaseModel):
     related_files_hint: list[str] = Field(default_factory=list)
     """Files likely relevant to this ticket (informational, not a whitelist)."""
 
+    context_snippets: list[str] | None = None
+    """Pre-injected code snippets from the cloud producer. Each entry is a
+    verbatim excerpt (file path + lines) the worker should treat as already-read.
+    Reduces full-file reads and saves context window for implementation."""
+
     # ------------------------------------------------------------------
     # Checks
     # ------------------------------------------------------------------
@@ -183,6 +188,19 @@ class ExecutionManifest(BaseModel):
     """Plain-English description of what 'Done' means for this ticket."""
 
     failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
+
+    # ------------------------------------------------------------------
+    # Dependency tracking (WaitingForDeps promotion)
+    # ------------------------------------------------------------------
+    linear_id: str | None = None
+    """Linear UUID for this ticket (not the WOR-XX human identifier).
+    Required when status == 'WaitingForDeps' so the watcher can call
+    set_state without a prior Linear poll."""
+
+    blocked_by_tickets: list[str] = Field(default_factory=list)
+    """Human identifiers (e.g. ['WOR-45']) of tickets that must reach a
+    Linear completed/cancelled state before this manifest is promoted to
+    ReadyForLocal. Only meaningful when status == 'WaitingForDeps'."""
 
     # ------------------------------------------------------------------
     # State mapping and artifacts

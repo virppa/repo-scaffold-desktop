@@ -262,3 +262,29 @@ def test_post_comment_raises_when_success_false() -> None:
             LinearError, match="commentCreate.*success=false.*issue-id-123"
         ):
             _client().post_comment("issue-id-123", "hello")
+
+
+# ---------------------------------------------------------------------------
+# get_issue_state_type
+# ---------------------------------------------------------------------------
+
+
+def test_get_issue_state_type_returns_type_string() -> None:
+    response = {"data": {"issues": {"nodes": [{"state": {"type": "completed"}}]}}}
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        result = _client().get_issue_state_type("WOR-45")
+    assert result == "completed"
+
+
+def test_get_issue_state_type_returns_none_for_missing_issue() -> None:
+    response = {"data": {"issues": {"nodes": []}}}
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        result = _client().get_issue_state_type("WOR-99")
+    assert result is None
+
+
+def test_get_issue_state_type_raises_on_api_error() -> None:
+    response = {"errors": [{"message": "not found"}]}
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        with pytest.raises(LinearError):
+            _client().get_issue_state_type("WOR-45")
