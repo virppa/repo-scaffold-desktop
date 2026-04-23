@@ -89,3 +89,9 @@ def test_non_agentic_presets_have_no_skills_config():
         preset = get_preset(name)
         assert preset.skills_source is None
         assert preset.skills_version is None
+
+
+def test_python_desktop_required_files_include_conftest_and_smoke():
+    preset = get_preset("python_desktop")
+    assert "tests/conftest.py" in preset.required_files
+    assert "tests/test_ui_smoke.py" in preset.required_files
