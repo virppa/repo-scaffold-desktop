@@ -5,14 +5,22 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from jinja2 import Environment, Undefined
+
 _GITHUB_SOURCE_RE = re.compile(r"^github:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
 _SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_.\-/]+$")
 
 
 def fetch_skills(
-    output_path: Path, skills_source: str, skills_version: str
+    output_path: Path,
+    skills_source: str,
+    skills_version: str,
+    context: dict[str, object] | None = None,
 ) -> list[str]:
     """Fetch .claude/commands/ from a versioned skills repo and write to output_path.
+
+    When context is provided each downloaded file is rendered through Jinja2 using
+    non-strict Undefined so missing variables produce an empty string, not an error.
 
     Returns the list of relative paths written. On network or API errors, logs a
     warning and returns an empty list — fetch failure is intentionally non-fatal.
@@ -45,6 +53,15 @@ def fetch_skills(
 
     commands_prefix = ".claude/commands/"
     written: list[str] = []
+    _jinja_env: Environment | None = (
+        Environment(  # nosec B701  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
+            undefined=Undefined,
+            keep_trailing_newline=True,
+            autoescape=False,
+        )
+        if context is not None
+        else None
+    )
 
     for entry in tree.get("tree", []):
         path: str = entry.get("path", "")
@@ -63,6 +80,11 @@ def fetch_skills(
         except OSError as exc:
             print(f"[skills] Warning: could not download {path}: {exc}")
             continue
+
+        if _jinja_env is not None and context is not None:
+            text = content.decode("utf-8", errors="replace")
+            rendered = _jinja_env.from_string(text).render(**context)  # nosec  # nosemgrep: python.flask.security.xss.audit.direct-use-of-jinja2.direct-use-of-jinja2
+            content = rendered.encode("utf-8")
 
         dest = output_path / path
         dest.parent.mkdir(parents=True, exist_ok=True)
