@@ -421,6 +421,7 @@ def test_python_basic_dev_deps_include_mock_and_snapshot(output_dir):
     content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
     assert "pytest-mock" in content
     assert "pytest-snapshot" in content
+    assert "hypothesis" in content
 
 
 def test_python_basic_dev_deps_exclude_qt_and_asyncio(output_dir):
@@ -438,6 +439,7 @@ def test_python_desktop_dev_deps_include_qt(output_dir):
     assert "pytest-mock" in content
     assert "pytest-snapshot" in content
     assert "pytest-qt" in content
+    assert "hypothesis" in content
     assert "pytest-asyncio" not in content
 
 
