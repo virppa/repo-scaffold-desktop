@@ -1,3 +1,15 @@
+{%- if include_linear_mcp -%}
+{
+  "_comment": "Run /mcp in Claude Code to authenticate with Linear.",
+  "mcpServers": {
+    "linear": {
+      "type": "http",
+      "url": "https://mcp.linear.app/mcp"
+    }
+  }
+}
+{%- else -%}
 {
   "mcpServers": {}
 }
+{%- endif %}
