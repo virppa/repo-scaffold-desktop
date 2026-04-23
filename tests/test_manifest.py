@@ -79,7 +79,7 @@ def test_optional_fields_default_to_empty_or_none():
 def test_ticket_state_map_default_values():
     m = _make_manifest()
     assert m.ticket_state_map.in_progress_local == "InProgressLocal"
-    assert m.ticket_state_map.merged_to_epic == "MergedToEpic"
+    assert m.ticket_state_map.failed == "Blocked"
 
 
 def test_failure_policy_default_abort():

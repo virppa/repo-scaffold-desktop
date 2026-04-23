@@ -647,7 +647,7 @@ def test_finalize_worker_set_state_failure_success_path_no_crash(
         patch.object(w, "_cleanup_worktree"),
         patch.object(w, "_metrics"),
     ):
-        # Success path calls set_state(merged_to_epic) — must not propagate
+        # Success path: PR created; Linear automation handles MergedToEpic on merge
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
 
 

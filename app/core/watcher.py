@@ -567,7 +567,6 @@ class Watcher:
                 )
             return "failure"
         logger.info("PR created for %s: %s", ticket_id, pr_url)
-        self._safe_set_state(linear_id, manifest.ticket_state_map.in_review, ticket_id)
         return "success"
 
     def _finalize_worker(

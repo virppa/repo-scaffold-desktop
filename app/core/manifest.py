@@ -27,9 +27,6 @@ class TicketStateMap(BaseModel):
     model_config = {"extra": "forbid"}
 
     in_progress_local: str = "InProgressLocal"
-    in_review: str = "In Review"
-    merged_to_epic: str = "MergedToEpic"
-    ready_for_review: str = "EpicReadyForCloudReview"
     failed: str = "Blocked"
 
 

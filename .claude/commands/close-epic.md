@@ -49,12 +49,12 @@ Fix these before running /close-epic again.
 If all child PRs are merged: confirm "All N sub-tickets confirmed merged via GitHub. Linear state repaired where stale." and continue.
 
 ### 2. Pull and verify the epic branch
-Derive the epic branch name from the Linear "Copy branch name" format (e.g. `wor-49-template-system`).
+Derive the epic branch name using the `epic/wor-NNN-slug` prefix (e.g. `epic/wor-49-template-system`).
 
 ```bash
 git fetch origin
-git checkout <epic-branch>
-git pull origin <epic-branch>
+git checkout epic/<epic-slug>
+git pull origin epic/<epic-slug>
 ```
 
 ### 3. Security check
@@ -157,7 +157,7 @@ List any worktrees for sub-tickets that have already been merged into the epic b
 git worktree list
 ```
 
-For each sub-ticket worktree whose branch is fully merged (confirm with `git branch --merged <epic-branch>`):
+For each sub-ticket worktree whose branch is fully merged (confirm with `git branch --merged epic/<epic-slug>`):
 ```bash
 git worktree remove <worktree-path>
 git branch -d <sub-ticket-branch>
