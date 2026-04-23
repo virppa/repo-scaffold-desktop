@@ -1057,12 +1057,35 @@ class Watcher:
         )
         if merge_result.returncode != 0:
             output = (merge_result.stderr or merge_result.stdout).strip()
-            logger.warning(
-                "gh pr merge --auto failed for %s (rc=%d): %s",
-                pr_url,
-                merge_result.returncode,
-                output,
-            )
+            # "clean status" means no required checks on the target branch (e.g. epic
+            # branches) — PR is already mergeable, so fall back to immediate merge.
+            if "enablePullRequestAutoMerge" in output or "clean status" in output:
+                logger.info(
+                    "No required checks on target branch — merging %s immediately",
+                    pr_url,
+                )
+                immediate = subprocess.run(  # nosec B603 B607
+                    ["gh", "pr", "merge", "--squash", pr_url],
+                    cwd=str(worktree_path),
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if immediate.returncode != 0:
+                    imm_output = (immediate.stderr or immediate.stdout).strip()
+                    logger.warning(
+                        "gh pr merge --squash also failed for %s (rc=%d): %s",
+                        pr_url,
+                        immediate.returncode,
+                        imm_output,
+                    )
+            else:
+                logger.warning(
+                    "gh pr merge --auto failed for %s (rc=%d): %s",
+                    pr_url,
+                    merge_result.returncode,
+                    output,
+                )
         return pr_url
 
     # ------------------------------------------------------------------
