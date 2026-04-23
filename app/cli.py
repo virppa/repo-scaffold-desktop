@@ -259,10 +259,17 @@ def _run_generate(args: argparse.Namespace) -> int:
 
     preset = get_preset(config.preset)
     if preset.skills_source is not None and preset.skills_version is not None:
+        ctx = config.model_dump()
+        skills_context = (
+            {k: ctx[k] for k in preset.skills_context_fields}
+            if preset.skills_context_fields
+            else None
+        )
         skills_written = fetch_skills(
             args.output,
             skills_source=preset.skills_source,
             skills_version=preset.skills_version,
+            context=skills_context,
         )
         for path in skills_written:
             print(f"✓ {path}")
