@@ -5,7 +5,12 @@
     "linear": {
       "type": "http",
       "url": "https://mcp.linear.app/mcp"
-    }
+    }{% if include_playwright %},
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@playwright/mcp"]
+    }{% endif %}
   }
 }
 {%- else -%}

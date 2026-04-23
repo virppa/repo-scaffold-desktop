@@ -73,3 +73,8 @@ def test_all_valid_presets_accepted():
 def test_invalid_preset_rejected():
     with pytest.raises(ValidationError):
         RepoConfig(repo_name="my-repo", preset="nonexistent_preset")
+
+
+def test_include_playwright_defaults_false():
+    config = RepoConfig(repo_name="my-repo", preset="full_agentic")
+    assert config.include_playwright is False
