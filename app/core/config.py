@@ -16,6 +16,7 @@ class RepoConfig(BaseModel):
     include_codeowners: bool = False
     include_claude_files: bool = False
     include_linear_mcp: bool = False
+    include_playwright: bool = False
 
     git_init: bool = False
     install_precommit: bool = False

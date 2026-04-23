@@ -1,0 +1,23 @@
+# Web smoke tests using Playwright.
+# Run: pytest tests/test_web_smoke.py --headed   (or headless by default)
+#
+# Prerequisites:
+#   pip install playwright pytest-playwright
+#   playwright install chromium
+
+# import pytest
+# from playwright.sync_api import Page
+#
+#
+# BASE_URL = "http://localhost:8000"
+#
+#
+# def test_home_page_loads(page: Page) -> None:
+#     page.goto(BASE_URL)
+#     assert page.title() != ""
+#
+#
+# def test_home_page_has_content(page: Page) -> None:
+#     page.goto(BASE_URL)
+#     # Replace with a selector that exists on your home page.
+#     assert page.locator("body").is_visible()

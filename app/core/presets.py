@@ -118,6 +118,7 @@ _PRESETS: dict[str, Preset] = {
                 _F_MCP_JSON,
                 ".claude/settings.json",
             ),
+            "include_playwright": ("tests/test_web_smoke.py",),
         },
     ),
 }
