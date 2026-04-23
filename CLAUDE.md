@@ -270,6 +270,39 @@ To change escalation rules, edit `config/escalation_policy.toml` and commit — 
 
 ---
 
+## Spike workflow
+
+Spike tickets are investigative — findings must be reviewed by a human before merging. They bypass the watcher entirely.
+
+**Detecting a spike:** Any ticket with the **Spike** label (case-insensitive).
+
+**`/start-ticket` behaviour:** If the Spike label is present, the command sets state to `In Progress` and prints the interactive workflow below. It does **not** write a ReadyForLocal manifest.
+
+**`watcher` behaviour:** Any `ReadyForLocal` ticket that still carries the Spike label is skipped with a WARNING log. This is a safety net — `/start-ticket` should have caught it first.
+
+**Interactive spike workflow:**
+```bash
+# 1. Create a branch (use Linear's "Copy branch name")
+git checkout -b wor-NNN-spike-slug
+
+# 2. Investigate and document findings
+mkdir -p docs/spikes
+# write findings to docs/spikes/<slug>.md
+
+# 3. Commit findings
+git commit -m "Part of WOR-NNN: spike findings — <topic>"
+
+# 4. Open a PR for human review (no auto-merge)
+# Run /finalize-ticket — it will open a PR targeting main (or epic branch)
+# The PR requires human review before merge
+
+# 5. After merge, close the Linear ticket manually
+```
+
+Spike PRs always require human review. Do not enable auto-merge on spike PRs.
+
+---
+
 ## Immediate milestone
 
 **Generate a local repository skeleton from a selected preset and write all files to disk.**

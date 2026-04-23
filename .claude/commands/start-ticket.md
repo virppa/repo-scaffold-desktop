@@ -2,6 +2,27 @@ Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop
 
 Work through these phases in order:
 
+### Spike gate
+Check whether the issue carries a label whose name matches **Spike** (case-insensitive).
+
+If the Spike label is present:
+1. Set state to In Progress: `save_issue(id: "$ARGUMENTS", state: "In Progress")`
+2. Post a comment: `save_comment(issueId: "$ARGUMENTS", body: "Spike ticket — implementing interactively (no watcher manifest). See CLAUDE.md spike workflow.")`
+3. Print the following and **STOP** — do not create a branch, do not write a manifest:
+
+```
+This ticket is labelled Spike — interactive implementation required.
+
+Spike tickets bypass the watcher. Implement them interactively:
+  1. Create a branch: git checkout -b <branch-name>
+  2. Investigate and document findings in docs/spikes/<name>.md
+  3. Commit findings with: git commit -m "Part of $ARGUMENTS: ..."
+  4. Run /finalize-ticket to open a PR (review_mode: human — no auto-merge)
+  5. Human reviews before merge; close the Linear ticket manually after merge
+```
+
+**Do not write a ReadyForLocal manifest for Spike tickets.**
+
 ### Watcher status check
 Check whether the watcher daemon is running by reading `.claude/watcher.pid`:
 ```bash
@@ -193,6 +214,8 @@ Construct the manifest from the planning context gathered in steps 1–4:
 ```
 
 Write this JSON to `.claude/artifacts/<ticket_id_lower>/manifest.json` (e.g. `.claude/artifacts/wor_80/manifest.json`). Create parent dirs as needed.
+
+> **Path normalization:** `<ticket_id_lower>` is `ticket_id.lower().replace("-", "_")` — hyphens become underscores (e.g. `WOR-127` → `wor_127`). This matches `ArtifactPaths.from_ticket_id()` in `app/core/manifest.py`. Using `wor-127` (hyphen) will cause a "No such file or directory" error at watcher startup.
 
 Then:
 1. Set the ticket to **ReadyForLocal** in Linear: `save_issue(id: "$ARGUMENTS", state: "ReadyForLocal")`

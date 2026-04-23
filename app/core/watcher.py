@@ -431,6 +431,15 @@ class Watcher:
             all_active = self._local_active + self._cloud_active
             if any(w.ticket_id == ticket_id for w in all_active):
                 continue
+            labels = [
+                node["name"] for node in ticket.get("labels", {}).get("nodes", [])
+            ]
+            if any(label.lower() == "spike" for label in labels):
+                logger.warning(
+                    "Skipping %s — Spike label detected; implement interactively",
+                    ticket_id,
+                )
+                continue
             try:
                 self._start_ticket(ticket_id, ticket["id"])
                 return  # one ticket per dispatch cycle
@@ -1040,13 +1049,21 @@ class Watcher:
             check=True,
         )
         pr_url = result.stdout.strip()
-        subprocess.run(  # nosec B603 B607
+        merge_result = subprocess.run(  # nosec B603 B607
             ["gh", "pr", "merge", "--auto", "--squash", pr_url],
             cwd=str(worktree_path),
             capture_output=True,
             text=True,
             check=False,
         )
+        if merge_result.returncode != 0:
+            output = (merge_result.stderr or merge_result.stdout).strip()
+            logger.warning(
+                "gh pr merge --auto failed for %s (rc=%d): %s",
+                pr_url,
+                merge_result.returncode,
+                output,
+            )
         return pr_url
 
     # ------------------------------------------------------------------

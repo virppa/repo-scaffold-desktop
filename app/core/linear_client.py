@@ -51,6 +51,11 @@ class LinearClient:
                   id
                   identifier
                   title
+                  labels {
+                    nodes {
+                      name
+                    }
+                  }
                   relations {
                     nodes {
                       type

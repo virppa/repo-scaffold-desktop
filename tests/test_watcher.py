@@ -7,6 +7,7 @@ this file covers the unit-testable, I/O-free helpers.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -428,6 +429,51 @@ def test_create_pr_pushes_branch_before_gh_pr(tmp_path: Path) -> None:
         w._create_pr(manifest, tmp_path)
 
     assert call_order == ["push", "gh_pr"]
+
+
+def test_create_pr_logs_warning_on_auto_merge_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        base_branch="main",
+        title="Test ticket",
+        done_definition="It works.",
+    )
+    pr_url = "https://github.com/example/pr/1"
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            result.returncode = 1
+            result.stderr = "auto-merge is not enabled for this repository"
+            result.stdout = ""
+        elif cmd[:3] == ["gh", "pr", "create"]:
+            result.stdout = pr_url
+        elif cmd[:2] == ["git", "log"]:
+            result.stdout = "abc1234 some commit"
+        else:
+            result.stdout = pr_url
+        return result
+
+    w = Watcher(linear_client=MagicMock())
+    with (
+        patch("app.core.watcher.subprocess.run", side_effect=fake_run),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        returned_url = w._create_pr(manifest, tmp_path)
+
+    assert returned_url == pr_url
+    assert any(
+        "gh pr merge --auto failed" in msg
+        and pr_url in msg
+        and "rc=1" in msg
+        and "auto-merge is not enabled" in msg
+        for msg in caplog.messages
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -883,6 +929,84 @@ def test_rebase_worktree_from_base_warns_on_failure(
         w._rebase_worktree_from_base(tmp_path, "some-epic-branch")
 
     assert any("Could not rebase" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_next_ticket — Spike label guard
+# ---------------------------------------------------------------------------
+
+
+def _spike_ticket(label_name: str = "Spike") -> dict[str, Any]:
+    return {
+        "id": "fake-linear-id",
+        "identifier": "WOR-99",
+        "title": "Some spike",
+        "labels": {"nodes": [{"name": label_name}]},
+    }
+
+
+def _regular_ticket() -> dict[str, Any]:
+    return {
+        "id": "fake-linear-id",
+        "identifier": "WOR-99",
+        "title": "Regular ticket",
+        "labels": {"nodes": [{"name": "local-ready"}]},
+    }
+
+
+def test_dispatch_skips_spike_labelled_ticket(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    mock_linear = MagicMock()
+    mock_linear.list_ready_for_local.return_value = [_spike_ticket("Spike")]
+    w = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+
+    with (
+        patch.object(w, "_start_ticket") as mock_start,
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        w._dispatch_next_ticket()
+
+    mock_start.assert_not_called()
+    assert any("Spike" in msg and "WOR-99" in msg for msg in caplog.messages)
+
+
+@pytest.mark.parametrize("label_name", ["spike", "SPIKE", "Spike"])
+def test_dispatch_skips_spike_label_case_insensitive(
+    tmp_path: Path, label_name: str
+) -> None:
+    mock_linear = MagicMock()
+    mock_linear.list_ready_for_local.return_value = [_spike_ticket(label_name)]
+    w = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+
+    with patch.object(w, "_start_ticket") as mock_start:
+        w._dispatch_next_ticket()
+
+    mock_start.assert_not_called()
+
+
+def test_dispatch_proceeds_for_non_spike_ticket(tmp_path: Path) -> None:
+    mock_linear = MagicMock()
+    mock_linear.list_ready_for_local.return_value = [_regular_ticket()]
+    w = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+
+    with patch.object(w, "_start_ticket") as mock_start:
+        w._dispatch_next_ticket()
+
+    mock_start.assert_called_once_with("WOR-99", "fake-linear-id")
+
+
+def test_dispatch_missing_labels_field_no_crash(tmp_path: Path) -> None:
+    mock_linear = MagicMock()
+    mock_linear.list_ready_for_local.return_value = [
+        {"id": "fake-linear-id", "identifier": "WOR-99", "title": "No labels"}
+    ]
+    w = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+
+    with patch.object(w, "_start_ticket") as mock_start:
+        w._dispatch_next_ticket()
+
+    mock_start.assert_called_once_with("WOR-99", "fake-linear-id")
 
 
 # ---------------------------------------------------------------------------
