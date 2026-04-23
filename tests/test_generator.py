@@ -461,3 +461,30 @@ def test_full_agentic_asyncio_mode_auto(output_dir):
     generate(config, output_dir)
     content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
     assert 'asyncio_mode = "auto"' in content
+
+
+def test_python_desktop_generates_conftest(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    assert (output_dir / "tests" / "conftest.py").exists()
+
+
+def test_python_desktop_conftest_has_qapp_fixture(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    content = (output_dir / "tests" / "conftest.py").read_text(encoding="utf-8")
+    assert "qapp" in content
+    assert "QApplication" in content
+
+
+def test_python_desktop_generates_ui_smoke_test(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    assert (output_dir / "tests" / "test_ui_smoke.py").exists()
+
+
+def test_python_desktop_ui_smoke_contains_repo_name(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    content = (output_dir / "tests" / "test_ui_smoke.py").read_text(encoding="utf-8")
+    assert "my-desktop-app" in content

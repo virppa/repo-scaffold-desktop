@@ -67,6 +67,8 @@ _PRESETS: dict[str, Preset] = {
             "app/main.py",
             "app/ui/__init__.py",
             _F_TESTS_INIT,
+            "tests/conftest.py",
+            "tests/test_ui_smoke.py",
         ),
         optional_files={
             "include_precommit": (_F_PRECOMMIT,),
