@@ -8,7 +8,7 @@ authors = [{name = "{{ author_name }}", email = "{{ author_email }}"}]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-cov", "ruff", "bandit", "mypy", "lint-imports"]
+dev = ["pytest", "pytest-cov", "ruff", "bandit", "mypy", "lint-imports", "pytest-mock>=3.0", "pytest-snapshot>=0.9", "pytest-qt>=4.0", "pytest-asyncio>=0.23", "pytest-httpx>=0.30", "hypothesis>=6.0"{% if include_playwright %}, "playwright>=1.40", "pytest-playwright>=0.4"{% endif %}]
 
 [tool.ruff]
 line-length = 88
@@ -20,3 +20,4 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=app --cov-report=term-missing"
+asyncio_mode = "auto"

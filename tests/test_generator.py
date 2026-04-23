@@ -413,3 +413,139 @@ def test_full_agentic_no_unrendered_jinja_variables(output_dir, agentic_prefs):
     for rel_path in written:
         content = (output_dir / rel_path).read_text(encoding="utf-8", errors="replace")
         assert "{{" not in content, f"Unrendered Jinja2 variable in {rel_path}"
+
+
+def test_python_basic_dev_deps_include_mock_and_snapshot(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "pytest-mock" in content
+    assert "pytest-snapshot" in content
+    assert "hypothesis" in content
+
+
+def test_python_basic_dev_deps_exclude_qt_and_asyncio(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "pytest-qt" not in content
+    assert "pytest-asyncio" not in content
+
+
+def test_python_desktop_dev_deps_include_qt(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "pytest-mock" in content
+    assert "pytest-snapshot" in content
+    assert "pytest-qt" in content
+    assert "hypothesis" in content
+    assert "pytest-asyncio" not in content
+
+
+def test_full_agentic_dev_deps_include_all_plugins(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    for plugin in (
+        "pytest-mock",
+        "pytest-snapshot",
+        "pytest-qt",
+        "pytest-asyncio",
+        "pytest-httpx",
+        "hypothesis",
+    ):
+        assert plugin in content, f"pyproject.toml missing test plugin: {plugin}"
+
+
+def test_full_agentic_asyncio_mode_auto(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'asyncio_mode = "auto"' in content
+
+
+def test_python_desktop_generates_conftest(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    assert (output_dir / "tests" / "conftest.py").exists()
+
+
+def test_python_desktop_conftest_has_qapp_fixture(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    content = (output_dir / "tests" / "conftest.py").read_text(encoding="utf-8")
+    assert "qapp" in content
+    assert "QApplication" in content
+
+
+def test_python_desktop_generates_ui_smoke_test(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    assert (output_dir / "tests" / "test_ui_smoke.py").exists()
+
+
+def test_python_desktop_ui_smoke_contains_repo_name(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    content = (output_dir / "tests" / "test_ui_smoke.py").read_text(encoding="utf-8")
+    assert "my-desktop-app" in content
+
+
+def test_playwright_generates_smoke_test(output_dir):
+    config = RepoConfig(
+        repo_name="my-web-app", preset="full_agentic", include_playwright=True
+    )
+    generate(config, output_dir)
+    assert (output_dir / "tests" / "test_web_smoke.py").exists()
+
+
+def test_playwright_adds_deps_to_pyproject(output_dir):
+    config = RepoConfig(
+        repo_name="my-web-app", preset="full_agentic", include_playwright=True
+    )
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "playwright>=1.40" in content
+    assert "pytest-playwright>=0.4" in content
+
+
+def test_playwright_mcp_in_mcp_json(output_dir):
+    config = RepoConfig(
+        repo_name="my-web-app",
+        preset="full_agentic",
+        include_linear_mcp=True,
+        include_playwright=True,
+    )
+    generate(config, output_dir)
+    raw = (output_dir / ".mcp.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert "playwright" in data["mcpServers"]
+    assert data["mcpServers"]["playwright"]["command"] == "npx"
+    assert "@playwright/mcp" in data["mcpServers"]["playwright"]["args"]
+
+
+def test_playwright_mcp_absent_without_linear_mcp(output_dir):
+    config = RepoConfig(
+        repo_name="my-web-app",
+        preset="full_agentic",
+        include_linear_mcp=False,
+        include_playwright=True,
+    )
+    generate(config, output_dir)
+    raw = (output_dir / ".mcp.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert "playwright" not in data["mcpServers"]
+
+
+def test_playwright_disabled_by_default_no_smoke_file(output_dir):
+    config = RepoConfig(repo_name="my-web-app", preset="full_agentic")
+    generate(config, output_dir)
+    assert not (output_dir / "tests" / "test_web_smoke.py").exists()
+
+
+def test_playwright_deps_absent_when_disabled(output_dir):
+    config = RepoConfig(repo_name="my-web-app", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "playwright" not in content

@@ -76,6 +76,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     gen.add_argument(
+        "--playwright",
+        action="store_true",
+        help=(
+            "Include Playwright browser-test scaffold (full_agentic only — "
+            "for web-facing repos, not PySide6 desktop apps)."
+        ),
+    )
+    gen.add_argument(
         "--git-init", action="store_true", help="Run git init in the output directory."
     )
     gen.add_argument(
@@ -241,6 +249,7 @@ def _run_generate(args: argparse.Namespace) -> int:
             include_codeowners=args.codeowners,
             include_claude_files=args.claude_files,
             include_linear_mcp=include_linear_mcp,
+            include_playwright=args.playwright,
             git_init=args.git_init,
             install_precommit=args.install_precommit,
         )
