@@ -140,26 +140,18 @@ class LinearClient:
         """
         data = self._query(
             """
-            query GetIssueStateByIdentifier($identifier: String!, $teamName: String!) {
-              issues(
-                filter: {
-                  identifier: { eq: $identifier }
-                  team: { name: { eq: $teamName } }
-                }
-                first: 1
-              ) {
-                nodes {
-                  state { type }
-                }
+            query GetIssueStateByIdentifier($identifier: String!) {
+              issue(id: $identifier) {
+                state { type }
               }
             }
             """,
-            {"identifier": identifier, "teamName": self._team},
+            {"identifier": identifier},
         )
-        nodes = data.get("issues", {}).get("nodes", [])
-        if not nodes:
+        issue = data.get("issue")
+        if issue is None:
             return None
-        return cast(str, nodes[0]["state"]["type"])
+        return cast(str, issue["state"]["type"])
 
     # ------------------------------------------------------------------
     # Internal helpers

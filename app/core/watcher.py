@@ -17,6 +17,7 @@ Worker modes:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shlex
@@ -70,6 +71,30 @@ class LinearClientProtocol(Protocol):
 # ---------------------------------------------------------------------------
 
 
+def _parse_worker_usage(log_path: Path) -> tuple[int | None, int | None]:
+    """Read stream-json worker log and return (local_tokens, context_compactions)."""
+    try:
+        with log_path.open(encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") == "result":
+                    usage = obj.get("usage") or {}
+                    local_tokens = (usage.get("input_tokens") or 0) + (
+                        usage.get("output_tokens") or 0
+                    )
+                    context_compactions = obj.get("context_compactions")
+                    return local_tokens, context_compactions
+    except Exception:
+        return None, None
+    return None, None
+
+
 @dataclass
 class ActiveWorker:
     ticket_id: str
@@ -79,6 +104,7 @@ class ActiveWorker:
     process: subprocess.Popen[bytes]
     start_time: float = field(default_factory=time.monotonic)
     backed_up_plans: list[Path] = field(default_factory=list)
+    retry_count: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +255,8 @@ class Watcher:
     def __init__(
         self,
         worker_mode: str = "default",
-        max_workers: int = 1,
+        max_local_workers: int = 1,
+        max_cloud_workers: int = 3,
         linear_client: LinearClientProtocol | None = None,
         metrics_store: MetricsStore | None = None,
         repo_root: Path | None = None,
@@ -242,12 +269,14 @@ class Watcher:
             linear_client = LinearClient()
 
         self._mode = worker_mode
-        self._max_workers = max_workers
+        self._max_local_workers = max_local_workers
+        self._max_cloud_workers = max_cloud_workers
         self._linear = linear_client
         self._metrics = metrics_store or MetricsStore()
         self._repo_root = (repo_root or Path.cwd()).resolve()
         self._project_id = project_id
-        self._active: list[ActiveWorker] = []
+        self._local_active: list[ActiveWorker] = []
+        self._cloud_active: list[ActiveWorker] = []
         self._running = True
         self._litellm_proc: subprocess.Popen[bytes] | None = None
         self._verbose = verbose
@@ -269,16 +298,19 @@ class Watcher:
             self._ensure_litellm_running()
 
         logger.info(
-            "Watcher started (mode=%s, max_workers=%d)",
+            "Watcher started (mode=%s, max_local_workers=%d, max_cloud_workers=%d)",
             self._mode,
-            self._max_workers,
+            self._max_local_workers,
+            self._max_cloud_workers,
         )
 
         try:
             while self._running:
                 self._reap_finished_workers()
                 self._promote_waiting_tickets()
-                if len(self._active) < self._max_workers:
+                local_has_capacity = len(self._local_active) < self._max_local_workers
+                cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
+                if local_has_capacity or cloud_has_capacity:
                     self._dispatch_next_ticket()
                 time.sleep(self._POLL_INTERVAL)
         finally:
@@ -396,7 +428,8 @@ class Watcher:
 
         for ticket in tickets:
             ticket_id: str = ticket["identifier"]
-            if any(w.ticket_id == ticket_id for w in self._active):
+            all_active = self._local_active + self._cloud_active
+            if any(w.ticket_id == ticket_id for w in all_active):
                 continue
             labels = [
                 node["name"] for node in ticket.get("labels", {}).get("nodes", [])
@@ -422,7 +455,8 @@ class Watcher:
             logger.info("Skipping %s — open blockers: %s", ticket_id, open_blockers)
             return
 
-        conflicts = check_allowed_paths_overlap(self._active, manifest)
+        all_active = self._local_active + self._cloud_active
+        conflicts = check_allowed_paths_overlap(all_active, manifest)
         if conflicts:
             logger.info(
                 "Deferring %s — allowed_paths overlap with active workers: %s",
@@ -434,6 +468,26 @@ class Watcher:
         effective_mode = resolve_effective_mode(
             self._mode, manifest.implementation_mode
         )
+
+        if effective_mode == "local":
+            if len(self._local_active) >= self._max_local_workers:
+                logger.info(
+                    "Deferring %s — local pool full (%d/%d)",
+                    ticket_id,
+                    len(self._local_active),
+                    self._max_local_workers,
+                )
+                return
+        else:
+            if len(self._cloud_active) >= self._max_cloud_workers:
+                logger.info(
+                    "Deferring %s — cloud pool full (%d/%d)",
+                    ticket_id,
+                    len(self._cloud_active),
+                    self._max_cloud_workers,
+                )
+                return
+
         worktree_path = self._create_worktree(manifest)
         self._copy_manifest_to_worktree(manifest, worktree_path)
         self._write_worker_pytest_config(worktree_path)
@@ -445,24 +499,26 @@ class Watcher:
 
         backed_up_plans = self._backup_plan_files()
         process = self._launch_worker(manifest, worktree_path, effective_mode)
-        self._active.append(
-            ActiveWorker(
-                ticket_id=ticket_id,
-                linear_id=linear_id,
-                manifest=manifest,
-                worktree_path=worktree_path,
-                process=process,
-                backed_up_plans=backed_up_plans,
-            )
+        worker = ActiveWorker(
+            ticket_id=ticket_id,
+            linear_id=linear_id,
+            manifest=manifest,
+            worktree_path=worktree_path,
+            process=process,
+            backed_up_plans=backed_up_plans,
         )
+        if effective_mode == "local":
+            self._local_active.append(worker)
+        else:
+            self._cloud_active.append(worker)
 
     # ------------------------------------------------------------------
     # Worker lifecycle
     # ------------------------------------------------------------------
 
-    def _reap_finished_workers(self) -> None:
+    def _reap_pool(self, workers: list[ActiveWorker]) -> list[ActiveWorker]:
         still_running: list[ActiveWorker] = []
-        for worker in self._active:
+        for worker in workers:
             rc = worker.process.poll()
             if rc is None:
                 still_running.append(worker)
@@ -475,7 +531,11 @@ class Watcher:
                 elapsed,
             )
             self._finalize_worker(worker, returncode=rc, wall_time=elapsed)
-        self._active = still_running
+        return still_running
+
+    def _reap_finished_workers(self) -> None:
+        self._local_active = self._reap_pool(self._local_active)
+        self._cloud_active = self._reap_pool(self._cloud_active)
 
     def _safe_set_state(self, linear_id: str, state: str, ticket_id: str) -> None:
         try:
@@ -529,6 +589,8 @@ class Watcher:
             self._safe_set_state(linear_id, manifest.ticket_state_map.failed, ticket_id)
         else:
             checks_ok = self._run_checks(manifest, worker.worktree_path)
+            if not checks_ok:
+                worker.retry_count += 1
             if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
                 outcome = "failure"
                 self._safe_set_state(
@@ -537,6 +599,12 @@ class Watcher:
             else:
                 outcome = self._attempt_pr(manifest, worker, ticket_id, linear_id)
 
+        sonar_count = self._fetch_sonar_findings(manifest.worker_branch)
+
+        log_path = (
+            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
+        )
+        local_tokens, context_compactions = _parse_worker_usage(log_path)
         eff = resolve_effective_mode(self._mode, manifest.implementation_mode)
         self._metrics.record(
             TicketMetrics(
@@ -547,9 +615,13 @@ class Watcher:
                 local_used=(eff == "local"),
                 local_model=(_LOCAL_MODEL if eff == "local" else None),
                 cloud_used=(eff == "cloud"),
+                local_tokens=local_tokens,
                 local_wall_time=wall_time,
                 escalated_to_cloud=escalated,
                 outcome=outcome,
+                retry_count=worker.retry_count,
+                context_compactions=context_compactions,
+                sonar_findings_count=sonar_count,
             )
         )
 
@@ -876,6 +948,55 @@ class Watcher:
         return all_passed
 
     # ------------------------------------------------------------------
+    # SonarCloud findings count (Option B: REST API, best-effort)
+    # ------------------------------------------------------------------
+
+    def _fetch_sonar_findings(self, branch: str) -> int | None:
+        # Calls the SonarCloud measures API for the worker branch right after PR
+        # creation.  The CI scan usually hasn't run yet at this point, so None is
+        # the common case for new branches; this becomes non-NULL once SonarCloud
+        # has processed a previous push to the same branch.  Requires SONAR_TOKEN
+        # and SONAR_PROJECT_KEY env vars; returns None silently if either is absent
+        # or if the API call fails for any reason.
+        #
+        # Uses http.client.HTTPSConnection (always TLS) rather than urlopen so that
+        # the scheme is statically known and not subject to file:// redirection.
+        import base64
+        import ssl
+        import urllib.parse
+        import urllib.request
+
+        token = os.environ.get("SONAR_TOKEN")
+        project_key = os.environ.get("SONAR_PROJECT_KEY")
+        if not token or not project_key:
+            return None
+
+        params = urllib.parse.urlencode(
+            {"component": project_key, "branch": branch, "metricKeys": "violations"}
+        )
+        url = f"https://sonarcloud.io/api/measures/component?{params}"
+        creds = base64.b64encode(f"{token}:".encode()).decode()
+        req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
+        ctx = ssl.create_default_context()
+        try:
+            with urllib.request.urlopen(  # nosec B310  # nosemgrep
+                req, timeout=10, context=ctx
+            ) as resp:
+                data: dict[str, object] = json.loads(resp.read())
+            component = data.get("component") or {}
+            measures = (component if isinstance(component, dict) else {}).get(
+                "measures", []
+            )
+            for m in measures if isinstance(measures, list) else []:
+                if isinstance(m, dict) and m.get("metric") == "violations":
+                    return int(m["value"])
+        except Exception:
+            logger.debug(
+                "Could not fetch Sonar findings for branch %s", branch, exc_info=True
+            )
+        return None
+
+    # ------------------------------------------------------------------
     # PR creation
     # ------------------------------------------------------------------
 
@@ -1028,10 +1149,11 @@ class Watcher:
         self._running = False
 
     def _wait_for_active_workers(self) -> None:
-        if not self._active:
+        all_active = self._local_active + self._cloud_active
+        if not all_active:
             return
-        logger.info("Waiting for %d active worker(s) to finish…", len(self._active))
-        for worker in self._active:
+        logger.info("Waiting for %d active worker(s) to finish…", len(all_active))
+        for worker in all_active:
             try:
                 worker.process.wait(timeout=600)
             except subprocess.TimeoutExpired:

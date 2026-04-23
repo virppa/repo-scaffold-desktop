@@ -6,6 +6,7 @@ this file covers the unit-testable, I/O-free helpers.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -20,6 +21,7 @@ from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher import (
     ActiveWorker,
     Watcher,
+    _parse_worker_usage,
     _tee_worker_output,
     build_worker_cmd,
     build_worker_env,
@@ -516,6 +518,87 @@ def test_finalize_worker_pr_failure_marks_blocked(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# retry_count wiring in _finalize_worker
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_retry_count_zero_on_success(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    call_kwargs = metrics_mock.record.call_args[0][0]
+    assert call_kwargs.retry_count == 0
+
+
+def test_finalize_worker_retry_count_increments_on_check_failure(
+    tmp_path: Path,
+) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+
+    # Simulate two check-failure cycles by calling _finalize_worker twice with
+    # the same worker (increments retry_count each time checks fail).
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=False),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics"),
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    assert worker.retry_count == 2
+
+
+def test_finalize_worker_retry_count_two_failures_then_success(
+    tmp_path: Path,
+) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    # Two failures then success
+    check_results = [False, False, True]
+    with (
+        patch.object(w, "_run_checks", side_effect=check_results),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    call_kwargs = metrics_mock.record.call_args[0][0]
+    assert call_kwargs.retry_count == 2
+
+
+# ---------------------------------------------------------------------------
 # _safe_set_state — daemon survives LinearError at all set_state sites
 # ---------------------------------------------------------------------------
 
@@ -584,11 +667,11 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
         patch.object(w, "_copy_manifest_to_worktree"),
         patch.object(w, "_launch_worker", return_value=fake_process),
     ):
-        # set_state raises — worker must still be launched and added to _active
+        # set_state raises — worker must still be launched and added to _local_active
         w._start_ticket("WOR-10", "fake-linear-id")
 
-    assert len(w._active) == 1
-    assert w._active[0].ticket_id == "WOR-10"
+    assert len(w._local_active) == 1
+    assert w._local_active[0].ticket_id == "WOR-10"
 
 
 # ---------------------------------------------------------------------------
@@ -944,3 +1027,376 @@ def test_promote_clears_context_snippets(tmp_path: Path) -> None:
     on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
     assert on_disk.status == "ReadyForLocal"
     assert on_disk.context_snippets is None
+
+
+# ---------------------------------------------------------------------------
+# _parse_worker_usage
+# ---------------------------------------------------------------------------
+
+
+def _write_log(tmp_path: Path, lines: list[str]) -> Path:
+    log = tmp_path / "worker_wor-99.log"
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return log
+
+
+def test_parse_worker_usage_success(tmp_path: Path) -> None:
+    result_line = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "usage": {
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "cache_read_input_tokens": 0,
+            },
+            "context_compactions": 3,
+        }
+    )
+    log = _write_log(tmp_path, ['{"type":"other","x":1}', result_line])
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens == 1200
+    assert compactions == 3
+
+
+def test_parse_worker_usage_no_context_compactions(tmp_path: Path) -> None:
+    result_line = json.dumps(
+        {"type": "result", "usage": {"input_tokens": 500, "output_tokens": 50}}
+    )
+    log = _write_log(tmp_path, [result_line])
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens == 550
+    assert compactions is None
+
+
+def test_parse_worker_usage_missing_log(tmp_path: Path) -> None:
+    tokens, compactions = _parse_worker_usage(tmp_path / "no_such_file.log")
+    assert tokens is None
+    assert compactions is None
+
+
+def test_parse_worker_usage_no_result_line(tmp_path: Path) -> None:
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps({"type": "tool_use", "name": "Bash"}),
+            json.dumps({"type": "assistant", "content": "hello"}),
+        ],
+    )
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens is None
+    assert compactions is None
+
+
+def test_parse_worker_usage_malformed_json(tmp_path: Path) -> None:
+    log = tmp_path / "worker.log"
+    log.write_text("not json at all\n{broken\n", encoding="utf-8")
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens is None
+    assert compactions is None
+
+
+def test_parse_worker_usage_mixed_valid_invalid_lines(tmp_path: Path) -> None:
+    result_line = json.dumps(
+        {
+            "type": "result",
+            "usage": {"input_tokens": 300, "output_tokens": 100},
+            "context_compactions": 1,
+        }
+    )
+    log = tmp_path / "worker.log"
+    log.write_text("garbage line\n" + result_line + "\n", encoding="utf-8")
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens == 400
+    assert compactions == 1
+
+
+def test_parse_worker_usage_returns_first_result_line(tmp_path: Path) -> None:
+    first = json.dumps(
+        {"type": "result", "usage": {"input_tokens": 10, "output_tokens": 5}}
+    )
+    second = json.dumps(
+        {"type": "result", "usage": {"input_tokens": 999, "output_tokens": 999}}
+    )
+    log = _write_log(tmp_path, [first, second])
+    tokens, _ = _parse_worker_usage(log)
+    assert tokens == 15
+
+
+def test_parse_worker_usage_empty_file(tmp_path: Path) -> None:
+    log = tmp_path / "empty.log"
+    log.write_text("", encoding="utf-8")
+    tokens, compactions = _parse_worker_usage(log)
+    assert tokens is None
+    assert compactions is None
+
+
+# ---------------------------------------------------------------------------
+# _finalize_worker — local_tokens + context_compactions wired from log
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_passes_usage_to_metrics(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-10.log"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 2000, "output_tokens": 400},
+                "context_compactions": 5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.local_tokens == 2400
+    assert m.context_compactions == 5
+
+
+def test_finalize_worker_usage_none_when_no_log(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.local_tokens is None
+    assert m.context_compactions is None
+
+
+# ---------------------------------------------------------------------------
+# Per-type concurrency — cloud pool full does not block local dispatch
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _fetch_sonar_findings
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_sonar_findings_returns_none_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SONAR_TOKEN", raising=False)
+    monkeypatch.delenv("SONAR_PROJECT_KEY", raising=False)
+    w = Watcher(linear_client=MagicMock())
+    assert w._fetch_sonar_findings("wor-10-some-branch") is None
+
+
+def test_fetch_sonar_findings_returns_none_without_project_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SONAR_TOKEN", "fake-token")
+    monkeypatch.delenv("SONAR_PROJECT_KEY", raising=False)
+    w = Watcher(linear_client=MagicMock())
+    assert w._fetch_sonar_findings("wor-10-some-branch") is None
+
+
+def _make_sonar_resp_mock(payload: bytes) -> MagicMock:
+    """Return a context-manager mock whose .read() returns payload."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = payload
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+def test_fetch_sonar_findings_returns_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SONAR_TOKEN", "fake-token")
+    monkeypatch.setenv("SONAR_PROJECT_KEY", "my-org_my-project")
+    api_payload = json.dumps(
+        {"component": {"measures": [{"metric": "violations", "value": "7"}]}}
+    ).encode()
+
+    w = Watcher(linear_client=MagicMock())
+    mock_resp = _make_sonar_resp_mock(api_payload)
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        count = w._fetch_sonar_findings("wor-10-some-branch")
+
+    assert count == 7
+
+
+def test_fetch_sonar_findings_returns_none_when_metric_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SONAR_TOKEN", "fake-token")
+    monkeypatch.setenv("SONAR_PROJECT_KEY", "my-project")
+    api_payload = json.dumps(
+        {"component": {"measures": [{"metric": "coverage", "value": "80.0"}]}}
+    ).encode()
+
+    w = Watcher(linear_client=MagicMock())
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_make_sonar_resp_mock(api_payload),
+    ):
+        count = w._fetch_sonar_findings("wor-10-some-branch")
+
+    assert count is None
+
+
+def test_fetch_sonar_findings_returns_none_on_api_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import urllib.error
+
+    monkeypatch.setenv("SONAR_TOKEN", "fake-token")
+    monkeypatch.setenv("SONAR_PROJECT_KEY", "my-project")
+    w = Watcher(linear_client=MagicMock())
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.URLError("connection refused"),
+    ):
+        count = w._fetch_sonar_findings("wor-10-some-branch")
+    assert count is None
+
+
+# ---------------------------------------------------------------------------
+# _finalize_worker — sonar_findings_count wired to metrics
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_sonar_count_wired_to_metrics(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_fetch_sonar_findings", return_value=3),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.sonar_findings_count == 3
+
+
+def test_finalize_worker_sonar_count_none_when_unavailable(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    w = Watcher(linear_client=MagicMock())
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_fetch_sonar_findings", return_value=None),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.sonar_findings_count is None
+
+
+# ---------------------------------------------------------------------------
+# Per-type concurrency — cloud pool full does not block local dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
+    """A saturated cloud pool must not prevent a local ticket from being dispatched."""
+    local_manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        implementation_mode="local",
+        allowed_paths=["app/core/local_only.py"],
+    )
+    cloud_manifest = _make_manifest(
+        ticket_id="WOR-99",
+        worker_branch="wor-99-cloud-ticket",
+        implementation_mode="cloud",
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-99"),
+        allowed_paths=["app/core/cloud_only.py"],
+    )
+
+    mock_linear = MagicMock()
+    mock_linear.get_open_blockers.return_value = []
+
+    # max_cloud_workers=1 so one occupant fills the cloud pool; local cap=1
+    watcher = Watcher(
+        linear_client=mock_linear,
+        max_local_workers=1,
+        max_cloud_workers=1,
+    )
+
+    # Pre-fill the cloud pool
+    watcher._cloud_active.append(
+        ActiveWorker(
+            ticket_id="WOR-99",
+            linear_id="fake-cloud-id",
+            manifest=cloud_manifest,
+            worktree_path=tmp_path,
+            process=MagicMock(spec=subprocess.Popen),
+        )
+    )
+
+    fake_local_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(watcher, "_load_manifest", return_value=local_manifest),
+        patch.object(watcher, "_create_worktree", return_value=tmp_path),
+        patch.object(watcher, "_copy_manifest_to_worktree"),
+        patch.object(watcher, "_write_worker_pytest_config"),
+        patch.object(watcher, "_launch_worker", return_value=fake_local_process),
+    ):
+        watcher._start_ticket("WOR-10", "fake-local-id")
+
+    # Local ticket dispatched despite cloud pool being full
+    assert len(watcher._local_active) == 1
+    assert watcher._local_active[0].ticket_id == "WOR-10"
+    # Cloud pool unchanged
+    assert len(watcher._cloud_active) == 1
+    assert watcher._cloud_active[0].ticket_id == "WOR-99"
