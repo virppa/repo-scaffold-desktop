@@ -1,7 +1,7 @@
-Pull all open issues from the **repo-scaffold-desktop** project using the Linear MCP server. Run these fetches in parallel:
+Pull all open issues from the **{{ linear_project }}** project using the Linear MCP server. Run these fetches in parallel:
 
-- `list_issues` with `project: "repo-scaffold-desktop"` — exclude Done/Cancelled
-- `list_milestones` with `project: "repo-scaffold-desktop"` — get progress % on each
+- `list_issues` with `project: "{{ linear_project }}"` — exclude Done/Cancelled
+- `list_milestones` with `project: "{{ linear_project }}"` — get progress % on each
 
 Then for every issue that has or appears to have blocking relations, fetch `get_issue(id, includeRelations: true)` to get the **actual Linear blocker chain** (do not infer from titles).
 
@@ -72,7 +72,7 @@ Based on the milestone overview and current issue distribution, recommend any of
 
 ### 7. Update the Linear project page
 
-After presenting sections 1–5, update the **repo-scaffold-desktop** project in Linear to reflect current state. Do both of these:
+After presenting sections 1–5, update the **{{ linear_project }}** project in Linear to reflect current state. Do both of these:
 
 **A. Update `summary`** (max 255 chars) — a single sentence capturing the current milestone and what's in flight. Example format:
 `MVP Build 88% → Test/polish 40% | In flight: WOR-X, WOR-Y | Next: WOR-Z`

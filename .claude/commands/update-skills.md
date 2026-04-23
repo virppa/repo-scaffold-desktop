@@ -35,7 +35,13 @@ Fetch the latest `.claude/commands/` files from the upstream skills repo and upd
    "
    ```
 
-8. Print a summary:
+8. Write the upstream version to `.claude/skills_version.txt` so the last-synced state is tracked:
+   ```bash
+   echo "<latest-tag>" > .claude/skills_version.txt
+   ```
+   This file is the marker that `finalize-ticket` and `/contribute-skill` use to detect drift.
+
+9. Print a summary:
    ```
    Updated skills from <old-version> → <latest-tag>
    ✓ .claude/commands/update-skills.md

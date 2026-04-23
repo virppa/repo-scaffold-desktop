@@ -1,4 +1,4 @@
-Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop project using the Linear MCP server. Also fetch `get_issue($ARGUMENTS, includeRelations: true)` to see its milestone, labels, priority, parent epic, and any blocking relations.
+Look up the Linear issue with identifier $ARGUMENTS in the {{ linear_project }} project using the Linear MCP server. Also fetch `get_issue($ARGUMENTS, includeRelations: true)` to see its milestone, labels, priority, parent epic, and any blocking relations.
 
 Work through these phases in order:
 
@@ -77,7 +77,7 @@ Check whether this ticket has a parent epic (`parentId` from `get_issue` relatio
 ### 0.6. Coordination check
 Query Linear for sibling tickets in the same epic that are currently In Progress:
 ```
-list_issues(project: "repo-scaffold-desktop", state: "In Progress", parentId: <epicId>)
+list_issues(project: "{{ linear_project }}", state: "In Progress", parentId: <epicId>)
 ```
 For each In-Progress sibling:
 - Show ticket ID, title, branch name
@@ -134,7 +134,7 @@ Same reason — leave main checked out so the watcher can worktree the sub-ticke
 
 **If the parent epic was previously Backlog** (i.e., this is the first sub-ticket being started in this epic), also promote all other Backlog children to **Todo**:
 ```
-list_issues(project: "repo-scaffold-desktop", parentId: <epicId>, state: "Backlog")
+list_issues(project: "{{ linear_project }}", parentId: <epicId>, state: "Backlog")
 → for each result (excluding the current ticket): save_issue(id: "WOR-X", state: "Todo")
 ```
 "Todo" signals "actively queued in this epic, not yet started" — distinguishes from Backlog items that aren't in scope yet. Skip this step if the epic was already In Progress.
@@ -253,7 +253,7 @@ While reading the codebase to plan this ticket you may have noticed things outsi
 
 **Rules:**
 - Only surface things genuinely encountered while reading — no extra scans
-- Check existing Linear issues first (`list_issues` with `project: "repo-scaffold-desktop"`) to avoid duplicates
+- Check existing Linear issues first (`list_issues` with `project: "{{ linear_project }}"`) to avoid duplicates
 - Maximum 3 suggestions; if you spotted more, keep only the most impactful
 - Do not create anything — present suggestions and wait for approval
 

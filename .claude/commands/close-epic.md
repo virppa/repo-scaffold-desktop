@@ -149,7 +149,7 @@ This PR requires **human review and approval** — no auto-merge.
 
 ### 8. Update Linear
 1. Mark the epic issue **In Review**: `save_issue(id: "$ARGUMENTS", state: "In Review")`
-2. Check milestone progress with `list_milestones(project: "repo-scaffold-desktop")`. If 100%, note: "🎉 Milestone '<name>' is now complete."
+2. Check milestone progress with `list_milestones(project: "{{ linear_project }}")`. If 100%, note: "🎉 Milestone '<name>' is now complete."
 
 ### 9. Clean up worktrees
 List any worktrees for sub-tickets that have already been merged into the epic branch:

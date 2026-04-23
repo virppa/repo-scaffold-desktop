@@ -40,7 +40,7 @@ git branch --merged main | grep -v '^\*\? *main$' | xargs -r git branch -d
 
 Fetch all children of the epic:
 ```
-list_issues(project: "repo-scaffold-desktop", parentId: "$ARGUMENTS")
+list_issues(project: "{{ linear_project }}", parentId: "$ARGUMENTS")
 ```
 
 Keep only tickets in state `Groomed` or `Todo`. Skip anything already `ReadyForLocal`, `InProgressLocal`, `In Progress`, `In Review`, `MergedToEpic`, or `Done`.
@@ -185,8 +185,6 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
   },
   "ticket_state_map": {
     "in_progress_local": "InProgressLocal",
-    "merged_to_epic": "MergedToEpic",
-    "ready_for_review": "EpicReadyForCloudReview",
     "failed": "Blocked"
   },
   "artifact_paths": {
