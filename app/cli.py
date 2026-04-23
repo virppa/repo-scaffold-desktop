@@ -67,6 +67,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--claude-files", action="store_true", help="Include Claude Code files."
     )
     gen.add_argument(
+        "--linear-mcp",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Include Linear MCP server in .mcp.json. "
+            "full_agentic preset defaults to True; all others default to False."
+        ),
+    )
+    gen.add_argument(
         "--git-init", action="store_true", help="Run git init in the output directory."
     )
     gen.add_argument(
@@ -216,6 +225,11 @@ def _run_config(args: argparse.Namespace) -> int:
 
 
 def _run_generate(args: argparse.Namespace) -> int:
+    include_linear_mcp: bool = args.linear_mcp
+    if include_linear_mcp is None:
+        include_linear_mcp = get_preset(args.preset).context_defaults.get(
+            "include_linear_mcp", False
+        )
     try:
         config = RepoConfig(
             repo_name=args.repo_name,
@@ -226,6 +240,7 @@ def _run_generate(args: argparse.Namespace) -> int:
             include_issue_templates=args.issue_templates,
             include_codeowners=args.codeowners,
             include_claude_files=args.claude_files,
+            include_linear_mcp=include_linear_mcp,
             git_init=args.git_init,
             install_precommit=args.install_precommit,
         )

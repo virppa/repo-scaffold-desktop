@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.core.config import RepoConfig
@@ -304,3 +306,25 @@ def test_generate_no_authors_section_when_prefs_empty(output_dir):
     generate(config, output_dir, prefs=prefs)
     content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
     assert "authors" not in content
+
+
+def test_mcp_json_has_linear_mcp_when_enabled(output_dir):
+    config = RepoConfig(
+        repo_name="my-agentic-project", preset="full_agentic", include_linear_mcp=True
+    )
+    generate(config, output_dir)
+    raw = (output_dir / ".mcp.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert "_comment" in data
+    assert "linear" in data["mcpServers"]
+    assert data["mcpServers"]["linear"]["url"] == "https://mcp.linear.app/mcp"
+
+
+def test_mcp_json_has_empty_mcp_servers_when_disabled(output_dir):
+    config = RepoConfig(
+        repo_name="my-project", preset="python_basic", include_claude_files=True
+    )
+    generate(config, output_dir)
+    raw = (output_dir / ".mcp.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert data["mcpServers"] == {}
