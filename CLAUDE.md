@@ -168,7 +168,7 @@ Linear workflow states for the hybrid execution model. The watcher daemon uses t
 
 ```
 main
-└── wor-49-template-system          ← epic branch (created by first /start-ticket in epic)
+└── epic/wor-49-template-system     ← epic branch (created by first /start-ticket in epic)
     ├── wor-45-add-yaml-preset      ← sub-ticket branch → auto-merges to epic when CI passes
     └── wor-47-jinja-context-fix    ← parallel sub-ticket → its own worktree, isolated
 ```

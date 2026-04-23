@@ -56,16 +56,16 @@ git branch --merged main | grep -v '^\*\? *main$' | xargs -r git branch -d
 Check whether this ticket has a parent epic (`parentId` from `get_issue` relations):
 
 **If a parent epic exists:**
-- Derive the epic branch name from the epic issue's Linear "Copy branch name" format (e.g. `wor-49-template-system`)
+- Derive the epic branch name using the `epic/wor-NNN-slug` prefix (e.g. `epic/wor-49-template-system`). The `epic/` prefix keeps epic branches out of Linear's `wor-*` branch automation, preventing the epic issue from being moved to InProgressLocal on every push.
 - Check whether that branch exists on the remote:
   ```bash
   git fetch origin
-  git branch -a | grep wor-NN-epic-slug
+  git branch -a | grep epic/wor-NN
   ```
 - If the epic branch does **not** exist yet — create it from main and push it:
   ```bash
-  git checkout -b <epic-branch>
-  git push -u origin <epic-branch>
+  git checkout -b epic/<epic-slug>
+  git push -u origin epic/<epic-slug>
   git checkout main
   ```
 - If it already exists — confirm it is present on origin (no further action needed)
@@ -116,8 +116,8 @@ Using the branch name from Linear's "Copy branch name" format (usually `WOR-NNN-
 
 **If this ticket has a parent epic with an epic branch:**
 ```bash
-git checkout <epic-branch>
-git pull origin <epic-branch>
+git checkout epic/<epic-slug>
+git pull origin epic/<epic-slug>
 git checkout -b <sub-ticket-branch>
 git push -u origin <sub-ticket-branch>
 git checkout main
@@ -159,6 +159,14 @@ If parallel-safe sibling tickets exist, append:
 To work in parallel: open a new Claude Code session in this repo and run
 `/start-ticket WOR-NN` for any ticket marked safe above.
 ```
+
+**Interactive implementation recommended** if ALL four conditions hold:
+- `implementation_mode: cloud` (watcher would spawn another cloud session — no local-model benefit)
+- `allowed_paths` contains only `.claude/commands/`, `CLAUDE.md`, `docs/`, or `schemas/` (no production Python)
+- No parallel siblings currently In Progress (no worktree isolation needed)
+- Small scope (≤ 3 files, no complex logic)
+
+If all four apply, note it explicitly: *"This ticket is a good candidate for interactive implementation — skip the manifest and run `/implement-ticket $ARGUMENTS` in this session."*
 
 **STOP HERE. Do not write any code until the human approves this plan.**
 
@@ -202,8 +210,6 @@ Construct the manifest from the planning context gathered in steps 1–4:
   },
   "ticket_state_map": {
     "in_progress_local": "InProgressLocal",
-    "merged_to_epic": "MergedToEpic",
-    "ready_for_review": "EpicReadyForCloudReview",
     "failed": "Blocked"
   },
   "artifact_paths": {
