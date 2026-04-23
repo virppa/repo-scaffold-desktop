@@ -17,6 +17,7 @@ Look up the Linear issue with identifier $ARGUMENTS in the {{ linear_project }} 
 - `get_issue($ARGUMENTS, includeRelations: true)` — see existing labels, milestone, parent epic, priority, blocking relations
 - `list_milestones(project: "{{ linear_project }}")` — check milestone progress before suggesting assignment
 - `list_issues(project: "{{ linear_project }}", state: "In Progress")` combined with issues that have no parentId — to get current active epics
+- `list_issues(parentId: "$ARGUMENTS")` — **check for existing child issues before proposing a split**
 
 Then spawn the **repo-investigator** subagent, passing the ticket title and description as the prompt. Use its returned summary as context for the analysis below — do not read any source files yourself.
 
@@ -30,7 +31,9 @@ As a Product Owner, evaluate the issue before development begins:
 
 3. **Acceptance criteria** — if missing or vague, propose 3–5 bullet points that define "done".
 
-4. **Splitting** — if the ticket should be split, draft sub-issue titles and brief descriptions for each.
+4. **Splitting** — check the `list_issues(parentId: ...)` result first:
+   - If child issues **already exist**: present them, assess whether they adequately cover the scope, and flag any gaps or duplicates. Do not draft new sub-issues for coverage that already exists.
+   - If no children exist and the ticket should be split: draft sub-issue titles and brief descriptions for each.
 
 5. **Dependencies** — note any other tickets or work that must come first. Check actual Linear relations from `get_issue(includeRelations: true)` before inferring.
 
@@ -55,6 +58,8 @@ After the human approves, take all of the following actions in Linear:
 3. **Milestone** — assign with `save_issue`. If a new milestone was approved, create it first with `save_milestone(project: "{{ linear_project }}", name: "...", description: "...")`, then assign
 4. **Priority** — update if the current value is wrong or missing
 5. **Blockers** — add any missing `blockedBy` relations (append-only; existing relations are never removed)
-6. **Sub-issues** — if splitting was recommended and approved, create each sub-issue with `save_issue` using `parentId: "$ARGUMENTS"`, then set the same labels, epic, and milestone on each
+6. **Sub-issues** — if splitting was recommended and approved:
+   - **If child issues already existed**: update them with the approved labels, state, milestone, and blockers using `save_issue`. Do not create new issues for existing children.
+   - **If no children existed**: create each sub-issue with `save_issue` using `parentId: "$ARGUMENTS"`, then set the same labels, epic, and milestone on each.
 
 Report a summary of every change made in Linear.
