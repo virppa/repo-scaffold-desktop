@@ -1,0 +1,159 @@
+# .github/workflows/contribute-skills.yml
+#
+# Automatically contributes changes to .claude/commands/ files to the upstream
+# virppa/repo-scaffold-skills repository whenever changes are merged to main.
+#
+# ─── SKILLS_REPO_PAT Setup ───────────────────────────────────────────────────
+#
+# This workflow authenticates to virppa/repo-scaffold-skills using a scoped
+# Personal Access Token stored as a secret named SKILLS_REPO_PAT.
+# The default GITHUB_TOKEN has write access to THIS repo only and cannot push
+# branches or open PRs in external repositories.
+#
+# Steps to create SKILLS_REPO_PAT:
+#
+#   1. Go to: GitHub → Settings → Developer settings
+#             → Personal access tokens → Fine-grained tokens
+#             → Generate new token
+#
+#   2. Fill in the form:
+#        Token name:        repo-scaffold-desktop skills contributor
+#        Resource owner:    virppa  (the account that owns repo-scaffold-skills)
+#        Repository access: Only select repositories
+#                           → virppa/repo-scaffold-skills
+#        Permissions (repository):
+#          Contents:      Read and write   (to push branches)
+#          Pull requests: Read and write   (to open PRs)
+#
+#   3. Click "Generate token" and copy the value immediately (shown only once).
+#
+#   4. In THIS repo (repo-scaffold-desktop):
+#        Settings → Secrets and variables → Actions
+#        → New repository secret
+#        Name:  SKILLS_REPO_PAT
+#        Value: <paste the token>
+#
+# IMPORTANT: Grant only the minimal permissions listed above. Do not use a PAT
+# with org-level write access and do not substitute GITHUB_TOKEN here — it has
+# no write access to external repos by design.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Contribute Skills
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.claude/commands/**'
+
+jobs:
+  contribute:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed command files
+        id: changed
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            # Initial branch push — treat all existing command files as new
+            FILES=$(git ls-files '.claude/commands/')
+          else
+            FILES=$(git diff --name-only "$BEFORE" "$AFTER" -- '.claude/commands/')
+          fi
+
+          if [ -z "$FILES" ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No .claude/commands/ files changed — skipping contribution."
+          else
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "files<<EOF"
+              echo "$FILES"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            echo "Changed files to contribute:"
+            echo "$FILES"
+          fi
+
+      - name: Checkout skills repo
+        if: steps.changed.outputs.has_changes == 'true'
+        uses: actions/checkout@v6
+        with:
+          repository: virppa/repo-scaffold-skills
+          token: ${{ secrets.SKILLS_REPO_PAT }}
+          path: skills-repo
+
+      - name: Copy changed files, push branch, and open PR
+        if: steps.changed.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SKILLS_REPO_PAT }}
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          SOURCE_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          cd skills-repo
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          BRANCH="auto-contribute/from-${SOURCE_SHA:0:8}"
+          git checkout -b "$BRANCH"
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            SRC="${GITHUB_WORKSPACE}/${FILE}"
+            if [ ! -f "$SRC" ]; then
+              echo "Skipping (deleted or missing from source): $FILE"
+              continue
+            fi
+            mkdir -p "$(dirname "$FILE")"
+            cp "$SRC" "$FILE"
+            git add "$FILE"
+          done <<< "$CHANGED_FILES"
+
+          if git diff --cached --quiet; then
+            echo "No staged changes after copy — skipping PR creation."
+            exit 0
+          fi
+
+          git commit -m "Auto-contribute .claude/commands/ from ${SOURCE_REPO}@${SOURCE_SHA:0:8}"
+          git push -u origin "$BRANCH"
+
+          python3 - <<PYEOF
+          import os
+
+          source_repo = os.environ['SOURCE_REPO']
+          source_sha = os.environ['SOURCE_SHA']
+          changed_files = os.environ['CHANGED_FILES']
+
+          file_list = '\n'.join(
+              f'- `{f}`' for f in changed_files.strip().splitlines() if f
+          )
+
+          body = (
+              f"Automated contribution from "
+              f"[`{source_repo}`](https://github.com/{source_repo}/commit/{source_sha}).\n\n"
+              f"Triggered by commit: `{source_sha}`\n\n"
+              f"### Changed files\n\n{file_list}\n"
+          )
+
+          with open('/tmp/pr-body.md', 'w') as fh:
+              fh.write(body)
+          PYEOF
+
+          gh pr create \
+            --repo virppa/repo-scaffold-skills \
+            --title "Auto-contribute .claude/commands/ from ${SOURCE_REPO}" \
+            --body-file /tmp/pr-body.md \
+            --head "$BRANCH"
