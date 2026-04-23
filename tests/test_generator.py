@@ -413,3 +413,51 @@ def test_full_agentic_no_unrendered_jinja_variables(output_dir, agentic_prefs):
     for rel_path in written:
         content = (output_dir / rel_path).read_text(encoding="utf-8", errors="replace")
         assert "{{" not in content, f"Unrendered Jinja2 variable in {rel_path}"
+
+
+def test_python_basic_dev_deps_include_mock_and_snapshot(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "pytest-mock" in content
+    assert "pytest-snapshot" in content
+
+
+def test_python_basic_dev_deps_exclude_qt_and_asyncio(output_dir):
+    config = RepoConfig(repo_name="my-project", preset="python_basic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "pytest-qt" not in content
+    assert "pytest-asyncio" not in content
+
+
+def test_python_desktop_dev_deps_include_qt(output_dir):
+    config = RepoConfig(repo_name="my-desktop-app", preset="python_desktop")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert "pytest-mock" in content
+    assert "pytest-snapshot" in content
+    assert "pytest-qt" in content
+    assert "pytest-asyncio" not in content
+
+
+def test_full_agentic_dev_deps_include_all_plugins(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    for plugin in (
+        "pytest-mock",
+        "pytest-snapshot",
+        "pytest-qt",
+        "pytest-asyncio",
+        "pytest-httpx",
+        "hypothesis",
+    ):
+        assert plugin in content, f"pyproject.toml missing test plugin: {plugin}"
+
+
+def test_full_agentic_asyncio_mode_auto(output_dir):
+    config = RepoConfig(repo_name="my-agentic-project", preset="full_agentic")
+    generate(config, output_dir)
+    content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'asyncio_mode = "auto"' in content
