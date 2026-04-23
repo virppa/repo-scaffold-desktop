@@ -24,6 +24,10 @@ class Preset:
     optional_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
     skills_source: str | None = None
     skills_version: str | None = None
+    # Keys from the generator context to forward to fetch_skills for Jinja2 rendering
+    skills_context_fields: tuple[str, ...] = ()
+    # Template context overrides applied by the CLI when no explicit flag is given
+    context_defaults: dict[str, bool] = field(default_factory=dict)
 
 
 _PRESETS: dict[str, Preset] = {
@@ -87,6 +91,7 @@ _PRESETS: dict[str, Preset] = {
         ),
         skills_source="github:virppa/repo-scaffold-skills",
         skills_version="v1.0.0",
+        context_defaults={"include_linear_mcp": True},
         required_files=(
             _F_PYPROJECT,
             _F_README,

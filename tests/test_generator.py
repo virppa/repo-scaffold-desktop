@@ -1,7 +1,11 @@
+import json
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from app.core.config import RepoConfig
 from app.core.generator import generate
+from app.core.post_setup import fetch_skills
 from app.core.user_prefs import UserPreferences
 
 
@@ -13,6 +17,32 @@ def output_dir(tmp_path):
 @pytest.fixture()
 def basic_config():
     return RepoConfig(repo_name="my-project", preset="python_basic")
+
+
+@pytest.fixture()
+def agentic_prefs():
+    return UserPreferences(author_name="Test Author")
+
+
+def _make_commands_urlopen_mock(
+    commands: list[str], file_content: bytes = b"# command"
+):
+    call_count = 0
+    entries = [{"path": p, "type": "blob"} for p in commands]
+
+    def fake_urlopen(req_or_url, timeout=None):  # noqa: ARG001
+        nonlocal call_count
+        cm = MagicMock()
+        cm.__enter__ = lambda s: s
+        cm.__exit__ = MagicMock(return_value=False)
+        if call_count == 0:
+            cm.read = MagicMock(return_value=json.dumps({"tree": entries}).encode())
+        else:
+            cm.read = MagicMock(return_value=file_content)
+        call_count += 1
+        return cm
+
+    return fake_urlopen
 
 
 def test_required_files_are_written(basic_config, output_dir):
@@ -304,3 +334,82 @@ def test_generate_no_authors_section_when_prefs_empty(output_dir):
     generate(config, output_dir, prefs=prefs)
     content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
     assert "authors" not in content
+
+
+def test_mcp_json_has_linear_mcp_when_enabled(output_dir):
+    config = RepoConfig(
+        repo_name="my-agentic-project", preset="full_agentic", include_linear_mcp=True
+    )
+    generate(config, output_dir)
+    raw = (output_dir / ".mcp.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert "_comment" in data
+    assert "linear" in data["mcpServers"]
+    assert data["mcpServers"]["linear"]["url"] == "https://mcp.linear.app/mcp"
+
+
+def test_mcp_json_has_empty_mcp_servers_when_disabled(output_dir):
+    config = RepoConfig(
+        repo_name="my-project", preset="python_basic", include_claude_files=True
+    )
+    generate(config, output_dir)
+    raw = (output_dir / ".mcp.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    assert data["mcpServers"] == {}
+
+
+def test_full_agentic_settings_json_hook_structure(output_dir, agentic_prefs):
+    config = RepoConfig(
+        repo_name="my-agentic-project", preset="full_agentic", include_linear_mcp=True
+    )
+    generate(config, output_dir, prefs=agentic_prefs)
+    raw = (output_dir / ".claude" / "settings.json").read_text(encoding="utf-8")
+    data = json.loads(raw)
+    hooks = data["hooks"]
+    assert "PostToolUse" in hooks, "hooks missing PostToolUse key"
+    assert "Stop" in hooks, "hooks missing Stop key"
+    assert "PreToolUse" in hooks, "hooks missing PreToolUse key"
+
+
+def test_full_agentic_commands_files_present(output_dir, agentic_prefs):
+    config = RepoConfig(
+        repo_name="my-agentic-project", preset="full_agentic", include_linear_mcp=True
+    )
+    generate(config, output_dir, prefs=agentic_prefs)
+    expected = [
+        ".claude/commands/groom-ticket.md",
+        ".claude/commands/start-ticket.md",
+        ".claude/commands/finalize-ticket.md",
+        ".claude/commands/security-check.md",
+    ]
+    with patch(
+        "app.core.post_setup.urllib.request.urlopen",
+        side_effect=_make_commands_urlopen_mock(expected),
+    ):
+        fetch_skills(
+            output_dir,
+            skills_source="github:virppa/repo-scaffold-skills",
+            skills_version="v1.0.0",
+        )
+    for path in expected:
+        assert (output_dir / path).exists(), f"Missing command file: {path}"
+
+
+def test_full_agentic_claude_md_section_headings(output_dir, agentic_prefs):
+    config = RepoConfig(
+        repo_name="my-agentic-project", preset="full_agentic", include_linear_mcp=True
+    )
+    generate(config, output_dir, prefs=agentic_prefs)
+    content = (output_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    for heading in ("## Commands", "## Architecture", "## Development workflow"):
+        assert heading in content, f"CLAUDE.md missing section heading: {heading}"
+
+
+def test_full_agentic_no_unrendered_jinja_variables(output_dir, agentic_prefs):
+    config = RepoConfig(
+        repo_name="my-agentic-project", preset="full_agentic", include_linear_mcp=True
+    )
+    written = generate(config, output_dir, prefs=agentic_prefs)
+    for rel_path in written:
+        content = (output_dir / rel_path).read_text(encoding="utf-8", errors="replace")
+        assert "{{" not in content, f"Unrendered Jinja2 variable in {rel_path}"

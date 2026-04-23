@@ -245,6 +245,7 @@ def test_full_agentic_preset_calls_fetch_skills(output_dir):
         output_dir,
         skills_source=preset.skills_source,
         skills_version=preset.skills_version,
+        context=None,
     )
 
 

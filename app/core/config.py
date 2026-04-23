@@ -15,6 +15,7 @@ class RepoConfig(BaseModel):
     include_issue_templates: bool = False
     include_codeowners: bool = False
     include_claude_files: bool = False
+    include_linear_mcp: bool = False
 
     git_init: bool = False
     install_precommit: bool = False

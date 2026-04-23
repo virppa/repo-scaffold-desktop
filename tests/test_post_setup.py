@@ -128,6 +128,62 @@ class TestFetchSkills:
         assert "unsafe" in captured.out
 
 
+class TestFetchSkillsJinja2:
+    def test_renders_template_variables_in_skill_files(self, tmp_path):
+        entries = [{"path": ".claude/commands/foo.md", "type": "blob"}]
+        template = b"# skill for {{ linear_project }} in {{ repo_name }}"
+        with patch(
+            "app.core.post_setup.urllib.request.urlopen",
+            side_effect=_make_urlopen_mock(entries, template),
+        ):
+            written = fetch_skills(
+                tmp_path,
+                "github:virppa/repo-scaffold-skills",
+                "v1.0.0",
+                context={"linear_project": "MY_PROJECT", "repo_name": "my-repo"},
+            )
+
+        assert written == [".claude/commands/foo.md"]
+        content = (tmp_path / ".claude/commands/foo.md").read_text(encoding="utf-8")
+        assert "MY_PROJECT" in content
+        assert "my-repo" in content
+
+    def test_missing_context_key_renders_as_empty_string(self, tmp_path):
+        entries = [{"path": ".claude/commands/foo.md", "type": "blob"}]
+        template = b"# skill for {{ linear_project }}"
+        with patch(
+            "app.core.post_setup.urllib.request.urlopen",
+            side_effect=_make_urlopen_mock(entries, template),
+        ):
+            written = fetch_skills(
+                tmp_path,
+                "github:virppa/repo-scaffold-skills",
+                "v1.0.0",
+                context={},
+            )
+
+        assert written == [".claude/commands/foo.md"]
+        content = (tmp_path / ".claude/commands/foo.md").read_text(encoding="utf-8")
+        assert "{{ linear_project }}" not in content
+        assert content == "# skill for "
+
+    def test_no_context_writes_raw_bytes_unchanged(self, tmp_path):
+        entries = [{"path": ".claude/commands/foo.md", "type": "blob"}]
+        raw = b"# skill for {{ linear_project }}"
+        with patch(
+            "app.core.post_setup.urllib.request.urlopen",
+            side_effect=_make_urlopen_mock(entries, raw),
+        ):
+            written = fetch_skills(
+                tmp_path,
+                "github:virppa/repo-scaffold-skills",
+                "v1.0.0",
+            )
+
+        assert written == [".claude/commands/foo.md"]
+        assert (tmp_path / ".claude/commands/foo.md").read_bytes() == raw
+
+
 class TestRunGitInit:
     def test_invokes_subprocess_with_correct_args(self, repo_dir):
         with patch("app.core.post_setup.subprocess.run") as mock_run:
