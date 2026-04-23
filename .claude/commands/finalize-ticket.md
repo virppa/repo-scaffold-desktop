@@ -78,10 +78,10 @@ What "In Review" means depends on the PR target:
 - **Sub-ticket → epic branch (auto-merge):** "In Review" = PR is open and will merge automatically when CI passes. `/close-epic` will repair this to Done once the PR is confirmed merged. If CI fails, the PR stays open and `/close-epic` will catch and report it.
 - **Ticket → main (human review):** "In Review" = PR is open, awaiting human approval.
 
-Fetch the milestone this issue belongs to with `list_milestones(project: "repo-scaffold-desktop")`. If the milestone's progress has reached 100%, note it explicitly: "🎉 Milestone '<name>' is now complete."
+Fetch the milestone this issue belongs to with `list_milestones(project: "{{ linear_project }}")`. If the milestone's progress has reached 100%, note it explicitly: "🎉 Milestone '<name>' is now complete."
 
 ### 5. Update the project page
-Update the **repo-scaffold-desktop** project summary to reflect what just shipped.
+Update the **{{ linear_project }}** project summary to reflect what just shipped.
 
 Call `save_project(id: "87ca9685-f2e6-493f-a022-03ef2425d2ab")` with an updated `summary` (max 255 chars) capturing the current state. Example format:
 `MVP Build 88% | WOR-NNN just merged | In Review: WOR-X | Next: WOR-Y`
@@ -95,6 +95,20 @@ If this session entered a worktree via `EnterWorktree`, call `ExitWorktree` now 
 git checkout main
 ```
 
+### 6.5. Skills drift check
+
+Check whether any `.claude/commands/` files were modified in this PR:
+```bash
+git diff $(git merge-base HEAD origin/<base-branch>)..HEAD --name-only | grep '^\\.claude/commands/'
+```
+
+If any command files appear in the output, list them and print:
+```
+Command files changed — run `/contribute-skill <file>` for each to sync upstream, then update `.claude/skills_version.txt`.
+```
+
+Skip silently if no command files were changed.
+
 ---
 
 ### 7. Opportunistic issue capture
@@ -106,7 +120,7 @@ Now that implementation is complete, you have the deepest context on this area o
 
 **Rules:**
 - Only surface things genuinely encountered during implementation — no extra scans
-- Check existing Linear issues first (`list_issues` with `project: "repo-scaffold-desktop"`) to avoid duplicates
+- Check existing Linear issues first (`list_issues` with `project: "{{ linear_project }}"`) to avoid duplicates
 - Maximum 3 suggestions; keep only the most impactful
 - Present suggestions and wait for approval before creating anything
 

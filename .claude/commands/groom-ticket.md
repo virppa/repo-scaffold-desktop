@@ -13,10 +13,10 @@ Before anything else, run a non-blocking skills staleness check:
 
 ---
 
-Look up the Linear issue with identifier $ARGUMENTS in the repo-scaffold-desktop project using the Linear MCP server. Run these in parallel:
+Look up the Linear issue with identifier $ARGUMENTS in the {{ linear_project }} project using the Linear MCP server. Run these in parallel:
 - `get_issue($ARGUMENTS, includeRelations: true)` — see existing labels, milestone, parent epic, priority, blocking relations
-- `list_milestones(project: "repo-scaffold-desktop")` — check milestone progress before suggesting assignment
-- `list_issues(project: "repo-scaffold-desktop", state: "In Progress")` combined with issues that have no parentId — to get current active epics
+- `list_milestones(project: "{{ linear_project }}")` — check milestone progress before suggesting assignment
+- `list_issues(project: "{{ linear_project }}", state: "In Progress")` combined with issues that have no parentId — to get current active epics
 
 Then spawn the **repo-investigator** subagent, passing the ticket title and description as the prompt. Use its returned summary as context for the analysis below — do not read any source files yourself.
 
@@ -52,7 +52,7 @@ After the human approves, take all of the following actions in Linear:
 
 1. **Labels** — set the Type and Stream labels on the issue using `save_issue` (use label names, not IDs). If `local-ready` was recommended, add it to the labels list too.
 2. **Epic** — set `parentId` to the approved epic identifier using `save_issue`. If a new epic was proposed and approved, create it first with `save_issue` (no parentId, with Type+Stream labels), then set it as parent on this issue
-3. **Milestone** — assign with `save_issue`. If a new milestone was approved, create it first with `save_milestone(project: "repo-scaffold-desktop", name: "...", description: "...")`, then assign
+3. **Milestone** — assign with `save_issue`. If a new milestone was approved, create it first with `save_milestone(project: "{{ linear_project }}", name: "...", description: "...")`, then assign
 4. **Priority** — update if the current value is wrong or missing
 5. **Blockers** — add any missing `blockedBy` relations (append-only; existing relations are never removed)
 6. **Sub-issues** — if splitting was recommended and approved, create each sub-issue with `save_issue` using `parentId: "$ARGUMENTS"`, then set the same labels, epic, and milestone on each
