@@ -15,6 +15,7 @@ import shlex
 import subprocess  # nosec B404
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO
 
@@ -132,8 +133,14 @@ def launch_worker(
     )
 
 
+_LAST_FAILURE_FILENAME = "last_failure.json"
+
+
 def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
     """Run manifest.required_checks in the worktree. Returns True if all pass."""
+    artifact_dir = worktree_path / Path(manifest.artifact_paths.result_json).parent
+    failure_artifact = artifact_dir / _LAST_FAILURE_FILENAME
+
     all_passed = True
     for check_cmd in manifest.required_checks:
         logger.info("Running check: %s", check_cmd)
@@ -148,6 +155,22 @@ def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
                 "Check failed: %s\n%s", check_cmd, result.stdout + result.stderr
             )
             all_passed = False
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            failure_artifact.write_text(
+                json.dumps(
+                    {
+                        "failed_at": datetime.now(timezone.utc).isoformat(),
+                        "check": check_cmd,
+                        "stdout": result.stdout[:4000],
+                        "stderr": result.stderr,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    if all_passed and failure_artifact.exists():
+        failure_artifact.unlink()
+
     return all_passed
 
 
