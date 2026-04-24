@@ -55,6 +55,31 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **No re-planning** — do not re-read Linear, re-query the project, or change scope. If something in the codebase is surprising, implement defensively within the manifest scope and note it in the result artifact summary.
 
+### 3.5. Auto-fix style violations
+
+Before running required checks, apply the auto-fixers:
+
+```bash
+ruff format .
+ruff check . --fix
+```
+
+These are safe to run on any Python codebase: `ruff format` reformats long lines and spacing; `ruff check --fix` removes unused imports and corrects other auto-fixable violations. Run them after all code changes are written.
+
+Then verify:
+
+```bash
+ruff check .
+mypy app/
+```
+
+If violations remain after `--fix`, fix them before continuing:
+- **E501** (line too long): break the line at a logical boundary — function parameter, string concatenation, or by extracting a variable
+- **F401** (unused import): delete the import line
+- **mypy errors**: fix the type mismatch in the code; do not add `# type: ignore`
+
+Do not proceed to step 4 until both `ruff check .` and `mypy app/` exit cleanly.
+
 ### 4. Run required checks
 
 After implementation, run each command in `required_checks` in order:
