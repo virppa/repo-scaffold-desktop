@@ -30,6 +30,8 @@ forbidden_modules =
 name = watcher sub-modules form a strict dependency layer
 type = layers
 # watcher (orchestrator) imports all sub-modules.
+# watcher_finalize sits between watcher and the subprocess/worktrees/services tier
+# because it imports from all three of those modules.
 # watcher_subprocess, watcher_worktrees, watcher_services may import from
 # watcher_types and watcher_helpers — not from each other or from watcher.
 # watcher_helpers may import from watcher_types only.
@@ -37,6 +39,7 @@ type = layers
 # CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
 layers =
     app.core.watcher
+    app.core.watcher_finalize
     app.core.watcher_subprocess : app.core.watcher_worktrees : app.core.watcher_services
     app.core.watcher_helpers
     app.core.watcher_types
@@ -51,6 +54,7 @@ source_modules =
     app.core.watcher_types
 forbidden_modules =
     app.core.watcher
+    app.core.watcher_finalize
     app.core.watcher_helpers
     app.core.watcher_subprocess
     app.core.watcher_worktrees
