@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+import urllib.error
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -288,3 +289,62 @@ def test_get_issue_state_type_raises_on_api_error() -> None:
     with patch("urllib.request.urlopen", return_value=_mock_response(response)):
         with pytest.raises(LinearError):
             _client().get_issue_state_type("WOR-45")
+
+
+# ---------------------------------------------------------------------------
+# _query retry and safe access
+# ---------------------------------------------------------------------------
+
+
+def test_query_clean_success() -> None:
+    response = {"data": {"foo": "bar"}}
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        result = _client()._query("query { foo }")
+    assert result == {"foo": "bar"}
+
+
+def test_query_missing_data_key_raises() -> None:
+    response = {"something": "else"}
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        with pytest.raises(LinearError, match="no data"):
+            _client()._query("query { foo }")
+
+
+def test_query_429_retries_three_times_then_raises() -> None:
+    exc = urllib.error.HTTPError(
+        url="", code=429, msg="Too Many Requests", hdrs=None, fp=None
+    )
+    with (
+        patch("urllib.request.urlopen", side_effect=exc) as mock_urlopen,
+        patch("app.core.linear_client.time.sleep") as mock_sleep,
+    ):
+        with pytest.raises(LinearError):
+            _client()._query("query { foo }")
+    assert mock_urlopen.call_count == 4
+    assert mock_sleep.call_args_list == [call(1), call(2), call(4)]
+
+
+def test_query_400_raises_immediately_without_retry() -> None:
+    exc = urllib.error.HTTPError(
+        url="", code=400, msg="Bad Request", hdrs=None, fp=None
+    )
+    with (
+        patch("urllib.request.urlopen", side_effect=exc) as mock_urlopen,
+        patch("app.core.linear_client.time.sleep") as mock_sleep,
+    ):
+        with pytest.raises(LinearError, match="400"):
+            _client()._query("query { foo }")
+    assert mock_urlopen.call_count == 1
+    mock_sleep.assert_not_called()
+
+
+def test_query_url_error_retries_with_backoff() -> None:
+    exc = urllib.error.URLError(reason="connection refused")
+    with (
+        patch("urllib.request.urlopen", side_effect=exc) as mock_urlopen,
+        patch("app.core.linear_client.time.sleep") as mock_sleep,
+    ):
+        with pytest.raises(LinearError):
+            _client()._query("query { foo }")
+    assert mock_urlopen.call_count == 4
+    assert mock_sleep.call_args_list == [call(1), call(2), call(4)]

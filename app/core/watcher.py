@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Protocol
 
+from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES, LinearError
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import ImplementationMode, MetricsStore, Outcome, TicketMetrics
@@ -243,6 +244,26 @@ def _tee_worker_output(
         log_file.close()
 
 
+_POLICY_FLAGS = (
+    "scope_drift",
+    "forbidden_path_touched",
+    "import_linter_violation",
+    "security_blocker",
+)
+
+
+def _read_result_flags(result_path: Path) -> dict[str, bool]:
+    """Load result.json and return the four escalation-policy boolean flags.
+
+    Returns all-False defaults when the file is missing or malformed.
+    """
+    try:
+        raw = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception:
+        return dict.fromkeys(_POLICY_FLAGS, False)
+    return {f: bool(raw.get(f, False)) for f in _POLICY_FLAGS}
+
+
 # ---------------------------------------------------------------------------
 # Watcher
 # ---------------------------------------------------------------------------
@@ -284,6 +305,7 @@ class Watcher:
         self._worker_counter = 0
         self._worker_counter_lock = threading.Lock()
         self._retry_counters: dict[str, int] = {}
+        self._escalation_policy = EscalationPolicy.from_toml()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -316,6 +338,7 @@ class Watcher:
                 time.sleep(self._POLL_INTERVAL)
         finally:
             self._wait_for_active_workers()
+            self._stop_litellm_proxy()
             self._remove_pid_file()
             logger.info("Watcher stopped cleanly")
 
@@ -339,11 +362,9 @@ class Watcher:
 
         Scans .claude/artifacts/*/manifest.json each poll cycle. For each manifest
         with status=='WaitingForDeps', checks whether all blocked_by_tickets have
-        reached a completed/cancelled state in Linear. If so, writes the manifest
-        back to disk with status='ReadyForLocal' and advances the Linear ticket.
-
-        # TODO: detect when a predecessor goes to 'Blocked' (failed) and surface it
-        # as a comment rather than waiting forever.
+        reached a completed state in Linear. If so, writes the manifest back to disk
+        with status='ReadyForLocal' and advances the Linear ticket. If any blocker
+        is cancelled, posts a comment and moves the dependent ticket to Backlog.
         """
         artifacts_root = self._repo_root / _CLAUDE_DIR / "artifacts"
         if not artifacts_root.exists():
@@ -371,6 +392,14 @@ class Watcher:
                 self._notify_promotion(manifest)
                 continue
 
+            cancelled = self._find_cancelled_blocker(manifest)
+            if cancelled is not None:
+                blocker_id, state_type = cancelled
+                self._handle_cancelled_predecessor(
+                    manifest, manifest_path, blocker_id, state_type
+                )
+                continue
+
             if self._all_blockers_satisfied(manifest):
                 logger.info(
                     "All blockers for %s satisfied — promoting to ReadyForLocal",
@@ -380,6 +409,56 @@ class Watcher:
                     manifest, manifest_path, "ReadyForLocal"
                 )
                 self._notify_promotion(manifest)
+
+    def _find_cancelled_blocker(
+        self, manifest: ExecutionManifest
+    ) -> tuple[str, str] | None:
+        """Return (blocker_id, state_type) for the first cancelled blocker, or None."""
+        for blocker_id in manifest.blocked_by_tickets:
+            try:
+                state_type = self._linear.get_issue_state_type(blocker_id)
+            except Exception as exc:
+                logger.debug(
+                    "Could not fetch state for blocker %s while scanning for "
+                    "cancellations in %s: %s",
+                    blocker_id,
+                    manifest.ticket_id,
+                    exc,
+                )
+                continue
+            if state_type == "cancelled":
+                return blocker_id, state_type
+        return None
+
+    def _handle_cancelled_predecessor(
+        self,
+        manifest: ExecutionManifest,
+        manifest_path: Path,
+        blocker_id: str,
+        state_type: str,
+    ) -> None:
+        logger.warning(
+            "Blocker %s for %s is %s — moving dependent to Backlog",
+            blocker_id,
+            manifest.ticket_id,
+            state_type,
+        )
+        self._transition_waiting_manifest(manifest, manifest_path, "Backlog")
+        if not manifest.linear_id:
+            return
+        self._safe_set_state(manifest.linear_id, "Backlog", manifest.ticket_id)
+        try:
+            msg = (
+                f"Predecessor {blocker_id} moved to {state_type}"
+                " — manual intervention required."
+            )
+            self._linear.post_comment(manifest.linear_id, msg)
+        except Exception as exc:
+            logger.warning(
+                "Could not post predecessor-cancelled comment for %s: %s",
+                manifest.ticket_id,
+                exc,
+            )
 
     def _all_blockers_satisfied(self, manifest: ExecutionManifest) -> bool:
         for blocker_id in manifest.blocked_by_tickets:
@@ -394,6 +473,8 @@ class Watcher:
                 )
                 return False
             if state_type is None or state_type not in DONE_STATE_TYPES:
+                return False
+            if state_type == "cancelled":
                 return False
         return True
 
@@ -577,6 +658,8 @@ class Watcher:
 
         outcome: Outcome
         escalated = False
+        artifacts_preserved = False
+        sonar_findings: list[str] | None = None
 
         if returncode != 0:
             logger.error("Worker %s exited non-zero (%d)", ticket_id, returncode)
@@ -595,9 +678,83 @@ class Watcher:
                     linear_id, manifest.ticket_state_map.failed, ticket_id
                 )
             else:
-                outcome = self._attempt_pr(manifest, worker, ticket_id, linear_id)
+                self._preserve_worker_artifacts(worker)
+                artifacts_preserved = True
 
-        sonar_count = self._fetch_sonar_findings(manifest.worker_branch)
+                result_path = self._repo_root / manifest.artifact_paths.result_json
+                flags = _read_result_flags(result_path)
+                action = self._escalation_policy.classify_result(**flags)
+
+                if action == "escalate":
+                    triggering = next(
+                        (f for f in _POLICY_FLAGS if flags.get(f)), "unknown"
+                    )
+                    logger.info(
+                        "Escalating %s to cloud (flag=%s)", ticket_id, triggering
+                    )
+                    escalated = True
+                    self._safe_set_state(linear_id, "In Progress", ticket_id)
+                    try:
+                        self._linear.post_comment(
+                            linear_id,
+                            f"Local worker escalating `{ticket_id}` to cloud. "
+                            f"Triggering flag: `{triggering}`.",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not post escalation comment for %s", ticket_id
+                        )
+                    outcome = "escalated"
+                elif action == "human":
+                    logger.info("Human review required for %s per policy", ticket_id)
+                    try:
+                        self._linear.post_comment(
+                            linear_id,
+                            f"Human review required for `{ticket_id}` before "
+                            f"proceeding. Please inspect the result artifact.",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not post human review comment for %s", ticket_id
+                        )
+                    outcome = "aborted"
+                else:  # fix_locally — classify Sonar severities before creating PR
+                    sonar_findings = self._fetch_sonar_findings(manifest.worker_branch)
+                    sonar_escalate = False
+                    if sonar_findings:
+                        for severity in sonar_findings:
+                            sonar_action = (
+                                self._escalation_policy.classify_sonar_finding(
+                                    severity.lower()
+                                )
+                            )
+                            if sonar_action == "escalate":
+                                sonar_escalate = True
+                            else:
+                                logger.warning(
+                                    "Sonar finding for %s: severity=%s — fix_locally",
+                                    ticket_id,
+                                    severity,
+                                )
+                    if sonar_escalate:
+                        escalated = True
+                        self._safe_set_state(linear_id, "In Progress", ticket_id)
+                        try:
+                            self._linear.post_comment(
+                                linear_id,
+                                f"Local worker escalating `{ticket_id}` to cloud due "
+                                f"to Sonar finding requiring immediate action.",
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Could not post Sonar escalation comment for %s",
+                                ticket_id,
+                            )
+                        outcome = "escalated"
+                    else:
+                        outcome = self._attempt_pr(
+                            manifest, worker, ticket_id, linear_id
+                        )
 
         log_path = (
             worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
@@ -619,12 +776,15 @@ class Watcher:
                 outcome=outcome,
                 retry_count=worker.retry_count,
                 context_compactions=context_compactions,
-                sonar_findings_count=sonar_count,
+                sonar_findings_count=(
+                    len(sonar_findings) if sonar_findings is not None else None
+                ),
             )
         )
 
         self._restore_plan_files(worker.backed_up_plans)
-        self._preserve_worker_artifacts(worker)
+        if not artifacts_preserved:
+            self._preserve_worker_artifacts(worker)
         self._cleanup_worktree(worker.worktree_path)
 
     # ------------------------------------------------------------------
@@ -949,16 +1109,12 @@ class Watcher:
     # SonarCloud findings count (Option B: REST API, best-effort)
     # ------------------------------------------------------------------
 
-    def _fetch_sonar_findings(self, branch: str) -> int | None:
-        # Calls the SonarCloud measures API for the worker branch right after PR
-        # creation.  The CI scan usually hasn't run yet at this point, so None is
-        # the common case for new branches; this becomes non-NULL once SonarCloud
-        # has processed a previous push to the same branch.  Requires SONAR_TOKEN
-        # and SONAR_PROJECT_KEY env vars; returns None silently if either is absent
-        # or if the API call fails for any reason.
-        #
-        # Uses http.client.HTTPSConnection (always TLS) rather than urlopen so that
-        # the scheme is statically known and not subject to file:// redirection.
+    def _fetch_sonar_findings(self, branch: str) -> list[str] | None:
+        # Calls the SonarCloud issues API for the worker branch to get per-severity
+        # issue data for escalation classification.  Returns a list of severity
+        # strings (e.g. ['BLOCKER', 'CRITICAL']) or None when SONAR_TOKEN /
+        # SONAR_PROJECT_KEY are absent or the API call fails.  An empty list means
+        # the branch was scanned and has no open issues.
         import base64
         import ssl
         import urllib.parse
@@ -970,9 +1126,14 @@ class Watcher:
             return None
 
         params = urllib.parse.urlencode(
-            {"component": project_key, "branch": branch, "metricKeys": "violations"}
+            {
+                "componentKeys": project_key,
+                "branch": branch,
+                "resolved": "false",
+                "ps": "500",
+            }
         )
-        url = f"https://sonarcloud.io/api/measures/component?{params}"
+        url = f"https://sonarcloud.io/api/issues/search?{params}"
         creds = base64.b64encode(f"{token}:".encode()).decode()
         req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
         ctx = ssl.create_default_context()
@@ -981,13 +1142,12 @@ class Watcher:
                 req, timeout=10, context=ctx
             ) as resp:
                 data: dict[str, object] = json.loads(resp.read())
-            component = data.get("component") or {}
-            measures = (component if isinstance(component, dict) else {}).get(
-                "measures", []
-            )
-            for m in measures if isinstance(measures, list) else []:
-                if isinstance(m, dict) and m.get("metric") == "violations":
-                    return int(m["value"])
+            issues = data.get("issues") or []
+            return [
+                str(issue["severity"])
+                for issue in (issues if isinstance(issues, list) else [])
+                if isinstance(issue, dict) and issue.get("severity")
+            ]
         except Exception:
             logger.debug(
                 "Could not fetch Sonar findings for branch %s", branch, exc_info=True
@@ -1154,6 +1314,18 @@ class Watcher:
             f"Check .claude/litellm.log for details."
         )
 
+    def _stop_litellm_proxy(self) -> None:
+        if not self._litellm_proc:
+            return
+        logger.info("Stopping LiteLLM proxy (pid=%d)…", self._litellm_proc.pid)
+        self._litellm_proc.terminate()
+        try:
+            self._litellm_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.info("LiteLLM proxy did not exit after 5s — sending kill")
+            self._litellm_proc.kill()
+        self._litellm_proc = None
+
     # ------------------------------------------------------------------
     # Graceful shutdown
     # ------------------------------------------------------------------
@@ -1167,6 +1339,7 @@ class Watcher:
         logger.info(
             "Signal %d received — finishing active workers then exiting", signum
         )
+        self._stop_litellm_proxy()
         self._running = False
 
     def _wait_for_active_workers(self) -> None:
