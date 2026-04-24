@@ -600,6 +600,7 @@ class Watcher:
         outcome: Outcome
         escalated = False
         artifacts_preserved = False
+        sonar_findings: list[str] | None = None
 
         if returncode != 0:
             logger.error("Worker %s exited non-zero (%d)", ticket_id, returncode)
@@ -658,10 +659,43 @@ class Watcher:
                             "Could not post human review comment for %s", ticket_id
                         )
                     outcome = "aborted"
-                else:  # fix_locally
-                    outcome = self._attempt_pr(manifest, worker, ticket_id, linear_id)
-
-        sonar_count = self._fetch_sonar_findings(manifest.worker_branch)
+                else:  # fix_locally — classify Sonar severities before creating PR
+                    sonar_findings = self._fetch_sonar_findings(manifest.worker_branch)
+                    sonar_escalate = False
+                    if sonar_findings:
+                        for severity in sonar_findings:
+                            sonar_action = (
+                                self._escalation_policy.classify_sonar_finding(
+                                    severity.lower()
+                                )
+                            )
+                            if sonar_action == "escalate":
+                                sonar_escalate = True
+                            else:
+                                logger.warning(
+                                    "Sonar finding for %s: severity=%s — fix_locally",
+                                    ticket_id,
+                                    severity,
+                                )
+                    if sonar_escalate:
+                        escalated = True
+                        self._safe_set_state(linear_id, "In Progress", ticket_id)
+                        try:
+                            self._linear.post_comment(
+                                linear_id,
+                                f"Local worker escalating `{ticket_id}` to cloud due "
+                                f"to Sonar finding requiring immediate action.",
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Could not post Sonar escalation comment for %s",
+                                ticket_id,
+                            )
+                        outcome = "escalated"
+                    else:
+                        outcome = self._attempt_pr(
+                            manifest, worker, ticket_id, linear_id
+                        )
 
         log_path = (
             worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
@@ -683,7 +717,9 @@ class Watcher:
                 outcome=outcome,
                 retry_count=worker.retry_count,
                 context_compactions=context_compactions,
-                sonar_findings_count=sonar_count,
+                sonar_findings_count=(
+                    len(sonar_findings) if sonar_findings is not None else None
+                ),
             )
         )
 
@@ -1014,16 +1050,12 @@ class Watcher:
     # SonarCloud findings count (Option B: REST API, best-effort)
     # ------------------------------------------------------------------
 
-    def _fetch_sonar_findings(self, branch: str) -> int | None:
-        # Calls the SonarCloud measures API for the worker branch right after PR
-        # creation.  The CI scan usually hasn't run yet at this point, so None is
-        # the common case for new branches; this becomes non-NULL once SonarCloud
-        # has processed a previous push to the same branch.  Requires SONAR_TOKEN
-        # and SONAR_PROJECT_KEY env vars; returns None silently if either is absent
-        # or if the API call fails for any reason.
-        #
-        # Uses http.client.HTTPSConnection (always TLS) rather than urlopen so that
-        # the scheme is statically known and not subject to file:// redirection.
+    def _fetch_sonar_findings(self, branch: str) -> list[str] | None:
+        # Calls the SonarCloud issues API for the worker branch to get per-severity
+        # issue data for escalation classification.  Returns a list of severity
+        # strings (e.g. ['BLOCKER', 'CRITICAL']) or None when SONAR_TOKEN /
+        # SONAR_PROJECT_KEY are absent or the API call fails.  An empty list means
+        # the branch was scanned and has no open issues.
         import base64
         import ssl
         import urllib.parse
@@ -1035,9 +1067,14 @@ class Watcher:
             return None
 
         params = urllib.parse.urlencode(
-            {"component": project_key, "branch": branch, "metricKeys": "violations"}
+            {
+                "componentKeys": project_key,
+                "branch": branch,
+                "resolved": "false",
+                "ps": "500",
+            }
         )
-        url = f"https://sonarcloud.io/api/measures/component?{params}"
+        url = f"https://sonarcloud.io/api/issues/search?{params}"
         creds = base64.b64encode(f"{token}:".encode()).decode()
         req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
         ctx = ssl.create_default_context()
@@ -1046,13 +1083,12 @@ class Watcher:
                 req, timeout=10, context=ctx
             ) as resp:
                 data: dict[str, object] = json.loads(resp.read())
-            component = data.get("component") or {}
-            measures = (component if isinstance(component, dict) else {}).get(
-                "measures", []
-            )
-            for m in measures if isinstance(measures, list) else []:
-                if isinstance(m, dict) and m.get("metric") == "violations":
-                    return int(m["value"])
+            issues = data.get("issues") or []
+            return [
+                str(issue["severity"])
+                for issue in (issues if isinstance(issues, list) else [])
+                if isinstance(issue, dict) and issue.get("severity")
+            ]
         except Exception:
             logger.debug(
                 "Could not fetch Sonar findings for branch %s", branch, exc_info=True
