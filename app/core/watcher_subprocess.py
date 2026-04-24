@@ -28,6 +28,8 @@ from app.core.watcher_types import _CLAUDE_DIR
 
 logger = logging.getLogger(__name__)
 
+_SONAR_MAX_PAGES = 10
+
 
 def expand_skill(repo_root: Path, ticket_id: str) -> str | None:
     """Return the implement-ticket skill content with $ARGUMENTS substituted.
@@ -256,31 +258,46 @@ def fetch_sonar_findings(branch: str) -> list[str] | None:
     if not token or not project_key:
         return None
 
-    params = urllib.parse.urlencode(
-        {
-            "componentKeys": project_key,
-            "branch": branch,
-            "resolved": "false",
-            "ps": "500",
-        }
-    )
-    url = f"https://sonarcloud.io/api/issues/search?{params}"
     creds = base64.b64encode(f"{token}:".encode()).decode()
-    req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
     ctx = ssl.create_default_context()
-    try:
-        with urllib.request.urlopen(  # nosec B310  # nosemgrep
-            req, timeout=10, context=ctx
-        ) as resp:
-            data: dict[str, object] = json.loads(resp.read())
-        issues = data.get("issues") or []
-        return [
-            str(issue["severity"])
-            for issue in (issues if isinstance(issues, list) else [])
-            if isinstance(issue, dict) and issue.get("severity")
-        ]
-    except Exception:
-        logger.debug(
-            "Could not fetch Sonar findings for branch %s", branch, exc_info=True
+    all_severities: list[str] = []
+
+    for page in range(1, _SONAR_MAX_PAGES + 1):
+        params = urllib.parse.urlencode(
+            {
+                "componentKeys": project_key,
+                "branch": branch,
+                "resolved": "false",
+                "ps": "500",
+                "p": str(page),
+            }
         )
-    return None
+        url = f"https://sonarcloud.io/api/issues/search?{params}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
+        try:
+            with urllib.request.urlopen(  # nosec B310  # nosemgrep
+                req, timeout=10, context=ctx
+            ) as resp:
+                data: dict[str, object] = json.loads(resp.read())
+            issues = data.get("issues") or []
+            all_severities.extend(
+                str(issue["severity"])
+                for issue in (issues if isinstance(issues, list) else [])
+                if isinstance(issue, dict) and issue.get("severity")
+            )
+            raw_total = data.get("total")
+            total = int(raw_total) if isinstance(raw_total, int) else 0
+            if page * 500 >= total:
+                break
+        except Exception:
+            logger.debug(
+                "Could not fetch Sonar findings for branch %s (page %d)",
+                branch,
+                page,
+                exc_info=True,
+            )
+            if page == 1:
+                return None
+            break
+
+    return all_severities
