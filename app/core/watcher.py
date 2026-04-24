@@ -362,11 +362,9 @@ class Watcher:
 
         Scans .claude/artifacts/*/manifest.json each poll cycle. For each manifest
         with status=='WaitingForDeps', checks whether all blocked_by_tickets have
-        reached a completed/cancelled state in Linear. If so, writes the manifest
-        back to disk with status='ReadyForLocal' and advances the Linear ticket.
-
-        # TODO: detect when a predecessor goes to 'Blocked' (failed) and surface it
-        # as a comment rather than waiting forever.
+        reached a completed state in Linear. If so, writes the manifest back to disk
+        with status='ReadyForLocal' and advances the Linear ticket. If any blocker
+        is cancelled, posts a comment and moves the dependent ticket to Backlog.
         """
         artifacts_root = self._repo_root / _CLAUDE_DIR / "artifacts"
         if not artifacts_root.exists():
@@ -394,6 +392,14 @@ class Watcher:
                 self._notify_promotion(manifest)
                 continue
 
+            cancelled = self._find_cancelled_blocker(manifest)
+            if cancelled is not None:
+                blocker_id, state_type = cancelled
+                self._handle_cancelled_predecessor(
+                    manifest, manifest_path, blocker_id, state_type
+                )
+                continue
+
             if self._all_blockers_satisfied(manifest):
                 logger.info(
                     "All blockers for %s satisfied — promoting to ReadyForLocal",
@@ -403,6 +409,56 @@ class Watcher:
                     manifest, manifest_path, "ReadyForLocal"
                 )
                 self._notify_promotion(manifest)
+
+    def _find_cancelled_blocker(
+        self, manifest: ExecutionManifest
+    ) -> tuple[str, str] | None:
+        """Return (blocker_id, state_type) for the first cancelled blocker, or None."""
+        for blocker_id in manifest.blocked_by_tickets:
+            try:
+                state_type = self._linear.get_issue_state_type(blocker_id)
+            except Exception as exc:
+                logger.debug(
+                    "Could not fetch state for blocker %s while scanning for "
+                    "cancellations in %s: %s",
+                    blocker_id,
+                    manifest.ticket_id,
+                    exc,
+                )
+                continue
+            if state_type == "cancelled":
+                return blocker_id, state_type
+        return None
+
+    def _handle_cancelled_predecessor(
+        self,
+        manifest: ExecutionManifest,
+        manifest_path: Path,
+        blocker_id: str,
+        state_type: str,
+    ) -> None:
+        logger.warning(
+            "Blocker %s for %s is %s — moving dependent to Backlog",
+            blocker_id,
+            manifest.ticket_id,
+            state_type,
+        )
+        self._transition_waiting_manifest(manifest, manifest_path, "Backlog")
+        if not manifest.linear_id:
+            return
+        self._safe_set_state(manifest.linear_id, "Backlog", manifest.ticket_id)
+        try:
+            msg = (
+                f"Predecessor {blocker_id} moved to {state_type}"
+                " — manual intervention required."
+            )
+            self._linear.post_comment(manifest.linear_id, msg)
+        except Exception as exc:
+            logger.warning(
+                "Could not post predecessor-cancelled comment for %s: %s",
+                manifest.ticket_id,
+                exc,
+            )
 
     def _all_blockers_satisfied(self, manifest: ExecutionManifest) -> bool:
         for blocker_id in manifest.blocked_by_tickets:
@@ -417,6 +473,8 @@ class Watcher:
                 )
                 return False
             if state_type is None or state_type not in DONE_STATE_TYPES:
+                return False
+            if state_type == "cancelled":
                 return False
         return True
 
