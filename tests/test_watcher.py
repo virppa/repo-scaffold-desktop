@@ -9,6 +9,7 @@ in their respective module-aligned test files.
 from __future__ import annotations
 
 import logging
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -319,3 +320,21 @@ def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
 
     mock_ollama.assert_not_called()
     mock_litellm.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _handle_signal — SIGTERM triggers LiteLLM proxy cleanup and sets _running=False
+# ---------------------------------------------------------------------------
+
+
+def test_handle_signal_sigterm_terminates_litellm_proc_and_stops_running() -> None:
+    w = Watcher(linear_client=MagicMock())
+    mock_proc = MagicMock(spec=subprocess.Popen)
+    mock_proc.pid = 99999
+    w._services._litellm_proc = mock_proc
+
+    w._handle_signal(signal.SIGTERM, None)
+
+    mock_proc.terminate.assert_called_once()
+    assert w._services._litellm_proc is None
+    assert w._running is False
