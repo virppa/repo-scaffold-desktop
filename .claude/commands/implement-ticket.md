@@ -19,7 +19,25 @@ ABORT: Unsupported manifest_version '<version>'. This worker supports 1.0 only.
 Confirm the following fields are present before continuing:
 - `ticket_id`, `worker_branch`, `base_branch`, `objective`, `artifact_paths`
 
-### 0.5. Load context snippets (if present)
+### 0.5. Check for prior failure context (if present)
+
+Read `.claude/artifacts/<ticket_id_lower>/last_failure.json` if it exists.
+(e.g. for WOR-80: `.claude/artifacts/wor_80/last_failure.json`)
+
+If the file is present, surface its contents as context before proceeding:
+
+```
+PRIOR FAILURE CONTEXT:
+  Failed at: <failed_at>
+  Check:     <check>
+  Stdout:    <stdout>
+  Stderr:    <stderr>
+```
+
+Use this context to understand what the previous worker attempt failed on and
+avoid repeating the same mistake. Do NOT abort — this is informational only.
+
+### 0.6. Load context snippets (if present)
 
 If `manifest.context_snippets` is non-null and non-empty, treat each entry as
 a pre-loaded code excerpt — do NOT re-read these sections from disk unless you

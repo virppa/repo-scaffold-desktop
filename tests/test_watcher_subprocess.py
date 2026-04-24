@@ -498,6 +498,108 @@ def test_run_checks_returns_false_on_check_failure(
     assert call_count == 2
 
 
+def test_run_checks_writes_last_failure_json_on_failure(tmp_path: Path) -> None:
+    manifest = _make_manifest(required_checks=["ruff check ."])
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = "E501 line too long\n" * 50  # > 4000 chars after repetition
+        result.stderr = "some stderr"
+        return result
+
+    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+        run_checks(manifest, tmp_path)
+
+    artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
+    failure_file = artifact_dir / "last_failure.json"
+    assert failure_file.exists(), "last_failure.json should be written on check failure"
+
+    import json as json_mod
+
+    data = json_mod.loads(failure_file.read_text(encoding="utf-8"))
+    assert data["check"] == "ruff check ."
+    assert "failed_at" in data
+    assert len(data["stdout"]) <= 4000
+    assert data["stderr"] == "some stderr"
+
+
+def test_run_checks_stdout_trimmed_to_4000_chars(tmp_path: Path) -> None:
+    manifest = _make_manifest(required_checks=["ruff check ."])
+    long_stdout = "x" * 8000
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = long_stdout
+        result.stderr = ""
+        return result
+
+    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+        run_checks(manifest, tmp_path)
+
+    artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
+    import json as json_mod
+
+    data = json_mod.loads(
+        (artifact_dir / "last_failure.json").read_text(encoding="utf-8")
+    )
+    assert len(data["stdout"]) == 4000
+
+
+def test_run_checks_deletes_last_failure_json_on_success(tmp_path: Path) -> None:
+    manifest = _make_manifest(required_checks=["ruff check ."])
+
+    # Pre-create a stale last_failure.json in the artifact dir
+    artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    stale = artifact_dir / "last_failure.json"
+    stale.write_text('{"check": "old"}', encoding="utf-8")
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+        assert run_checks(manifest, tmp_path) is True
+
+    assert not stale.exists(), (
+        "last_failure.json should be deleted after successful run"
+    )
+
+
+def test_run_checks_last_failure_overwritten_by_last_failing_check(
+    tmp_path: Path,
+) -> None:
+    manifest = _make_manifest(required_checks=["ruff check .", "mypy app/"])
+    call_count = 0
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        result = MagicMock()
+        result.returncode = 1
+        result.stdout = f"output from check {call_count}"
+        result.stderr = ""
+        return result
+
+    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+        run_checks(manifest, tmp_path)
+
+    artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
+    import json as json_mod
+
+    data = json_mod.loads(
+        (artifact_dir / "last_failure.json").read_text(encoding="utf-8")
+    )
+    # Last failing check (mypy) should overwrite the first (ruff)
+    assert data["check"] == "mypy app/"
+    assert data["stdout"] == "output from check 2"
+
+
 # ---------------------------------------------------------------------------
 # create_pr — additional failure paths
 # ---------------------------------------------------------------------------
