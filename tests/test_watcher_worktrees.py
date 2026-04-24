@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.core.watcher import Watcher
 from app.core.watcher_types import ActiveWorker
 from app.core.watcher_worktrees import (
     preserve_worker_artifacts,
@@ -89,3 +90,29 @@ def test_preserve_worker_artifacts_missing_result_warns(
         preserve_worker_artifacts(tmp_path, worker)
 
     assert any("No result artifact" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Watcher._cleanup_orphaned_worktrees
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_orphaned_worktrees_removes_dirs(tmp_path: Path) -> None:
+    worktree_dir = tmp_path.parent / "worktrees/wor-99-old-ticket"
+    worktree_dir.mkdir(parents=True)
+
+    mock_linear = MagicMock()
+    watcher = Watcher(
+        linear_client=mock_linear,
+        repo_root=tmp_path,
+    )
+
+    with patch.object(watcher, "_cleanup_worktree") as mock_cleanup:
+        watcher._cleanup_orphaned_worktrees()
+        mock_cleanup.assert_called_once_with(worktree_dir)
+
+
+def test_cleanup_orphaned_worktrees_skips_when_base_absent(tmp_path: Path) -> None:
+    mock_linear = MagicMock()
+    watcher = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+    watcher._cleanup_orphaned_worktrees()
