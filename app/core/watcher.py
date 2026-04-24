@@ -36,7 +36,6 @@ from app.core.manifest import ExecutionManifest
 from app.core.metrics import MetricsStore, Outcome, TicketMetrics
 from app.core.watcher_helpers import (
     _POLICY_FLAGS,
-    _parse_ollama_model,
     _parse_worker_usage,
     _read_result_flags,
     _tee_worker_output,
@@ -45,13 +44,13 @@ from app.core.watcher_helpers import (
     check_allowed_paths_overlap,
     resolve_effective_mode,
 )
+from app.core.watcher_helpers import (
+    _parse_ollama_model as _parse_ollama_model,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_services import ServiceManager
 from app.core.watcher_types import (
     _CLAUDE_DIR,
-    _LITELLM_CONFIG,
-    _LITELLM_PORT,
     _LOCAL_MODEL,
-    _OLLAMA_KEEPALIVE,
-    _OLLAMA_PORT,
     _PID_FILE,
     _WORKTREE_BASE,
     ActiveWorker,
@@ -103,7 +102,7 @@ class Watcher:
         self._local_active: list[ActiveWorker] = []
         self._cloud_active: list[ActiveWorker] = []
         self._running = True
-        self._litellm_proc: subprocess.Popen[bytes] | None = None
+        self._services = ServiceManager(self._repo_root)
         self._verbose = verbose
         self._worker_counter = 0
         self._worker_counter_lock = threading.Lock()
@@ -121,7 +120,7 @@ class Watcher:
         self._cleanup_orphaned_worktrees()
 
         if self._mode == "local":
-            self._ensure_litellm_running()
+            self._services.ensure_litellm_running()
 
         logger.info(
             "Watcher started (mode=%s, max_local_workers=%d, max_cloud_workers=%d)",
@@ -141,7 +140,7 @@ class Watcher:
                 time.sleep(self._POLL_INTERVAL)
         finally:
             self._wait_for_active_workers()
-            self._stop_litellm_proxy()
+            self._services.stop()
             self._remove_pid_file()
             logger.info("Watcher stopped cleanly")
 
@@ -1055,135 +1054,25 @@ class Watcher:
         return pr_url
 
     # ------------------------------------------------------------------
-    # LiteLLM proxy
+    # Service shims — delegate to self._services; removed in test-split step
     # ------------------------------------------------------------------
 
     def _ensure_ollama_running(self) -> None:
-        """Start Ollama with the configured model if not already on _OLLAMA_PORT."""
-        import socket
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            already_up = sock.connect_ex(("localhost", _OLLAMA_PORT)) == 0
-
-        if already_up:
-            logger.info("Ollama already running on port %d", _OLLAMA_PORT)
-            return
-
-        config_path = self._repo_root / _LITELLM_CONFIG
-        model = _parse_ollama_model(config_path)
-        logger.info(
-            "Starting Ollama (model=%s, keepalive=%s)…", model, _OLLAMA_KEEPALIVE
-        )
-        if sys.platform == "win32":
-            creation_flags = subprocess.CREATE_NEW_CONSOLE
-        else:
-            creation_flags = 0
-        subprocess.Popen(  # nosec B603 B607
-            ["ollama", "run", model, "--keepalive", _OLLAMA_KEEPALIVE],
-            creationflags=creation_flags,
-        )
-        self._wait_for_ollama_ready()
-
-    def _wait_for_ollama_ready(self, timeout: float = 120.0) -> None:
-        """Poll TCP until Ollama's port accepts connections."""
-        import socket
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
-                if sock.connect_ex(("localhost", _OLLAMA_PORT)) == 0:
-                    return
-            time.sleep(0.5)
-        raise TimeoutError(f"Ollama not ready after {timeout}s.")
+        self._services.ensure_ollama_running()
 
     def _ensure_litellm_running(self) -> None:
-        """Start the LiteLLM proxy if not already listening on _LITELLM_PORT."""
-        import socket
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            already_up = sock.connect_ex(("localhost", _LITELLM_PORT)) == 0
-
-        if already_up:
-            logger.info("LiteLLM proxy already running on port %d", _LITELLM_PORT)
-            return
-
-        config_path = self._repo_root / _LITELLM_CONFIG
-        if not config_path.exists():
-            raise FileNotFoundError(
-                f"LiteLLM config not found: {config_path}. "
-                "Copy litellm-local.yaml.example to litellm-local.yaml "
-                "and configure it."
-            )
-
-        logger.info("Starting LiteLLM proxy (port %d)…", _LITELLM_PORT)
-        env = {**os.environ, "PYTHONUTF8": "1"}
-        if sys.platform == "win32":
-            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
-                [
-                    "litellm",
-                    "--config",
-                    str(config_path),
-                    "--port",
-                    str(_LITELLM_PORT),
-                    "--drop_params",
-                ],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-                env=env,
-            )
-        else:
-            log_path = self._repo_root / _CLAUDE_DIR / "litellm.log"
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_file = open(log_path, "wb")  # noqa: SIM115
-            logger.info("LiteLLM log: %s", log_path)
-            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
-                [
-                    "litellm",
-                    "--config",
-                    str(config_path),
-                    "--port",
-                    str(_LITELLM_PORT),
-                    "--drop_params",
-                ],
-                stdout=log_file,
-                stderr=log_file,
-                env=env,
-            )
-        self._wait_for_litellm_ready()
-
-    def _wait_for_litellm_ready(self, timeout: float = 60.0) -> None:
-        """Poll TCP until LiteLLM's port accepts connections or process dies."""
-        import socket
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._litellm_proc and self._litellm_proc.poll() is not None:
-                rc = self._litellm_proc.returncode
-                raise RuntimeError(
-                    f"LiteLLM proxy exited (rc={rc}). "
-                    f"Check .claude/litellm.log for details."
-                )
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
-                if sock.connect_ex(("localhost", _LITELLM_PORT)) == 0:
-                    return
-            time.sleep(0.5)
-        raise TimeoutError(
-            f"LiteLLM proxy not ready after {timeout}s. "
-            f"Check .claude/litellm.log for details."
-        )
+        self._services.ensure_litellm_running()
 
     def _stop_litellm_proxy(self) -> None:
-        if not self._litellm_proc:
-            return
-        logger.info("Stopping LiteLLM proxy (pid=%d)…", self._litellm_proc.pid)
-        self._litellm_proc.terminate()
-        try:
-            self._litellm_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            logger.info("LiteLLM proxy did not exit after 5s — sending kill")
-            self._litellm_proc.kill()
-        self._litellm_proc = None
+        self._services.stop()
+
+    @property
+    def _litellm_proc(self) -> subprocess.Popen[bytes] | None:
+        return self._services._litellm_proc
+
+    @_litellm_proc.setter
+    def _litellm_proc(self, value: subprocess.Popen[bytes] | None) -> None:
+        self._services._litellm_proc = value
 
     # ------------------------------------------------------------------
     # Graceful shutdown
@@ -1198,7 +1087,7 @@ class Watcher:
         logger.info(
             "Signal %d received — finishing active workers then exiting", signum
         )
-        self._stop_litellm_proxy()
+        self._services.stop()
         self._running = False
 
     def _wait_for_active_workers(self) -> None:
