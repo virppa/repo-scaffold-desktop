@@ -271,3 +271,39 @@ def test_fetch_sonar_findings_returns_none_on_api_error(
     ):
         count = fetch_sonar_findings("wor-10-some-branch")
     assert count is None
+
+
+def test_fetch_sonar_findings_paginates_multiple_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    monkeypatch.setenv("SONAR_TOKEN", "fake-token")
+    monkeypatch.setenv("SONAR_PROJECT_KEY", "my-project")
+
+    page1_payload = json.dumps(
+        {
+            "issues": [{"key": f"I{i}", "severity": "MAJOR"} for i in range(500)],
+            "total": 600,
+        }
+    ).encode()
+    page2_payload = json.dumps(
+        {
+            "issues": [{"key": f"J{i}", "severity": "CRITICAL"} for i in range(100)],
+            "total": 600,
+        }
+    ).encode()
+
+    mock_resp1 = _make_sonar_resp_mock(page1_payload)
+    mock_resp2 = _make_sonar_resp_mock(page2_payload)
+
+    with patch(
+        "urllib.request.urlopen", side_effect=[mock_resp1, mock_resp2]
+    ) as mock_urlopen:
+        findings = fetch_sonar_findings("wor-157-branch")
+
+    assert findings is not None
+    assert len(findings) == 600
+    assert findings.count("MAJOR") == 500
+    assert findings.count("CRITICAL") == 100
+    assert mock_urlopen.call_count == 2
