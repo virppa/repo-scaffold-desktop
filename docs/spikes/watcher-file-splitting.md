@@ -231,13 +231,115 @@ etc. — but that is optional scope for WOR-165.
 
 ---
 
+## Derived size thresholds
+
+These thresholds generalise the findings to any module in this codebase. They are
+derived from the local model's context window — the binding constraint for this project.
+
+**Inputs:**
+- Local model context window: 32,000 tokens (qwen3-coder:30b)
+- Fixed session overhead (system prompt + CLAUDE.md + manifest + skill): ~10,400 tokens
+- Available working context: ~21,600 tokens
+- Measured token density for this codebase: ~9.7 tokens/LOC
+
+```
+advisory_locs  = round(working_context × 0.20 / tokens_per_loc)  → 445 LOC → 500 (rounded)
+recommend_locs = round(working_context × 0.31 / tokens_per_loc)  → 690 LOC → 700 (rounded)
+block_locs     = round(working_context × 0.45 / tokens_per_loc)  → 1,002 LOC → 1,000 (rounded)
+```
+
+| Level | LOC | Tokens | % of working context | Action |
+|---|---|---|---|---|
+| Advisory | **≥ 500** | ~4,850 | ~22% | `/finalize-ticket` prints a non-blocking note |
+| Recommend | **≥ 700** | ~6,790 | ~31% | Stronger warning; include in PR description |
+| Block | **≥ 1,000** | ~9,700 | ~45% | `/finalize-ticket` refuses the PR for a ticket that grows a file past this threshold |
+
+**Rationale for 20% / 45%:** A task typically touches 100–200 LOC of a file. At
+500 LOC the "useful density" is 20–40% — acceptable. Past 1,000 LOC the useful
+density drops below 10–20%, meaning the model spends >80% of its file-context
+budget on irrelevant sections. watcher.py at 1,486 LOC puts useful density at 7–13%.
+
+**Cloud mode:** Context windows are large enough that these thresholds hold for
+code-quality reasons (cohesion, reviewability) rather than token cost. The block
+tier can be relaxed to a warning-only for cloud-only tickets.
+
+These numbers should be codified in WOR-166's acceptance criteria so the
+`/finalize-ticket` gate has concrete values rather than "~500 LOC".
+
+---
+
+## Import Linter contracts to add during the refactor
+
+Refactoring is the right moment to add Import Linter rules: the module boundaries
+are being drawn for the first time, and enforcing them immediately costs nothing
+beyond writing the contract. Without a rule, future workers will re-couple modules
+by accident (or by convenience) and the split degrades silently.
+
+> **Note:** Per CLAUDE.md, `.importlinter` changes require cloud LLM (human-approved
+> plan) sign-off. The contracts below should be proposed in the WOR-165 plan and
+> approved before implementation.
+
+### Contract 1 — watcher sub-modules form a strict layer
+
+`watcher_types` is a leaf: it may not import from any other watcher sub-module.
+`watcher_helpers` may import from `watcher_types` only.
+`watcher_subprocess`, `watcher_worktrees`, `watcher_services` may import from
+`watcher_types` and `watcher_helpers` — not from each other or from `watcher`.
+`watcher` (the orchestrator) may import from all sub-modules.
+
+This prevents the split from collapsing back into a tangle of cross-imports.
+
+```ini
+[importlinter:contract:watcher-layers]
+name = watcher sub-modules form a strict dependency layer
+type = layers
+layers =
+    app.core.watcher
+    app.core.watcher_subprocess : app.core.watcher_worktrees : app.core.watcher_services
+    app.core.watcher_helpers
+    app.core.watcher_types
+```
+
+*(The `:` separator marks tiers that may not import from each other but share the
+same rank in the layer hierarchy.)*
+
+### Contract 2 — watcher_types is import-free of app.core siblings
+
+Belt-and-suspenders for contract 1: explicitly forbid the leaf from importing any
+sibling watcher module. A separate forbidden contract catches violations that the
+layers contract might express ambiguously.
+
+```ini
+[importlinter:contract:watcher-types-is-leaf]
+name = watcher_types must not import from sibling watcher modules
+type = forbidden
+source_modules =
+    app.core.watcher_types
+forbidden_modules =
+    app.core.watcher
+    app.core.watcher_helpers
+    app.core.watcher_subprocess
+    app.core.watcher_worktrees
+    app.core.watcher_services
+```
+
+### When to add these rules
+
+Step 1 of the WOR-165 implementation plan (creating `watcher_types.py`) is the
+right point to add both contracts. They will be trivially satisfied at that step
+and will catch accidental back-imports in steps 2–5 as each sub-module is added.
+
+---
+
 ## Implementation plan for WOR-165
 
 Sequenced steps to keep CI green throughout:
 
 1. Create `watcher_types.py` with constants, `LinearClientProtocol`, `ActiveWorker`,
    `is_watcher_running`, `_to_metrics_mode`. Update `watcher.py` to import from there.
-   Run tests. ✓
+   **Add both Import Linter contracts** (`watcher-layers`, `watcher-types-is-leaf`) to
+   `.importlinter` in this same commit — they are satisfied trivially at this step and
+   will guard all subsequent steps. Run `lint-imports` + tests. ✓
 
 2. Create `watcher_helpers.py` with all pure functions. Update `watcher.py` imports.
    Update `test_watcher.py` imports. Run tests. ✓
@@ -272,3 +374,7 @@ WaitingForDeps group in `watcher.py` (it's genuinely orchestration logic) and
 handle `_launch_worker`'s dependencies by passing them explicitly.
 
 Estimated implementation effort: 1 focused day, split across 5 atomic commits.
+
+The derived thresholds (500 / 700 / 1,000 LOC) should be carried forward into
+WOR-166 as concrete gate values, and the two Import Linter contracts should be
+added in WOR-165 step 1 and approved as part of that ticket's plan.
