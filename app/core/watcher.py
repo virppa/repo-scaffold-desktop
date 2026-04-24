@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, Protocol
 
+from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES, LinearError
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import ImplementationMode, MetricsStore, Outcome, TicketMetrics
@@ -243,6 +244,26 @@ def _tee_worker_output(
         log_file.close()
 
 
+_POLICY_FLAGS = (
+    "scope_drift",
+    "forbidden_path_touched",
+    "import_linter_violation",
+    "security_blocker",
+)
+
+
+def _read_result_flags(result_path: Path) -> dict[str, bool]:
+    """Load result.json and return the four escalation-policy boolean flags.
+
+    Returns all-False defaults when the file is missing or malformed.
+    """
+    try:
+        raw = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception:
+        return dict.fromkeys(_POLICY_FLAGS, False)
+    return {f: bool(raw.get(f, False)) for f in _POLICY_FLAGS}
+
+
 # ---------------------------------------------------------------------------
 # Watcher
 # ---------------------------------------------------------------------------
@@ -284,6 +305,7 @@ class Watcher:
         self._worker_counter = 0
         self._worker_counter_lock = threading.Lock()
         self._retry_counters: dict[str, int] = {}
+        self._escalation_policy = EscalationPolicy.from_toml()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -577,6 +599,7 @@ class Watcher:
 
         outcome: Outcome
         escalated = False
+        artifacts_preserved = False
 
         if returncode != 0:
             logger.error("Worker %s exited non-zero (%d)", ticket_id, returncode)
@@ -595,7 +618,48 @@ class Watcher:
                     linear_id, manifest.ticket_state_map.failed, ticket_id
                 )
             else:
-                outcome = self._attempt_pr(manifest, worker, ticket_id, linear_id)
+                self._preserve_worker_artifacts(worker)
+                artifacts_preserved = True
+
+                result_path = self._repo_root / manifest.artifact_paths.result_json
+                flags = _read_result_flags(result_path)
+                action = self._escalation_policy.classify_result(**flags)
+
+                if action == "escalate":
+                    triggering = next(
+                        (f for f in _POLICY_FLAGS if flags.get(f)), "unknown"
+                    )
+                    logger.info(
+                        "Escalating %s to cloud (flag=%s)", ticket_id, triggering
+                    )
+                    escalated = True
+                    self._safe_set_state(linear_id, "In Progress", ticket_id)
+                    try:
+                        self._linear.post_comment(
+                            linear_id,
+                            f"Local worker escalating `{ticket_id}` to cloud. "
+                            f"Triggering flag: `{triggering}`.",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not post escalation comment for %s", ticket_id
+                        )
+                    outcome = "escalated"
+                elif action == "human":
+                    logger.info("Human review required for %s per policy", ticket_id)
+                    try:
+                        self._linear.post_comment(
+                            linear_id,
+                            f"Human review required for `{ticket_id}` before "
+                            f"proceeding. Please inspect the result artifact.",
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Could not post human review comment for %s", ticket_id
+                        )
+                    outcome = "aborted"
+                else:  # fix_locally
+                    outcome = self._attempt_pr(manifest, worker, ticket_id, linear_id)
 
         sonar_count = self._fetch_sonar_findings(manifest.worker_branch)
 
@@ -624,7 +688,8 @@ class Watcher:
         )
 
         self._restore_plan_files(worker.backed_up_plans)
-        self._preserve_worker_artifacts(worker)
+        if not artifacts_preserved:
+            self._preserve_worker_artifacts(worker)
         self._cleanup_worktree(worker.worktree_path)
 
     # ------------------------------------------------------------------
