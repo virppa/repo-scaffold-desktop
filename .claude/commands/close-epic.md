@@ -57,6 +57,68 @@ git checkout epic/<epic-slug>
 git pull origin epic/<epic-slug>
 ```
 
+### 2.5. File-size gate
+
+Thresholds derived from local model context window (qwen3-coder:30b, 32k tokens, ~9.7 tokens/LOC):
+
+```
+ADVISORY_LOC = 500   # ~22% of working context (21,600 tokens available)
+RECOMMEND_LOC = 700  # ~31% of working context
+BLOCK_LOC = 1000     # ~45% of working context — local model effectiveness degrades sharply
+```
+
+Check the LOC of every `.py` file modified across the full epic diff (all sub-tickets combined):
+
+```bash
+MODIFIED_PY=$(git diff --name-only main..<epic-branch> | grep '\.py$')
+for f in $MODIFIED_PY; do
+  [ -f "$f" ] && echo "$f: $(wc -l < "$f") LOC"
+done
+```
+
+Skip files that no longer exist in the working tree (deleted). Classify each file by LOC and emit the appropriate message:
+
+**Advisory (≥ 500 LOC):**
+```
+Note: <filename> is <N> LOC (≥ 500 — advisory). Consider splitting before this file grows further.
+```
+Continue — non-blocking.
+
+**Recommend (≥ 700 LOC):**
+```
+Warning: <filename> is <N> LOC (≥ 700 — recommend). Large enough to reduce local model effectiveness.
+Include a splitting recommendation in the epic PR description.
+```
+Continue — but flag the file in the PR body.
+
+**Block (≥ 1,000 LOC):**
+```
+BLOCKED: <filename> is <N> LOC (≥ 1,000 — block threshold).
+This file consumes ~45% of the local model's working context budget.
+Split <filename> before creating the epic → main PR.
+```
+**Stop here. Do not proceed to step 3 or create the PR.** Ask the user how to proceed.
+
+This block is unconditional — it applies regardless of implementation mode.
+
+### 2.6. Import Linter review
+
+Check whether any new `.py` files were added across the entire epic diff (an indicator that a file split may have occurred):
+
+```bash
+git diff --diff-filter=A --name-only main..<epic-branch> | grep '\.py$'
+```
+
+If any new `.py` files appear in the output, print:
+
+```
+New Python module(s) detected: <list of files>
+If these were created by splitting an existing module, review .importlinter and consider
+adding contracts to enforce the new module boundaries. See existing contracts for examples.
+```
+
+Skip silently if no new `.py` files were added.
+
 ### 3. Security check
 Run a full security scan against main:
 ```bash
