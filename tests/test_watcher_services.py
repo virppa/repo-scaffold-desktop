@@ -1,0 +1,112 @@
+"""Tests for app.core.watcher_services (ServiceManager)."""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock, patch
+
+from app.core.watcher_services import ServiceManager
+
+# ---------------------------------------------------------------------------
+# ServiceManager.stop  (formerly _stop_litellm_proxy via Watcher shim)
+# ---------------------------------------------------------------------------
+
+
+def test_stop_terminates_on_clean_exit(tmp_path: Path) -> None:
+    mock_proc = MagicMock(spec=subprocess.Popen)
+    mock_proc.pid = 12345
+    mock_proc.wait.return_value = 0
+
+    mgr = ServiceManager(tmp_path)
+    mgr._litellm_proc = mock_proc
+
+    mgr.stop()
+
+    mock_proc.terminate.assert_called_once()
+    mock_proc.kill.assert_not_called()
+    assert mgr._litellm_proc is None
+
+
+def test_stop_kills_when_terminate_hangs(tmp_path: Path) -> None:
+    mock_proc = MagicMock(spec=subprocess.Popen)
+    mock_proc.pid = 12345
+    mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="litellm", timeout=5)
+
+    mgr = ServiceManager(tmp_path)
+    mgr._litellm_proc = mock_proc
+
+    mgr.stop()
+
+    mock_proc.terminate.assert_called_once()
+    mock_proc.kill.assert_called_once()
+    assert mgr._litellm_proc is None
+
+
+def test_stop_noop_when_no_proc(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    assert mgr._litellm_proc is None
+    mgr.stop()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# ServiceManager.ensure_ollama_running
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_ollama_running_already_up(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch("socket.socket") as mock_sock_cls,
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: s
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex.return_value = 0  # already up
+        mock_sock_cls.return_value = mock_sock
+
+        mgr.ensure_ollama_running()
+
+    mock_popen.assert_not_called()
+
+
+def test_ensure_ollama_running_starts_process(tmp_path: Path) -> None:
+    cfg = tmp_path / "litellm-local.yaml"
+    cfg.write_text(
+        "model_list:\n"
+        "  - model_name: claude-sonnet-4-6\n"
+        "    litellm_params:\n"
+        "      model: ollama_chat/qwen3-coder:30b\n"
+        "      api_base: http://localhost:11434\n"
+    )
+    mgr = ServiceManager(tmp_path)
+
+    call_count = 0
+
+    def _probe_side_effect(*args: Any, **kwargs: Any) -> int:
+        nonlocal call_count
+        call_count += 1
+        # First call (already-up check) -> not up; subsequent calls (wait loop) -> up
+        return 1 if call_count == 1 else 0
+
+    with (
+        patch("socket.socket") as mock_sock_cls,
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: s
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex.side_effect = _probe_side_effect
+        mock_sock_cls.return_value = mock_sock
+
+        mgr.ensure_ollama_running()
+
+    mock_popen.assert_called_once()
+    cmd = mock_popen.call_args[0][0]
+    assert cmd[0] == "ollama"
+    assert cmd[1] == "run"
+    assert cmd[2] == "qwen3-coder:30b"
+    assert "--keepalive" in cmd
+    assert "120m" in cmd
