@@ -1400,3 +1400,117 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
     # Cloud pool unchanged
     assert len(watcher._cloud_active) == 1
     assert watcher._cloud_active[0].ticket_id == "WOR-99"
+
+
+# ---------------------------------------------------------------------------
+# _finalize_worker — EscalationPolicy flag routing
+# ---------------------------------------------------------------------------
+
+
+def _make_finalize_worker_for_policy(
+    tmp_path: Path,
+    flags: dict[str, bool],
+) -> tuple[Watcher, MagicMock, ActiveWorker]:
+    """Return (watcher, linear_mock, worker) with result.json pre-written."""
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    linear_mock = MagicMock()
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    result_path = tmp_path / ".claude" / "artifacts" / "wor_10" / "result.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(json.dumps({"status": "success", **flags}), encoding="utf-8")
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    return w, linear_mock, worker
+
+
+def test_finalize_worker_scope_drift_escalates(tmp_path: Path) -> None:
+    w, linear_mock, worker = _make_finalize_worker_for_policy(
+        tmp_path, {"scope_drift": True}
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_preserve_worker_artifacts"),
+        patch.object(w, "_create_pr") as mock_create_pr,
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    mock_create_pr.assert_not_called()
+    linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    assert "scope_drift" in comment_body
+    m = metrics_mock.record.call_args[0][0]
+    assert m.escalated_to_cloud is True
+    assert m.outcome == "escalated"
+
+
+def test_finalize_worker_forbidden_path_touched_escalates(tmp_path: Path) -> None:
+    w, linear_mock, worker = _make_finalize_worker_for_policy(
+        tmp_path, {"forbidden_path_touched": True}
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_preserve_worker_artifacts"),
+        patch.object(w, "_create_pr") as mock_create_pr,
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    mock_create_pr.assert_not_called()
+    linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    assert "forbidden_path_touched" in comment_body
+    m = metrics_mock.record.call_args[0][0]
+    assert m.escalated_to_cloud is True
+    assert m.outcome == "escalated"
+
+
+def test_finalize_worker_no_flags_proceeds_normally(tmp_path: Path) -> None:
+    w, _linear_mock, worker = _make_finalize_worker_for_policy(tmp_path, {})
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_preserve_worker_artifacts"),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.outcome == "success"
+    assert m.escalated_to_cloud is False
+
+
+def test_finalize_worker_missing_result_json_proceeds_normally(tmp_path: Path) -> None:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    linear_mock = MagicMock()
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_preserve_worker_artifacts"),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.outcome == "success"
+    assert m.escalated_to_cloud is False
