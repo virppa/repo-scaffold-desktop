@@ -112,7 +112,8 @@ def launch_worker(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
-        assert process.stdout is not None  # guaranteed by stdout=PIPE  # nosec B101
+        if process.stdout is None:
+            raise RuntimeError("process.stdout is None despite stdout=PIPE")
         stderr_buf: IO[bytes] = getattr(sys.stderr, "buffer", None) or sys.stderr.buffer
         threading.Thread(
             target=_tee_worker_output,
