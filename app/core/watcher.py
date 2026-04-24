@@ -17,17 +17,12 @@ Worker modes:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import shlex
 import signal
 import subprocess  # nosec B404
-import sys
-import threading
 import time
 from pathlib import Path
-from typing import IO
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES, LinearError
@@ -37,16 +32,29 @@ from app.core.watcher_helpers import (
     _POLICY_FLAGS,
     _parse_worker_usage,
     _read_result_flags,
-    _tee_worker_output,
-    build_worker_cmd,
-    build_worker_env,
     check_allowed_paths_overlap,
     resolve_effective_mode,
 )
 from app.core.watcher_helpers import (
     _parse_ollama_model as _parse_ollama_model,  # noqa: F401 — backward-compat re-export
 )
+from app.core.watcher_helpers import (
+    _tee_worker_output as _tee_worker_output,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_helpers import (
+    build_worker_cmd as build_worker_cmd,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_helpers import (
+    build_worker_env as build_worker_env,  # noqa: F401 — backward-compat re-export
+)
 from app.core.watcher_services import ServiceManager
+from app.core.watcher_subprocess import (
+    build_snippet_tool_restrictions,
+    expand_skill,
+    fetch_sonar_findings,
+    launch_worker,
+    run_checks,
+)
 from app.core.watcher_types import (
     _CLAUDE_DIR,
     _LOCAL_MODEL,
@@ -112,8 +120,6 @@ class Watcher:
         self._running = True
         self._services = ServiceManager(self._repo_root)
         self._verbose = verbose
-        self._worker_counter = 0
-        self._worker_counter_lock = threading.Lock()
         self._retry_counters: dict[str, int] = {}
         self._escalation_policy = EscalationPolicy.from_toml()
 
@@ -655,47 +661,15 @@ class Watcher:
             self._cleanup_worktree(worktree_dir)
 
     # ------------------------------------------------------------------
-    # Worker subprocess
+    # Worker subprocess — shims delegating to watcher_subprocess
     # ------------------------------------------------------------------
 
     def _expand_skill(self, ticket_id: str) -> str | None:
-        """Return the implement-ticket skill content with $ARGUMENTS substituted.
-
-        Returns None if the skill file cannot be read (caller falls back to
-        the /implement-ticket shortcut).
-        """
-        skill_path = self._repo_root / _CLAUDE_DIR / "commands" / "implement-ticket.md"
-        try:
-            return skill_path.read_text(encoding="utf-8").replace(
-                "$ARGUMENTS", ticket_id
-            )
-        except OSError:
-            logger.warning("Could not read skill file %s; using shortcut", skill_path)
-            return None
+        return expand_skill(self._repo_root, ticket_id)
 
     @staticmethod
     def _build_snippet_tool_restrictions(snippets: list[str]) -> list[str]:
-        """Return --disallowed-tools patterns derived from context_snippets headers.
-
-        Each snippet starts with a comment line like:
-            # app/core/watcher.py lines 574-589
-        We extract the basename and return glob patterns that block Read on those
-        files regardless of the absolute path the worker uses.
-        """
-        import re
-
-        seen: set[str] = set()
-        patterns: list[str] = []
-        header_re = re.compile(r"^#\s+(\S+)\s+lines?\s+\d")
-        for snippet in snippets:
-            first_line = snippet.splitlines()[0] if snippet else ""
-            m = header_re.match(first_line)
-            if m:
-                basename = Path(m.group(1)).name
-                if basename not in seen:
-                    seen.add(basename)
-                    patterns.append(f"Read(*{basename})")
-        return patterns
+        return build_snippet_tool_restrictions(snippets)
 
     def _launch_worker(
         self,
@@ -703,136 +677,15 @@ class Watcher:
         worktree_path: Path,
         effective_mode: str,
     ) -> subprocess.Popen[bytes]:
-        prompt = self._expand_skill(manifest.ticket_id)
-
-        disallowed_tools: list[str] | None = None
-        if manifest.context_snippets and effective_mode == "cloud":
-            disallowed_tools = self._build_snippet_tool_restrictions(
-                manifest.context_snippets
-            )
-            if disallowed_tools and prompt:
-                file_list = ", ".join(
-                    p.removeprefix("Read(*").removesuffix(")") for p in disallowed_tools
-                )
-                warning = (
-                    f"CRITICAL: The following files are pre-loaded as context_snippets "
-                    f"in the manifest: {file_list}. "
-                    f"DO NOT use the Read tool on these files — "
-                    f"the tool is blocked and attempting to read them will "
-                    f"abort the task. "
-                    f"Use only the snippets already provided.\n\n"
-                )
-                prompt = warning + (prompt or "")
-
-        cmd = build_worker_cmd(
-            manifest.ticket_id, effective_mode, worktree_path, prompt, disallowed_tools
+        return launch_worker(
+            self._repo_root, manifest, worktree_path, effective_mode, self._verbose
         )
-        env = build_worker_env(effective_mode, dict(os.environ))
-
-        log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path, "wb")  # noqa: SIM115
-
-        if self._verbose:
-            with self._worker_counter_lock:
-                self._worker_counter += 1
-            prefix = f"[{manifest.ticket_id}] ".encode()
-            process = subprocess.Popen(  # nosec B603 B607
-                cmd,
-                cwd=str(worktree_path),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            assert process.stdout is not None  # guaranteed by stdout=PIPE  # nosec B101
-            stderr_buf: IO[bytes] = (
-                getattr(sys.stderr, "buffer", None) or sys.stderr.buffer
-            )
-            threading.Thread(
-                target=_tee_worker_output,
-                args=(process.stdout, log_file, prefix, stderr_buf),
-                daemon=True,
-                name=f"tee-{manifest.ticket_id}",
-            ).start()
-            return process
-
-        return subprocess.Popen(  # nosec B603 B607
-            cmd,
-            cwd=str(worktree_path),
-            env=env,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-        )
-
-    # ------------------------------------------------------------------
-    # Check runner
-    # ------------------------------------------------------------------
 
     def _run_checks(self, manifest: ExecutionManifest, worktree_path: Path) -> bool:
-        all_passed = True
-        for check_cmd in manifest.required_checks:
-            logger.info("Running check: %s", check_cmd)
-            result = subprocess.run(  # nosec B603
-                shlex.split(check_cmd),
-                cwd=str(worktree_path),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error(
-                    "Check failed: %s\n%s", check_cmd, result.stdout + result.stderr
-                )
-                all_passed = False
-        return all_passed
-
-    # ------------------------------------------------------------------
-    # SonarCloud findings count (Option B: REST API, best-effort)
-    # ------------------------------------------------------------------
+        return run_checks(manifest, worktree_path)
 
     def _fetch_sonar_findings(self, branch: str) -> list[str] | None:
-        # Calls the SonarCloud issues API for the worker branch to get per-severity
-        # issue data for escalation classification.  Returns a list of severity
-        # strings (e.g. ['BLOCKER', 'CRITICAL']) or None when SONAR_TOKEN /
-        # SONAR_PROJECT_KEY are absent or the API call fails.  An empty list means
-        # the branch was scanned and has no open issues.
-        import base64
-        import ssl
-        import urllib.parse
-        import urllib.request
-
-        token = os.environ.get("SONAR_TOKEN")
-        project_key = os.environ.get("SONAR_PROJECT_KEY")
-        if not token or not project_key:
-            return None
-
-        params = urllib.parse.urlencode(
-            {
-                "componentKeys": project_key,
-                "branch": branch,
-                "resolved": "false",
-                "ps": "500",
-            }
-        )
-        url = f"https://sonarcloud.io/api/issues/search?{params}"
-        creds = base64.b64encode(f"{token}:".encode()).decode()
-        req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
-        ctx = ssl.create_default_context()
-        try:
-            with urllib.request.urlopen(  # nosec B310  # nosemgrep
-                req, timeout=10, context=ctx
-            ) as resp:
-                data: dict[str, object] = json.loads(resp.read())
-            issues = data.get("issues") or []
-            return [
-                str(issue["severity"])
-                for issue in (issues if isinstance(issues, list) else [])
-                if isinstance(issue, dict) and issue.get("severity")
-            ]
-        except Exception:
-            logger.debug(
-                "Could not fetch Sonar findings for branch %s", branch, exc_info=True
-            )
-        return None
+        return fetch_sonar_findings(branch)
 
     # ------------------------------------------------------------------
     # PR creation
