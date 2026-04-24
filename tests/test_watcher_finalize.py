@@ -12,7 +12,7 @@ import pytest
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
-from app.core.watcher_finalize import finalize_worker
+from app.core.watcher_finalize import _try_post_comment, finalize_worker
 from app.core.watcher_types import ActiveWorker
 from tests.conftest import make_manifest
 
@@ -542,3 +542,52 @@ def test_finalize_worker_missing_result_json_proceeds_normally(tmp_path: Path) -
     m = metrics_mock.record.call_args[0][0]
     assert m.outcome == "success"
     assert m.escalated_to_cloud is False
+
+
+# ---------------------------------------------------------------------------
+# Human policy action — _handle_policy_outcome 'human' branch (lines 201-209)
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_human_policy_posts_comment_and_aborts(
+    tmp_path: Path,
+) -> None:
+    linear_mock, worker = _make_worker_with_result(tmp_path, {})
+    metrics_mock = MagicMock()
+    with (
+        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher_finalize.preserve_worker_artifacts"),
+        patch("app.core.watcher_finalize.create_pr") as mock_create_pr,
+        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch.object(EscalationPolicy, "classify_result", return_value="human"),
+    ):
+        _call_finalize(
+            worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
+        )
+
+    mock_create_pr.assert_not_called()
+    linear_mock.set_state.assert_not_called()
+    linear_mock.post_comment.assert_called_once()
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    assert "Human review required" in comment_body
+    assert "WOR-10" in comment_body
+    m = metrics_mock.record.call_args[0][0]
+    assert m.outcome == "aborted"
+    assert m.escalated_to_cloud is False
+
+
+# ---------------------------------------------------------------------------
+# _try_post_comment exception guard (lines 257-258)
+# ---------------------------------------------------------------------------
+
+
+def test_try_post_comment_swallows_exception(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    linear_mock = MagicMock()
+    linear_mock.post_comment.side_effect = Exception("connection reset by peer")
+
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher_finalize"):
+        _try_post_comment(linear_mock, "lin-id", "WOR-10", "some comment body")
+
+    assert any("Could not post comment" in msg for msg in caplog.messages)
