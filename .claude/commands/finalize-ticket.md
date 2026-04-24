@@ -18,6 +18,75 @@ Check if any of the following need updating:
 
 Only update docs if the change is meaningful — do not document implementation details.
 
+### 2.5. File-size gate
+
+Thresholds derived from local model context window (qwen3-coder:30b, 32k tokens, ~9.7 tokens/LOC):
+
+```
+ADVISORY_LOC = 500   # ~22% of working context (21,600 tokens available)
+RECOMMEND_LOC = 700  # ~31% of working context
+BLOCK_LOC = 1000     # ~45% of working context — local model effectiveness degrades sharply
+```
+
+Determine the base branch (epic branch or `main`) from the PR target established in step 1. Find every modified `.py` file in this branch's diff:
+
+```bash
+BASE=$(git merge-base HEAD origin/<base-branch>)
+MODIFIED_PY=$(git diff --name-only "$BASE" HEAD | grep '\.py$')
+```
+
+For each file in `$MODIFIED_PY`, skip it if it no longer exists in the working tree (deleted). Otherwise count its lines:
+
+```bash
+for f in $MODIFIED_PY; do
+  [ -f "$f" ] && echo "$f: $(wc -l < "$f") LOC"
+done
+```
+
+Classify each file by LOC and emit the appropriate message:
+
+**Advisory (≥ 500 LOC):**
+```
+Note: <filename> is <N> LOC (≥ 500 — advisory). Consider splitting before this file grows further.
+```
+Continue — non-blocking.
+
+**Recommend (≥ 700 LOC):**
+```
+Warning: <filename> is <N> LOC (≥ 700 — recommend). Large enough to reduce local model effectiveness.
+Include a splitting recommendation in the PR description.
+```
+Continue — but flag the file in the PR body.
+
+**Block (≥ 1,000 LOC):**
+```
+BLOCKED: <filename> is <N> LOC (≥ 1,000 — block threshold).
+This file consumes ~45% of the local model's working context budget.
+Split <filename> before creating this PR.
+```
+**Stop here. Do not proceed to step 3 or create a PR.** Ask the user how to proceed.
+
+This block is unconditional — it applies regardless of implementation mode.
+
+### 2.6. Import Linter review
+
+Check whether any new `.py` files were added in this branch's diff (an indicator that a file split may have occurred):
+
+```bash
+BASE=$(git merge-base HEAD origin/<base-branch>)
+git diff --diff-filter=A --name-only "$BASE" HEAD | grep '\.py$'
+```
+
+If any new `.py` files appear in the output, print:
+
+```
+New Python module(s) detected: <list of files>
+If these were created by splitting an existing module, review .importlinter and consider
+adding contracts to enforce the new module boundaries. See existing contracts for examples.
+```
+
+Skip silently if no new `.py` files were added.
+
 ### 3. Finalize Reviewer subagent
 Gather the following three inputs:
 ```bash
