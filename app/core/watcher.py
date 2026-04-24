@@ -44,6 +44,8 @@ _LITELLM_PORT = 8082
 _LITELLM_CONFIG = "litellm-local.yaml"
 _LOCAL_MODEL = "qwen3-coder:30b"
 _LITELLM_BASE_URL = f"http://localhost:{_LITELLM_PORT}"
+_OLLAMA_PORT = 11434
+_OLLAMA_KEEPALIVE = "120m"
 _WORKTREE_BASE = Path("worktrees")
 
 _ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(
@@ -262,6 +264,29 @@ def _read_result_flags(result_path: Path) -> dict[str, bool]:
     except Exception:
         return dict.fromkeys(_POLICY_FLAGS, False)
     return {f: bool(raw.get(f, False)) for f in _POLICY_FLAGS}
+
+
+def _parse_ollama_model(config_path: Path) -> str:
+    """Return the bare Ollama model name from a LiteLLM YAML config.
+
+    Scans for the first 'model: ollama_chat/<name>' line and returns <name>.
+    Raises ValueError if none is found, FileNotFoundError if the file is absent.
+    """
+    import re
+
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"LiteLLM config not found: {config_path}. "
+            "Copy litellm-local.yaml.example to litellm-local.yaml and configure it."
+        )
+    text = config_path.read_text(encoding="utf-8")
+    match = re.search(r"model:\s+ollama_chat/(\S+)", text)
+    if match is None:
+        raise ValueError(
+            f"No ollama_chat/ model found in {config_path}. "
+            "Add a model_list entry with litellm_params.model = 'ollama_chat/<model>'."
+        )
+    return match.group(1)
 
 
 # ---------------------------------------------------------------------------
@@ -576,6 +601,10 @@ class Watcher:
             linear_id, manifest.ticket_state_map.in_progress_local, ticket_id
         )
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
+
+        if effective_mode == "local":
+            self._ensure_ollama_running()
+            self._ensure_litellm_running()
 
         backed_up_plans = self._backup_plan_files()
         process = self._launch_worker(manifest, worktree_path, effective_mode)
@@ -1251,6 +1280,45 @@ class Watcher:
     # LiteLLM proxy
     # ------------------------------------------------------------------
 
+    def _ensure_ollama_running(self) -> None:
+        """Start Ollama with the configured model if not already on _OLLAMA_PORT."""
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            already_up = sock.connect_ex(("localhost", _OLLAMA_PORT)) == 0
+
+        if already_up:
+            logger.info("Ollama already running on port %d", _OLLAMA_PORT)
+            return
+
+        config_path = self._repo_root / _LITELLM_CONFIG
+        model = _parse_ollama_model(config_path)
+        logger.info(
+            "Starting Ollama (model=%s, keepalive=%s)…", model, _OLLAMA_KEEPALIVE
+        )
+        if sys.platform == "win32":
+            creation_flags = subprocess.CREATE_NEW_CONSOLE
+        else:
+            creation_flags = 0
+        subprocess.Popen(  # nosec B603 B607
+            ["ollama", "run", model, "--keepalive", _OLLAMA_KEEPALIVE],
+            creationflags=creation_flags,
+        )
+        self._wait_for_ollama_ready()
+
+    def _wait_for_ollama_ready(self, timeout: float = 120.0) -> None:
+        """Poll TCP until Ollama's port accepts connections."""
+        import socket
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(2)
+                if sock.connect_ex(("localhost", _OLLAMA_PORT)) == 0:
+                    return
+            time.sleep(0.5)
+        raise TimeoutError(f"Ollama not ready after {timeout}s.")
+
     def _ensure_litellm_running(self) -> None:
         """Start the LiteLLM proxy if not already listening on _LITELLM_PORT."""
         import socket
@@ -1270,26 +1338,39 @@ class Watcher:
                 "and configure it."
             )
 
-        log_path = self._repo_root / _CLAUDE_DIR / "litellm.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path, "wb")  # noqa: SIM115
-        logger.info(
-            "Starting LiteLLM proxy (port %d)… (log: %s)", _LITELLM_PORT, log_path
-        )
+        logger.info("Starting LiteLLM proxy (port %d)…", _LITELLM_PORT)
         env = {**os.environ, "PYTHONUTF8": "1"}
-        self._litellm_proc = subprocess.Popen(  # nosec B603 B607
-            [
-                "litellm",
-                "--config",
-                str(config_path),
-                "--port",
-                str(_LITELLM_PORT),
-                "--drop_params",
-            ],
-            stdout=log_file,
-            stderr=log_file,
-            env=env,
-        )
+        if sys.platform == "win32":
+            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
+                [
+                    "litellm",
+                    "--config",
+                    str(config_path),
+                    "--port",
+                    str(_LITELLM_PORT),
+                    "--drop_params",
+                ],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                env=env,
+            )
+        else:
+            log_path = self._repo_root / _CLAUDE_DIR / "litellm.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = open(log_path, "wb")  # noqa: SIM115
+            logger.info("LiteLLM log: %s", log_path)
+            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
+                [
+                    "litellm",
+                    "--config",
+                    str(config_path),
+                    "--port",
+                    str(_LITELLM_PORT),
+                    "--drop_params",
+                ],
+                stdout=log_file,
+                stderr=log_file,
+                env=env,
+            )
         self._wait_for_litellm_ready()
 
     def _wait_for_litellm_ready(self, timeout: float = 60.0) -> None:

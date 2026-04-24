@@ -21,6 +21,7 @@ from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher import (
     ActiveWorker,
     Watcher,
+    _parse_ollama_model,
     _parse_worker_usage,
     _tee_worker_output,
     build_worker_cmd,
@@ -666,6 +667,8 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
         patch.object(w, "_create_worktree", return_value=tmp_path),
         patch.object(w, "_copy_manifest_to_worktree"),
         patch.object(w, "_launch_worker", return_value=fake_process),
+        patch.object(w, "_ensure_ollama_running"),
+        patch.object(w, "_ensure_litellm_running"),
     ):
         # set_state raises — worker must still be launched and added to _local_active
         w._start_ticket("WOR-10", "fake-linear-id")
@@ -1559,6 +1562,8 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
         patch.object(watcher, "_create_worktree", return_value=tmp_path),
         patch.object(watcher, "_copy_manifest_to_worktree"),
         patch.object(watcher, "_write_worker_pytest_config"),
+        patch.object(watcher, "_ensure_ollama_running"),
+        patch.object(watcher, "_ensure_litellm_running"),
         patch.object(watcher, "_launch_worker", return_value=fake_local_process),
     ):
         watcher._start_ticket("WOR-10", "fake-local-id")
@@ -1683,3 +1688,170 @@ def test_finalize_worker_missing_result_json_proceeds_normally(tmp_path: Path) -
     m = metrics_mock.record.call_args[0][0]
     assert m.outcome == "success"
     assert m.escalated_to_cloud is False
+
+
+# ---------------------------------------------------------------------------
+# _parse_ollama_model
+# ---------------------------------------------------------------------------
+
+
+def test_parse_ollama_model_returns_bare_model_name(tmp_path: Path) -> None:
+    cfg = tmp_path / "litellm-local.yaml"
+    cfg.write_text(
+        "model_list:\n"
+        "  - model_name: claude-sonnet-4-6\n"
+        "    litellm_params:\n"
+        "      model: ollama_chat/qwen3-coder:30b\n"
+        "      api_base: http://localhost:11434\n"
+    )
+    assert _parse_ollama_model(cfg) == "qwen3-coder:30b"
+
+
+def test_parse_ollama_model_raises_when_no_ollama_entry(tmp_path: Path) -> None:
+    cfg = tmp_path / "litellm-local.yaml"
+    cfg.write_text(
+        "model_list:\n"
+        "  - model_name: gpt-4\n"
+        "    litellm_params:\n"
+        "      model: openai/gpt-4\n"
+    )
+    with pytest.raises(ValueError, match="No ollama_chat/"):
+        _parse_ollama_model(cfg)
+
+
+def test_parse_ollama_model_raises_when_file_missing(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        _parse_ollama_model(tmp_path / "nonexistent.yaml")
+
+
+# ---------------------------------------------------------------------------
+# _ensure_ollama_running
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_ollama_running_already_up() -> None:
+    w = Watcher(linear_client=MagicMock())
+    with (
+        patch("socket.socket") as mock_sock_cls,
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: s
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex.return_value = 0  # already up
+        mock_sock_cls.return_value = mock_sock
+
+        w._ensure_ollama_running()
+
+    mock_popen.assert_not_called()
+
+
+def test_ensure_ollama_running_starts_process(tmp_path: Path) -> None:
+    cfg = tmp_path / "litellm-local.yaml"
+    cfg.write_text(
+        "model_list:\n"
+        "  - model_name: claude-sonnet-4-6\n"
+        "    litellm_params:\n"
+        "      model: ollama_chat/qwen3-coder:30b\n"
+        "      api_base: http://localhost:11434\n"
+    )
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+
+    call_count = 0
+
+    def _probe_side_effect(*args: Any, **kwargs: Any) -> int:
+        nonlocal call_count
+        call_count += 1
+        # First call (already-up check) -> not up; subsequent calls (wait loop) -> up
+        return 1 if call_count == 1 else 0
+
+    with (
+        patch("socket.socket") as mock_sock_cls,
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: s
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex.side_effect = _probe_side_effect
+        mock_sock_cls.return_value = mock_sock
+
+        w._ensure_ollama_running()
+
+    mock_popen.assert_called_once()
+    cmd = mock_popen.call_args[0][0]
+    assert cmd[0] == "ollama"
+    assert cmd[1] == "run"
+    assert cmd[2] == "qwen3-coder:30b"
+    assert "--keepalive" in cmd
+    assert "120m" in cmd
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_next_ticket — ollama/litellm wiring
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_calls_ensure_ollama_and_litellm_for_local_effective_mode(
+    tmp_path: Path,
+) -> None:
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        implementation_mode="local",
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.list_ready_for_local.return_value = [
+        {"identifier": "WOR-10", "id": "fake-linear-id", "labels": {"nodes": []}}
+    ]
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path, worker_mode="default")
+    fake_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch.object(w, "_create_worktree", return_value=tmp_path),
+        patch.object(w, "_copy_manifest_to_worktree"),
+        patch.object(w, "_write_worker_pytest_config"),
+        patch.object(w, "_safe_set_state"),
+        patch.object(w, "_backup_plan_files", return_value=[]),
+        patch.object(w, "_launch_worker", return_value=fake_process),
+        patch.object(w, "_ensure_ollama_running") as mock_ollama,
+        patch.object(w, "_ensure_litellm_running") as mock_litellm,
+    ):
+        w._dispatch_next_ticket()
+
+    mock_ollama.assert_called_once()
+    mock_litellm.assert_called_once()
+
+
+def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        implementation_mode="cloud",
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.list_ready_for_local.return_value = [
+        {"identifier": "WOR-10", "id": "fake-linear-id", "labels": {"nodes": []}}
+    ]
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path, worker_mode="default")
+    fake_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch.object(w, "_create_worktree", return_value=tmp_path),
+        patch.object(w, "_copy_manifest_to_worktree"),
+        patch.object(w, "_write_worker_pytest_config"),
+        patch.object(w, "_safe_set_state"),
+        patch.object(w, "_backup_plan_files", return_value=[]),
+        patch.object(w, "_launch_worker", return_value=fake_process),
+        patch.object(w, "_ensure_ollama_running") as mock_ollama,
+        patch.object(w, "_ensure_litellm_running") as mock_litellm,
+    ):
+        w._dispatch_next_ticket()
+
+    mock_ollama.assert_not_called()
+    mock_litellm.assert_not_called()
