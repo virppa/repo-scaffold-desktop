@@ -827,6 +827,47 @@ def test_promote_writes_updated_manifest_to_disk(tmp_path: Path) -> None:
     assert reloaded.ticket_id == "WOR-46"
 
 
+# ---------------------------------------------------------------------------
+# _stop_litellm_proxy
+# ---------------------------------------------------------------------------
+
+
+def test_stop_litellm_proxy_terminate_on_clean_exit() -> None:
+    mock_proc = MagicMock(spec=subprocess.Popen)
+    mock_proc.pid = 12345
+    mock_proc.wait.return_value = 0
+
+    w = Watcher(linear_client=MagicMock())
+    w._litellm_proc = mock_proc
+
+    w._stop_litellm_proxy()
+
+    mock_proc.terminate.assert_called_once()
+    mock_proc.kill.assert_not_called()
+    assert w._litellm_proc is None
+
+
+def test_stop_litellm_proxy_kill_when_terminate_hangs() -> None:
+    mock_proc = MagicMock(spec=subprocess.Popen)
+    mock_proc.pid = 12345
+    mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="litellm", timeout=5)
+
+    w = Watcher(linear_client=MagicMock())
+    w._litellm_proc = mock_proc
+
+    w._stop_litellm_proxy()
+
+    mock_proc.terminate.assert_called_once()
+    mock_proc.kill.assert_called_once()
+    assert w._litellm_proc is None
+
+
+def test_stop_litellm_proxy_noop_when_none() -> None:
+    w = Watcher(linear_client=MagicMock())
+    assert w._litellm_proc is None
+    w._stop_litellm_proxy()  # must not raise
+
+
 def test_promote_no_artifacts_root_no_error(tmp_path: Path) -> None:
     watcher, _ = _make_watcher_with_mock_linear(tmp_path)
     watcher._promote_waiting_tickets()  # should not raise

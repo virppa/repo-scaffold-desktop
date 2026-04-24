@@ -338,6 +338,7 @@ class Watcher:
                 time.sleep(self._POLL_INTERVAL)
         finally:
             self._wait_for_active_workers()
+            self._stop_litellm_proxy()
             self._remove_pid_file()
             logger.info("Watcher stopped cleanly")
 
@@ -1255,6 +1256,18 @@ class Watcher:
             f"Check .claude/litellm.log for details."
         )
 
+    def _stop_litellm_proxy(self) -> None:
+        if not self._litellm_proc:
+            return
+        logger.info("Stopping LiteLLM proxy (pid=%d)…", self._litellm_proc.pid)
+        self._litellm_proc.terminate()
+        try:
+            self._litellm_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.info("LiteLLM proxy did not exit after 5s — sending kill")
+            self._litellm_proc.kill()
+        self._litellm_proc = None
+
     # ------------------------------------------------------------------
     # Graceful shutdown
     # ------------------------------------------------------------------
@@ -1268,6 +1281,7 @@ class Watcher:
         logger.info(
             "Signal %d received — finishing active workers then exiting", signum
         )
+        self._stop_litellm_proxy()
         self._running = False
 
     def _wait_for_active_workers(self) -> None:
