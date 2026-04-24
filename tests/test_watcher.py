@@ -1562,6 +1562,8 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
         patch.object(watcher, "_create_worktree", return_value=tmp_path),
         patch.object(watcher, "_copy_manifest_to_worktree"),
         patch.object(watcher, "_write_worker_pytest_config"),
+        patch.object(watcher, "_ensure_ollama_running"),
+        patch.object(watcher, "_ensure_litellm_running"),
         patch.object(watcher, "_launch_worker", return_value=fake_local_process),
     ):
         watcher._start_ticket("WOR-10", "fake-local-id")
