@@ -19,7 +19,7 @@ import pytest
 
 from app.core.linear_client import LinearError
 from app.core.manifest import ArtifactPaths, ExecutionManifest
-from app.core.watcher import Watcher
+from app.core.watcher import Watcher, _ProcessedTicket
 from app.core.watcher_types import ActiveWorker
 
 # ---------------------------------------------------------------------------
@@ -320,6 +320,58 @@ def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
 
     mock_ollama.assert_not_called()
     mock_litellm.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _handle_signal — SIGTERM triggers LiteLLM proxy cleanup and sets _running=False
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# _check_epic_completion — all-complete and nothing-processed paths
+# ---------------------------------------------------------------------------
+
+
+def test_check_epic_completion_posts_comment_and_exits(tmp_path: Path) -> None:
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+    w._processed_tickets = [
+        _ProcessedTicket(
+            ticket_id="WOR-10",
+            epic_id="WOR-96",
+            worker_branch="wor-10-test-ticket",
+            elapsed=120.0,
+        )
+    ]
+
+    with (
+        patch.object(w, "_has_waiting_deps", return_value=False),
+        patch.object(
+            w, "_lookup_pr_url", return_value="https://github.com/org/repo/pull/1"
+        ),
+    ):
+        w._check_epic_completion()
+
+    linear_mock.post_comment.assert_called_once_with(
+        "WOR-96",
+        "All sub-tickets merged — ready for `/close-epic WOR-96`",
+    )
+    assert w._running is False
+
+
+def test_check_epic_completion_no_tickets_processed_no_comment_exits(
+    tmp_path: Path,
+) -> None:
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    with patch.object(w, "_has_waiting_deps", return_value=False):
+        w._check_epic_completion()
+
+    linear_mock.post_comment.assert_not_called()
+    assert w._running is False
 
 
 # ---------------------------------------------------------------------------
