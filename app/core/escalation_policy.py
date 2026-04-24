@@ -126,15 +126,12 @@ class EscalationPolicy(BaseModel):
     def classify_sonar_finding(self, severity: str) -> Action:
         """Return the action for a SonarLint/SonarCloud finding severity.
 
-        Raises ValueError for unrecognised severity strings so that unknown
-        findings fail loudly rather than being silently ignored.
+        Returns "fix_locally" for unrecognised severity strings so that unknown
+        findings are handled safely rather than raising an error.
         """
         severity = severity.lower()
         if severity not in _VALID_SONAR_SEVERITIES:
-            raise ValueError(
-                f"Unknown Sonar severity {severity!r}. "
-                f"Valid values: {sorted(_VALID_SONAR_SEVERITIES)}"
-            )
+            return "fix_locally"
         return cast(Action, getattr(self.sonar, severity))
 
     # ------------------------------------------------------------------

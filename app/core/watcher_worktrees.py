@@ -85,14 +85,25 @@ def rebase_worktree_from_base(worktree_path: Path, base_branch: str) -> None:
         )
 
 
+_LAST_FAILURE_FILENAME = "last_failure.json"
+
+
 def copy_manifest_to_worktree(
     repo_root: Path, manifest: ExecutionManifest, worktree_path: Path
 ) -> None:
-    """Copy the manifest JSON into the worktree artifact directory."""
+    """Copy the manifest JSON into the worktree artifact directory.
+
+    Also copies last_failure.json from the repo artifact dir if it exists,
+    so retry workers have context on what the previous run failed on.
+    """
     src = repo_root / manifest.artifact_paths.manifest_copy
     dest = worktree_path / manifest.artifact_paths.manifest_copy
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
+
+    failure_src = src.parent / _LAST_FAILURE_FILENAME
+    if failure_src.exists():
+        shutil.copy2(failure_src, dest.parent / _LAST_FAILURE_FILENAME)
 
 
 def backup_plan_files() -> list[Path]:
@@ -143,6 +154,8 @@ def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:
     """Copy worker log and result.json from the worktree to the repo artifact dir.
 
     The worktree is removed after this call, so any file not copied here is lost.
+    Also handles last_failure.json: copies it on check failure, deletes the repo
+    copy on successful run (when the worktree no longer contains the file).
     """
     artifact_dir = (repo_root / worker.manifest.artifact_paths.result_json).parent
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -162,6 +175,17 @@ def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:
             result_src,
             worker.ticket_id,
         )
+
+    wt_failure = (
+        worker.worktree_path / worker.manifest.artifact_paths.result_json
+    ).parent / _LAST_FAILURE_FILENAME
+    repo_failure = artifact_dir / _LAST_FAILURE_FILENAME
+    if wt_failure.exists():
+        shutil.copy2(wt_failure, repo_failure)
+        logger.info("Failure context preserved at %s", repo_failure)
+    elif repo_failure.exists():
+        repo_failure.unlink()
+        logger.debug("Cleared last_failure.json after successful run: %s", repo_failure)
 
 
 def cleanup_worktree(repo_root: Path, worktree_path: Path) -> None:

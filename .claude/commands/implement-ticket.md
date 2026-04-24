@@ -19,7 +19,25 @@ ABORT: Unsupported manifest_version '<version>'. This worker supports 1.0 only.
 Confirm the following fields are present before continuing:
 - `ticket_id`, `worker_branch`, `base_branch`, `objective`, `artifact_paths`
 
-### 0.5. Load context snippets (if present)
+### 0.5. Check for prior failure context (if present)
+
+Read `.claude/artifacts/<ticket_id_lower>/last_failure.json` if it exists.
+(e.g. for WOR-80: `.claude/artifacts/wor_80/last_failure.json`)
+
+If the file is present, surface its contents as context before proceeding:
+
+```
+PRIOR FAILURE CONTEXT:
+  Failed at: <failed_at>
+  Check:     <check>
+  Stdout:    <stdout>
+  Stderr:    <stderr>
+```
+
+Use this context to understand what the previous worker attempt failed on and
+avoid repeating the same mistake. Do NOT abort — this is informational only.
+
+### 0.6. Load context snippets (if present)
 
 If `manifest.context_snippets` is non-null and non-empty, treat each entry as
 a pre-loaded code excerpt — do NOT re-read these sections from disk unless you
@@ -54,6 +72,31 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 **Constraints** — follow every item in `implementation_constraints` exactly.
 
 **No re-planning** — do not re-read Linear, re-query the project, or change scope. If something in the codebase is surprising, implement defensively within the manifest scope and note it in the result artifact summary.
+
+### 3.5. Auto-fix style violations
+
+Before running required checks, apply the auto-fixers:
+
+```bash
+ruff format .
+ruff check . --fix
+```
+
+These are safe to run on any Python codebase: `ruff format` reformats long lines and spacing; `ruff check --fix` removes unused imports and corrects other auto-fixable violations. Run them after all code changes are written.
+
+Then verify:
+
+```bash
+ruff check .
+mypy app/
+```
+
+If violations remain after `--fix`, fix them before continuing:
+- **E501** (line too long): break the line at a logical boundary — function parameter, string concatenation, or by extracting a variable
+- **F401** (unused import): delete the import line
+- **mypy errors**: fix the type mismatch in the code; do not add `# type: ignore`
+
+Do not proceed to step 4 until both `ruff check .` and `mypy app/` exit cleanly.
 
 ### 4. Run required checks
 

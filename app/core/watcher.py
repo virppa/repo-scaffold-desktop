@@ -23,6 +23,7 @@ import signal
 import subprocess  # nosec B404
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES
@@ -47,6 +48,13 @@ from app.core.watcher_worktrees import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _ProcessedTicket(NamedTuple):
+    ticket_id: str
+    epic_id: str | None
+    worker_branch: str
+    elapsed: float
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +92,7 @@ class Watcher:
         self._project_id = project_id
         self._local_active: list[ActiveWorker] = []
         self._cloud_active: list[ActiveWorker] = []
+        self._processed_tickets: list[_ProcessedTicket] = []
         self._running = True
         self._services = ServiceManager(self._repo_root)
         self._verbose = verbose
@@ -118,6 +127,9 @@ class Watcher:
                 cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
                 if local_has_capacity or cloud_has_capacity:
                     self._dispatch_next_ticket()
+                self._check_epic_completion()
+                if not self._running:
+                    break
                 time.sleep(self._POLL_INTERVAL)
         finally:
             self._wait_for_active_workers()
@@ -187,7 +199,9 @@ class Watcher:
                 self._notify_promotion(manifest)
                 continue
 
-            cancelled = self._find_cancelled_blocker(manifest)
+            states = self._fetch_all_blocker_states(manifest)
+
+            cancelled = self._find_cancelled_blocker(manifest, states)
             if cancelled is not None:
                 blocker_id, state_type = cancelled
                 self._handle_cancelled_predecessor(
@@ -195,7 +209,7 @@ class Watcher:
                 )
                 continue
 
-            if self._all_blockers_satisfied(manifest):
+            if self._all_blockers_satisfied(manifest, states):
                 logger.info(
                     "All blockers for %s satisfied — promoting to ReadyForLocal",
                     manifest.ticket_id,
@@ -205,22 +219,30 @@ class Watcher:
                 )
                 self._notify_promotion(manifest)
 
-    def _find_cancelled_blocker(
+    def _fetch_all_blocker_states(
         self, manifest: ExecutionManifest
-    ) -> tuple[str, str] | None:
-        """Return (blocker_id, state_type) for the first cancelled blocker, or None."""
+    ) -> dict[str, str | None]:
+        """Snapshot all blocker states in one pass; fetch errors stored as None."""
+        states: dict[str, str | None] = {}
         for blocker_id in manifest.blocked_by_tickets:
             try:
-                state_type = self._linear.get_issue_state_type(blocker_id)
+                states[blocker_id] = self._linear.get_issue_state_type(blocker_id)
             except Exception as exc:
-                logger.debug(
-                    "Could not fetch state for blocker %s while scanning for "
-                    "cancellations in %s: %s",
+                logger.warning(
+                    "Could not fetch state for blocker %s of %s: %s",
                     blocker_id,
                     manifest.ticket_id,
                     exc,
                 )
-                continue
+                states[blocker_id] = None
+        return states
+
+    def _find_cancelled_blocker(
+        self, manifest: ExecutionManifest, states: dict[str, str | None]
+    ) -> tuple[str, str] | None:
+        """Return (blocker_id, state_type) for the first cancelled blocker, or None."""
+        for blocker_id in manifest.blocked_by_tickets:
+            state_type = states.get(blocker_id)
             if state_type == "cancelled":
                 return blocker_id, state_type
         return None
@@ -255,18 +277,11 @@ class Watcher:
                 exc,
             )
 
-    def _all_blockers_satisfied(self, manifest: ExecutionManifest) -> bool:
+    def _all_blockers_satisfied(
+        self, manifest: ExecutionManifest, states: dict[str, str | None]
+    ) -> bool:
         for blocker_id in manifest.blocked_by_tickets:
-            try:
-                state_type = self._linear.get_issue_state_type(blocker_id)
-            except Exception as exc:
-                logger.warning(
-                    "Could not fetch state for blocker %s of %s: %s",
-                    blocker_id,
-                    manifest.ticket_id,
-                    exc,
-                )
-                return False
+            state_type = states.get(blocker_id)
             if state_type is None or state_type not in DONE_STATE_TYPES:
                 return False
             if state_type == "cancelled":
@@ -427,11 +442,98 @@ class Watcher:
                 mode=self._mode,
                 project_id=self._project_id,
             )
+            self._processed_tickets.append(
+                _ProcessedTicket(
+                    ticket_id=worker.ticket_id,
+                    epic_id=worker.manifest.epic_id,
+                    worker_branch=worker.manifest.worker_branch,
+                    elapsed=elapsed,
+                )
+            )
         return still_running
 
     def _reap_finished_workers(self) -> None:
         self._local_active = self._reap_pool(self._local_active)
         self._cloud_active = self._reap_pool(self._cloud_active)
+
+    # ------------------------------------------------------------------
+    # Epic completion detection
+    # ------------------------------------------------------------------
+
+    def _has_waiting_deps(self) -> bool:
+        artifacts_root = self._repo_root / _CLAUDE_DIR / "artifacts"
+        if not artifacts_root.exists():
+            return False
+        for manifest_path in artifacts_root.glob("*/manifest.json"):
+            try:
+                manifest = ExecutionManifest.from_json(manifest_path)
+                if manifest.status == "WaitingForDeps":
+                    return True
+            except Exception as exc:
+                logger.warning("Could not read manifest at %s: %s", manifest_path, exc)
+        return False
+
+    def _lookup_pr_url(self, branch: str) -> str:
+        try:
+            cmd = [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "--json",
+                "url",
+                "--jq",
+                ".[0].url",
+            ]
+            result = subprocess.run(  # nosec B603 B607
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(self._repo_root),
+                check=False,
+            )
+            url = result.stdout.strip()
+            return url if url else "(not found)"
+        except Exception:
+            return "(not found)"
+
+    def _check_epic_completion(self) -> None:
+        if self._local_active or self._cloud_active:
+            return
+        try:
+            ready = self._linear.list_ready_for_local()
+        except Exception as exc:
+            logger.warning("Epic completion check: Linear poll failed: %s", exc)
+            return
+        if ready:
+            return
+        if self._has_waiting_deps():
+            return
+
+        if self._processed_tickets:
+            epic_id = next(
+                (t.epic_id for t in self._processed_tickets if t.epic_id), None
+            )
+            logger.info("All sub-tickets processed — epic complete")
+            logger.info("%-15s  %-55s  %s", "Ticket", "PR URL", "Elapsed")
+            for t in self._processed_tickets:
+                pr_url = self._lookup_pr_url(t.worker_branch)
+                logger.info("%-15s  %-55s  %.0fs", t.ticket_id, pr_url, t.elapsed)
+            if epic_id:
+                try:
+                    self._linear.post_comment(
+                        epic_id,
+                        f"All sub-tickets merged — ready for `/close-epic {epic_id}`",
+                    )
+                    logger.info("Posted epic-complete comment on %s", epic_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not post epic-complete comment on %s: %s", epic_id, exc
+                    )
+
+        self._running = False
 
     # ------------------------------------------------------------------
     # Manifest loading

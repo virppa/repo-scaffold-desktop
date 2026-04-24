@@ -91,15 +91,21 @@ def test_ensure_ollama_running_starts_process(tmp_path: Path) -> None:
         # First call (already-up check) -> not up; subsequent calls (wait loop) -> up
         return 1 if call_count == 1 else 0
 
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+
     with (
         patch("socket.socket") as mock_sock_cls,
         patch("subprocess.Popen") as mock_popen,
+        patch("http.client.HTTPConnection") as mock_conn_cls,
     ):
         mock_sock = MagicMock()
         mock_sock.__enter__ = lambda s: s
         mock_sock.__exit__ = MagicMock(return_value=False)
         mock_sock.connect_ex.side_effect = _probe_side_effect
         mock_sock_cls.return_value = mock_sock
+
+        mock_conn_cls.return_value.getresponse.return_value = mock_resp
 
         mgr.ensure_ollama_running()
 
@@ -110,3 +116,45 @@ def test_ensure_ollama_running_starts_process(tmp_path: Path) -> None:
     assert cmd[2] == "qwen3-coder:30b"
     assert "--keepalive" in cmd
     assert "120m" in cmd
+
+
+def test_wait_for_ollama_ready_shutdown_interrupt(tmp_path: Path) -> None:
+    """RuntimeError raised promptly when _running is False before the call."""
+    mgr = ServiceManager(tmp_path)
+    mgr._running = False
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="shutting down"):
+        mgr._wait_for_ollama_ready()
+
+
+def test_wait_for_ollama_ready_http_retries(tmp_path: Path) -> None:
+    """HTTP /api/tags is retried until it returns 200."""
+    mgr = ServiceManager(tmp_path)
+    http_call_count = 0
+
+    def _conn_side_effect(*args: Any, **kwargs: Any) -> Any:
+        nonlocal http_call_count
+        http_call_count += 1
+        mock_conn = MagicMock()
+        if http_call_count < 3:
+            mock_conn.getresponse.side_effect = OSError("service not ready yet")
+        else:
+            mock_conn.getresponse.return_value = MagicMock(status=200)
+        return mock_conn
+
+    with (
+        patch("socket.socket") as mock_sock_cls,
+        patch("http.client.HTTPConnection", side_effect=_conn_side_effect),
+        patch("time.sleep"),
+    ):
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = lambda s: s
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        mock_sock.connect_ex.return_value = 0  # TCP always accepts
+        mock_sock_cls.return_value = mock_sock
+
+        mgr._wait_for_ollama_ready()
+
+    assert http_call_count == 3

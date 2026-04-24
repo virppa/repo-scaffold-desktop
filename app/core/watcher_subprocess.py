@@ -15,6 +15,7 @@ import shlex
 import subprocess  # nosec B404
 import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO
 
@@ -27,6 +28,8 @@ from app.core.watcher_helpers import (
 from app.core.watcher_types import _CLAUDE_DIR
 
 logger = logging.getLogger(__name__)
+
+_SONAR_MAX_PAGES = 10
 
 
 def expand_skill(repo_root: Path, ticket_id: str) -> str | None:
@@ -110,7 +113,8 @@ def launch_worker(
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
-        assert process.stdout is not None  # guaranteed by stdout=PIPE  # nosec B101
+        if process.stdout is None:
+            raise RuntimeError("process.stdout is None despite stdout=PIPE")
         stderr_buf: IO[bytes] = getattr(sys.stderr, "buffer", None) or sys.stderr.buffer
         threading.Thread(
             target=_tee_worker_output,
@@ -129,8 +133,14 @@ def launch_worker(
     )
 
 
+_LAST_FAILURE_FILENAME = "last_failure.json"
+
+
 def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
     """Run manifest.required_checks in the worktree. Returns True if all pass."""
+    artifact_dir = worktree_path / Path(manifest.artifact_paths.result_json).parent
+    failure_artifact = artifact_dir / _LAST_FAILURE_FILENAME
+
     all_passed = True
     for check_cmd in manifest.required_checks:
         logger.info("Running check: %s", check_cmd)
@@ -145,6 +155,22 @@ def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
                 "Check failed: %s\n%s", check_cmd, result.stdout + result.stderr
             )
             all_passed = False
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            failure_artifact.write_text(
+                json.dumps(
+                    {
+                        "failed_at": datetime.now(timezone.utc).isoformat(),
+                        "check": check_cmd,
+                        "stdout": result.stdout[:4000],
+                        "stderr": result.stderr,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+    if all_passed and failure_artifact.exists():
+        failure_artifact.unlink()
+
     return all_passed
 
 
@@ -256,31 +282,46 @@ def fetch_sonar_findings(branch: str) -> list[str] | None:
     if not token or not project_key:
         return None
 
-    params = urllib.parse.urlencode(
-        {
-            "componentKeys": project_key,
-            "branch": branch,
-            "resolved": "false",
-            "ps": "500",
-        }
-    )
-    url = f"https://sonarcloud.io/api/issues/search?{params}"
     creds = base64.b64encode(f"{token}:".encode()).decode()
-    req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
     ctx = ssl.create_default_context()
-    try:
-        with urllib.request.urlopen(  # nosec B310  # nosemgrep
-            req, timeout=10, context=ctx
-        ) as resp:
-            data: dict[str, object] = json.loads(resp.read())
-        issues = data.get("issues") or []
-        return [
-            str(issue["severity"])
-            for issue in (issues if isinstance(issues, list) else [])
-            if isinstance(issue, dict) and issue.get("severity")
-        ]
-    except Exception:
-        logger.debug(
-            "Could not fetch Sonar findings for branch %s", branch, exc_info=True
+    all_severities: list[str] = []
+
+    for page in range(1, _SONAR_MAX_PAGES + 1):
+        params = urllib.parse.urlencode(
+            {
+                "componentKeys": project_key,
+                "branch": branch,
+                "resolved": "false",
+                "ps": "500",
+                "p": str(page),
+            }
         )
-    return None
+        url = f"https://sonarcloud.io/api/issues/search?{params}"
+        req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
+        try:
+            with urllib.request.urlopen(  # nosec B310  # nosemgrep
+                req, timeout=10, context=ctx
+            ) as resp:
+                data: dict[str, object] = json.loads(resp.read())
+            issues = data.get("issues") or []
+            all_severities.extend(
+                str(issue["severity"])
+                for issue in (issues if isinstance(issues, list) else [])
+                if isinstance(issue, dict) and issue.get("severity")
+            )
+            raw_total = data.get("total")
+            total = int(raw_total) if isinstance(raw_total, int) else 0
+            if page * 500 >= total:
+                break
+        except Exception:
+            logger.debug(
+                "Could not fetch Sonar findings for branch %s (page %d)",
+                branch,
+                page,
+                exc_info=True,
+            )
+            if page == 1:
+                return None
+            break
+
+    return all_severities

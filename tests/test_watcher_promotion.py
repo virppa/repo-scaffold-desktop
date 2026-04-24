@@ -231,6 +231,42 @@ def test_promote_no_linear_id_updates_disk_only(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_promote_toctou_state_change_between_checks(tmp_path: Path) -> None:
+    """Single snapshot prevents TOCTOU: both checks use state from the same fetch.
+
+    Without the snapshot fix the old code called get_issue_state_type twice for
+    the same blocker — once in _find_cancelled_blocker and once in
+    _all_blockers_satisfied.  If the blocker state changed between those two
+    calls the results were inconsistent.
+
+    With the snapshot, get_issue_state_type is called exactly once per blocker
+    per poll cycle; both classification helpers operate on that same dict.
+    """
+    artifacts = tmp_path / ".claude" / "artifacts"
+    manifest = _make_waiting_manifest()  # WOR-46, blocked by WOR-45
+    _write_manifest(manifest, artifacts)
+
+    call_count = 0
+
+    def state_side_effect(blocker_id: str) -> str:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return "completed"
+        return "cancelled"  # any second call would see a changed state
+
+    mock_linear = MagicMock()
+    mock_linear.get_issue_state_type.side_effect = state_side_effect
+    watcher = Watcher(linear_client=mock_linear, repo_root=tmp_path)
+    watcher._promote_waiting_tickets()
+
+    # Snapshot guarantees exactly one API call per blocker
+    assert mock_linear.get_issue_state_type.call_count == 1
+    # The single snapshot value ("completed") is used by both checks → promoted
+    on_disk = ExecutionManifest.from_json(artifacts / "wor_46" / "manifest.json")
+    assert on_disk.status == "ReadyForLocal"
+
+
 def test_promote_clears_context_snippets(tmp_path: Path) -> None:
     artifacts = tmp_path / ".claude" / "artifacts"
     manifest = _make_waiting_manifest(

@@ -129,34 +129,23 @@ def test_scope_drift_wins_over_other_flags(policy: EscalationPolicy) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sonar_blocker_escalates(policy: EscalationPolicy) -> None:
-    assert policy.classify_sonar_finding("blocker") == "escalate"
-
-
-def test_sonar_critical_escalates(policy: EscalationPolicy) -> None:
-    assert policy.classify_sonar_finding("critical") == "escalate"
-
-
-def test_sonar_major_fixes_locally(policy: EscalationPolicy) -> None:
-    assert policy.classify_sonar_finding("major") == "fix_locally"
-
-
-def test_sonar_minor_fixes_locally(policy: EscalationPolicy) -> None:
-    assert policy.classify_sonar_finding("minor") == "fix_locally"
-
-
-def test_sonar_info_fixes_locally(policy: EscalationPolicy) -> None:
-    assert policy.classify_sonar_finding("info") == "fix_locally"
-
-
-def test_sonar_severity_case_insensitive(policy: EscalationPolicy) -> None:
-    assert policy.classify_sonar_finding("BLOCKER") == "escalate"
-    assert policy.classify_sonar_finding("Minor") == "fix_locally"
-
-
-def test_sonar_unknown_severity_raises(policy: EscalationPolicy) -> None:
-    with pytest.raises(ValueError, match="Unknown Sonar severity"):
-        policy.classify_sonar_finding("unknown_severity")
+@pytest.mark.parametrize(
+    "severity,expected",
+    [
+        ("blocker", "escalate"),
+        ("critical", "escalate"),
+        ("major", "fix_locally"),
+        ("minor", "fix_locally"),
+        ("info", "fix_locally"),
+        ("BLOCKER", "escalate"),
+        ("Minor", "fix_locally"),
+        ("unknown_severity", "fix_locally"),
+    ],
+)
+def test_classify_sonar_finding(
+    policy: EscalationPolicy, severity: str, expected: str
+) -> None:
+    assert policy.classify_sonar_finding(severity) == expected
 
 
 # ---------------------------------------------------------------------------
