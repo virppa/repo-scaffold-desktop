@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import shlex
-import shutil
 import signal
 import subprocess  # nosec B404
 import sys
@@ -52,7 +51,6 @@ from app.core.watcher_types import (
     _CLAUDE_DIR,
     _LOCAL_MODEL,
     _PID_FILE,
-    _WORKTREE_BASE,
     ActiveWorker,
     _to_metrics_mode,
 )
@@ -61,6 +59,16 @@ from app.core.watcher_types import (
 )
 from app.core.watcher_types import (
     is_watcher_running as is_watcher_running,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_worktrees import (
+    backup_plan_files,
+    cleanup_worktree,
+    copy_manifest_to_worktree,
+    create_worktree,
+    preserve_worker_artifacts,
+    rebase_worktree_from_base,
+    restore_plan_files,
+    write_worker_pytest_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -605,172 +613,38 @@ class Watcher:
         return ExecutionManifest.from_json(manifest_path)
 
     # ------------------------------------------------------------------
-    # Worktree management
+    # Worktree management — shims delegating to watcher_worktrees
     # ------------------------------------------------------------------
 
     def _create_worktree(self, manifest: ExecutionManifest) -> Path:
-        worktree_name = manifest.worktree_name or manifest.worker_branch
-        if ".." in Path(worktree_name).parts:
-            raise ValueError(f"Invalid worktree name: {worktree_name!r}")
-        worktree_path = self._repo_root.parent / _WORKTREE_BASE / worktree_name
-        subprocess.run(  # nosec B603 B607
-            [
-                "git",
-                "-C",
-                str(self._repo_root),
-                "worktree",
-                "add",
-                str(worktree_path),
-                manifest.worker_branch,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        logger.info("Worktree created at %s", worktree_path)
-        self._rebase_worktree_from_base(worktree_path, manifest.base_branch)
-        return worktree_path
+        return create_worktree(self._repo_root, manifest)
 
     def _rebase_worktree_from_base(self, worktree_path: Path, base_branch: str) -> None:
-        """Fetch and rebase the worktree from origin/<base_branch>.
-
-        Ensures the worker starts from the latest epic state, not a stale
-        snapshot from when the branch was created.  Logs a warning on failure
-        rather than raising — a stale start is preferable to no start at all.
-        """
-        try:
-            subprocess.run(  # nosec B603 B607
-                ["git", "-C", str(worktree_path), "fetch", "origin", base_branch],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            subprocess.run(  # nosec B603 B607
-                [
-                    "git",
-                    "-C",
-                    str(worktree_path),
-                    "rebase",
-                    f"origin/{base_branch}",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            logger.debug(
-                "Worktree at %s rebased onto origin/%s", worktree_path, base_branch
-            )
-        except subprocess.CalledProcessError as exc:
-            logger.warning(
-                "Could not rebase worktree onto origin/%s (worker will start from "
-                "branch tip instead): %s",
-                base_branch,
-                (exc.stderr or exc.stdout or str(exc)).strip(),
-            )
+        rebase_worktree_from_base(worktree_path, base_branch)
 
     def _copy_manifest_to_worktree(
         self, manifest: ExecutionManifest, worktree_path: Path
     ) -> None:
-        src = self._repo_root / manifest.artifact_paths.manifest_copy
-        dest = worktree_path / manifest.artifact_paths.manifest_copy
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
+        copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)
 
     def _backup_plan_files(self) -> list[Path]:
-        """Move ~/.claude/plans/*.md aside so the worker doesn't enter plan mode.
-
-        Claude Code enters plan mode whenever it finds a plan file in the plans
-        directory at startup. Workers must never enter plan mode — they run
-        non-interactively and ExitPlanMode would silently terminate the session.
-        Returns the list of backup paths so the caller can restore them later.
-        """
-        plans_dir = Path.home() / _CLAUDE_DIR / "plans"
-        if not plans_dir.exists():
-            return []
-        backup_dir = plans_dir.parent / "plans_worker_backup"
-        backup_dir.mkdir(exist_ok=True)
-        moved: list[Path] = []
-        for plan_file in plans_dir.glob("*.md"):
-            dest = backup_dir / plan_file.name
-            shutil.move(str(plan_file), dest)
-            moved.append(dest)
-        if moved:
-            logger.debug("Backed up %d plan file(s) to %s", len(moved), backup_dir)
-        return moved
+        return backup_plan_files()
 
     def _restore_plan_files(self, backed_up: list[Path]) -> None:
-        """Restore plan files moved by _backup_plan_files."""
-        if not backed_up:
-            return
-        plans_dir = Path.home() / _CLAUDE_DIR / "plans"
-        plans_dir.mkdir(exist_ok=True)
-        for plan_file in backed_up:
-            shutil.move(str(plan_file), plans_dir / plan_file.name)
-        logger.debug("Restored %d plan file(s)", len(backed_up))
+        restore_plan_files(backed_up)
 
     def _write_worker_pytest_config(self, worktree_path: Path) -> None:
-        """Write pytest.ini overriding pyproject.toml addopts in the worktree.
-
-        pytest.ini takes precedence over pyproject.toml, so this strips
-        --cov-fail-under from every pytest call the worker makes. Coverage
-        is still enforced by CI on the PR.
-        """
-        (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
+        write_worker_pytest_config(worktree_path)
 
     def _preserve_worker_artifacts(self, worker: ActiveWorker) -> None:
-        """Copy worker log and result.json from the worktree to the repo artifact dir.
-
-        The worktree is removed after this call, so any file not copied here is lost.
-        """
-        artifact_dir = (
-            self._repo_root / worker.manifest.artifact_paths.result_json
-        ).parent
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-
-        log_src = (
-            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-        )
-        if log_src.exists():
-            shutil.copy2(log_src, artifact_dir / log_src.name)
-            logger.info("Worker log preserved at %s", artifact_dir / log_src.name)
-
-        result_src = worker.worktree_path / worker.manifest.artifact_paths.result_json
-        if result_src.exists():
-            shutil.copy2(result_src, artifact_dir / result_src.name)
-            logger.info(
-                "Result artifact preserved at %s", artifact_dir / result_src.name
-            )
-        else:
-            logger.warning(
-                "No result artifact found at %s for %s",
-                result_src,
-                worker.ticket_id,
-            )
+        preserve_worker_artifacts(self._repo_root, worker)
 
     def _cleanup_worktree(self, worktree_path: Path) -> None:
-        try:
-            subprocess.run(  # nosec B603 B607
-                [
-                    "git",
-                    "-C",
-                    str(self._repo_root),
-                    "worktree",
-                    "remove",
-                    "--force",
-                    str(worktree_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            logger.info("Worktree removed: %s", worktree_path)
-        except subprocess.CalledProcessError as exc:
-            logger.warning(
-                "Failed to remove worktree %s: %s", worktree_path, exc.stderr
-            )
+        cleanup_worktree(self._repo_root, worktree_path)
 
     def _cleanup_orphaned_worktrees(self) -> None:
-        """Remove any leftover watcher-managed worktrees from a prior run."""
+        from app.core.watcher_types import _WORKTREE_BASE
+
         base = self._repo_root.parent / _WORKTREE_BASE
         if not base.exists():
             return
