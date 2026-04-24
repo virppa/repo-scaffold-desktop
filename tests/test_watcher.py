@@ -1238,40 +1238,44 @@ def _make_sonar_resp_mock(payload: bytes) -> MagicMock:
     return mock_resp
 
 
-def test_fetch_sonar_findings_returns_count(
+def test_fetch_sonar_findings_returns_severities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SONAR_TOKEN", "fake-token")
     monkeypatch.setenv("SONAR_PROJECT_KEY", "my-org_my-project")
     api_payload = json.dumps(
-        {"component": {"measures": [{"metric": "violations", "value": "7"}]}}
+        {
+            "issues": [
+                {"key": "A", "severity": "MAJOR"},
+                {"key": "B", "severity": "MINOR"},
+                {"key": "C", "severity": "BLOCKER"},
+            ]
+        }
     ).encode()
 
     w = Watcher(linear_client=MagicMock())
     mock_resp = _make_sonar_resp_mock(api_payload)
     with patch("urllib.request.urlopen", return_value=mock_resp):
-        count = w._fetch_sonar_findings("wor-10-some-branch")
+        findings = w._fetch_sonar_findings("wor-10-some-branch")
 
-    assert count == 7
+    assert findings == ["MAJOR", "MINOR", "BLOCKER"]
 
 
-def test_fetch_sonar_findings_returns_none_when_metric_absent(
+def test_fetch_sonar_findings_returns_empty_list_when_no_issues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("SONAR_TOKEN", "fake-token")
     monkeypatch.setenv("SONAR_PROJECT_KEY", "my-project")
-    api_payload = json.dumps(
-        {"component": {"measures": [{"metric": "coverage", "value": "80.0"}]}}
-    ).encode()
+    api_payload = json.dumps({"issues": [], "total": 0}).encode()
 
     w = Watcher(linear_client=MagicMock())
     with patch(
         "urllib.request.urlopen",
         return_value=_make_sonar_resp_mock(api_payload),
     ):
-        count = w._fetch_sonar_findings("wor-10-some-branch")
+        findings = w._fetch_sonar_findings("wor-10-some-branch")
 
-    assert count is None
+    assert findings == []
 
 
 def test_fetch_sonar_findings_returns_none_on_api_error(
@@ -1309,7 +1313,9 @@ def test_finalize_worker_sonar_count_wired_to_metrics(tmp_path: Path) -> None:
         patch.object(w, "_run_checks", return_value=True),
         patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
         patch.object(w, "_cleanup_worktree"),
-        patch.object(w, "_fetch_sonar_findings", return_value=3),
+        patch.object(
+            w, "_fetch_sonar_findings", return_value=["MAJOR", "MINOR", "MINOR"]
+        ),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -1338,6 +1344,92 @@ def test_finalize_worker_sonar_count_none_when_unavailable(tmp_path: Path) -> No
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
 
     m = metrics_mock.record.call_args[0][0]
+    assert m.sonar_findings_count is None
+
+
+# ---------------------------------------------------------------------------
+# _finalize_worker — Sonar severity escalation classification
+# ---------------------------------------------------------------------------
+
+
+def _make_finalize_worker_with_empty_result(
+    tmp_path: Path,
+) -> tuple[Watcher, MagicMock, ActiveWorker]:
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    linear_mock = MagicMock()
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    result_path = tmp_path / ".claude" / "artifacts" / "wor_10" / "result.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(json.dumps({"status": "success"}), encoding="utf-8")
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    return w, linear_mock, worker
+
+
+def test_finalize_worker_sonar_blocker_escalates(tmp_path: Path) -> None:
+    w, linear_mock, worker = _make_finalize_worker_with_empty_result(tmp_path)
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_preserve_worker_artifacts"),
+        patch.object(w, "_fetch_sonar_findings", return_value=["BLOCKER"]),
+        patch.object(w, "_create_pr") as mock_create_pr,
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    mock_create_pr.assert_not_called()
+    linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
+    m = metrics_mock.record.call_args[0][0]
+    assert m.escalated_to_cloud is True
+    assert m.outcome == "escalated"
+    assert m.sonar_findings_count == 1
+
+
+def test_finalize_worker_sonar_major_advisory_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    w, _linear_mock, worker = _make_finalize_worker_with_empty_result(tmp_path)
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_preserve_worker_artifacts"),
+        patch.object(w, "_fetch_sonar_findings", return_value=["MAJOR"]),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.escalated_to_cloud is False
+    assert m.outcome == "success"
+    assert m.sonar_findings_count == 1
+    assert any("MAJOR" in msg and "fix_locally" in msg for msg in caplog.messages)
+
+
+def test_finalize_worker_sonar_none_no_escalation(tmp_path: Path) -> None:
+    w, _linear_mock, worker = _make_finalize_worker_with_empty_result(tmp_path)
+    with (
+        patch.object(w, "_run_checks", return_value=True),
+        patch.object(w, "_preserve_worker_artifacts"),
+        patch.object(w, "_fetch_sonar_findings", return_value=None),
+        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
+        patch.object(w, "_cleanup_worktree"),
+        patch.object(w, "_metrics") as metrics_mock,
+    ):
+        w._finalize_worker(worker, returncode=0, wall_time=1.0)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.escalated_to_cloud is False
+    assert m.outcome == "success"
     assert m.sonar_findings_count is None
 
 
