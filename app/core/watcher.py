@@ -187,7 +187,9 @@ class Watcher:
                 self._notify_promotion(manifest)
                 continue
 
-            cancelled = self._find_cancelled_blocker(manifest)
+            states = self._fetch_all_blocker_states(manifest)
+
+            cancelled = self._find_cancelled_blocker(manifest, states)
             if cancelled is not None:
                 blocker_id, state_type = cancelled
                 self._handle_cancelled_predecessor(
@@ -195,7 +197,7 @@ class Watcher:
                 )
                 continue
 
-            if self._all_blockers_satisfied(manifest):
+            if self._all_blockers_satisfied(manifest, states):
                 logger.info(
                     "All blockers for %s satisfied — promoting to ReadyForLocal",
                     manifest.ticket_id,
@@ -205,22 +207,30 @@ class Watcher:
                 )
                 self._notify_promotion(manifest)
 
-    def _find_cancelled_blocker(
+    def _fetch_all_blocker_states(
         self, manifest: ExecutionManifest
-    ) -> tuple[str, str] | None:
-        """Return (blocker_id, state_type) for the first cancelled blocker, or None."""
+    ) -> dict[str, str | None]:
+        """Snapshot all blocker states in one pass; fetch errors stored as None."""
+        states: dict[str, str | None] = {}
         for blocker_id in manifest.blocked_by_tickets:
             try:
-                state_type = self._linear.get_issue_state_type(blocker_id)
+                states[blocker_id] = self._linear.get_issue_state_type(blocker_id)
             except Exception as exc:
-                logger.debug(
-                    "Could not fetch state for blocker %s while scanning for "
-                    "cancellations in %s: %s",
+                logger.warning(
+                    "Could not fetch state for blocker %s of %s: %s",
                     blocker_id,
                     manifest.ticket_id,
                     exc,
                 )
-                continue
+                states[blocker_id] = None
+        return states
+
+    def _find_cancelled_blocker(
+        self, manifest: ExecutionManifest, states: dict[str, str | None]
+    ) -> tuple[str, str] | None:
+        """Return (blocker_id, state_type) for the first cancelled blocker, or None."""
+        for blocker_id in manifest.blocked_by_tickets:
+            state_type = states.get(blocker_id)
             if state_type == "cancelled":
                 return blocker_id, state_type
         return None
@@ -255,18 +265,11 @@ class Watcher:
                 exc,
             )
 
-    def _all_blockers_satisfied(self, manifest: ExecutionManifest) -> bool:
+    def _all_blockers_satisfied(
+        self, manifest: ExecutionManifest, states: dict[str, str | None]
+    ) -> bool:
         for blocker_id in manifest.blocked_by_tickets:
-            try:
-                state_type = self._linear.get_issue_state_type(blocker_id)
-            except Exception as exc:
-                logger.warning(
-                    "Could not fetch state for blocker %s of %s: %s",
-                    blocker_id,
-                    manifest.ticket_id,
-                    exc,
-                )
-                return False
+            state_type = states.get(blocker_id)
             if state_type is None or state_type not in DONE_STATE_TYPES:
                 return False
             if state_type == "cancelled":
