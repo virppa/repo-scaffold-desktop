@@ -85,82 +85,6 @@ def test_watcher_stores_verbose_true() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _create_pr — push before gh pr create
-# ---------------------------------------------------------------------------
-
-
-def test_create_pr_pushes_branch_before_gh_pr(tmp_path: Path) -> None:
-    manifest = _make_manifest(
-        ticket_id="WOR-10",
-        worker_branch="wor-10-test-ticket",
-        base_branch="main",
-        title="Test ticket",
-        done_definition="It works.",
-    )
-    call_order: list[str] = []
-
-    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
-        if cmd[:2] == ["git", "push"]:
-            call_order.append("push")
-        elif cmd[:3] == ["gh", "pr", "create"]:
-            call_order.append("gh_pr")
-        result = MagicMock()
-        result.stdout = "https://github.com/example/pr/1"
-        return result
-
-    w = Watcher(linear_client=MagicMock())
-    with patch("app.core.watcher.subprocess.run", side_effect=fake_run):
-        w._create_pr(manifest, tmp_path)
-
-    assert call_order == ["push", "gh_pr"]
-
-
-def test_create_pr_logs_warning_on_auto_merge_failure(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    manifest = _make_manifest(
-        ticket_id="WOR-10",
-        worker_branch="wor-10-test-ticket",
-        base_branch="main",
-        title="Test ticket",
-        done_definition="It works.",
-    )
-    pr_url = "https://github.com/example/pr/1"
-
-    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
-        result = MagicMock()
-        result.returncode = 0
-        result.stderr = ""
-        if cmd[:3] == ["gh", "pr", "merge"]:
-            result.returncode = 1
-            result.stderr = "auto-merge is not enabled for this repository"
-            result.stdout = ""
-        elif cmd[:3] == ["gh", "pr", "create"]:
-            result.stdout = pr_url
-        elif cmd[:2] == ["git", "log"]:
-            result.stdout = "abc1234 some commit"
-        else:
-            result.stdout = pr_url
-        return result
-
-    w = Watcher(linear_client=MagicMock())
-    with (
-        patch("app.core.watcher.subprocess.run", side_effect=fake_run),
-        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
-    ):
-        returned_url = w._create_pr(manifest, tmp_path)
-
-    assert returned_url == pr_url
-    assert any(
-        "gh pr merge --auto failed" in msg
-        and pr_url in msg
-        and "rc=1" in msg
-        and "auto-merge is not enabled" in msg
-        for msg in caplog.messages
-    )
-
-
-# ---------------------------------------------------------------------------
 # _safe_set_state — daemon survives LinearError at _start_ticket
 # ---------------------------------------------------------------------------
 
@@ -177,11 +101,11 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch.object(w, "_create_worktree", return_value=tmp_path),
-        patch.object(w, "_copy_manifest_to_worktree"),
-        patch.object(w, "_launch_worker", return_value=fake_process),
-        patch.object(w, "_ensure_ollama_running"),
-        patch.object(w, "_ensure_litellm_running"),
+        patch("app.core.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch.object(w._services, "ensure_ollama_running"),
+        patch.object(w._services, "ensure_litellm_running"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")
 
@@ -311,12 +235,12 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
 
     with (
         patch.object(watcher, "_load_manifest", return_value=local_manifest),
-        patch.object(watcher, "_create_worktree", return_value=tmp_path),
-        patch.object(watcher, "_copy_manifest_to_worktree"),
-        patch.object(watcher, "_write_worker_pytest_config"),
-        patch.object(watcher, "_ensure_ollama_running"),
-        patch.object(watcher, "_ensure_litellm_running"),
-        patch.object(watcher, "_launch_worker", return_value=fake_local_process),
+        patch("app.core.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.write_worker_pytest_config"),
+        patch.object(watcher._services, "ensure_ollama_running"),
+        patch.object(watcher._services, "ensure_litellm_running"),
+        patch("app.core.watcher.launch_worker", return_value=fake_local_process),
     ):
         watcher._start_ticket("WOR-10", "fake-local-id")
 
@@ -350,14 +274,14 @@ def test_dispatch_calls_ensure_ollama_and_litellm_for_local_effective_mode(
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch.object(w, "_create_worktree", return_value=tmp_path),
-        patch.object(w, "_copy_manifest_to_worktree"),
-        patch.object(w, "_write_worker_pytest_config"),
+        patch("app.core.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.write_worker_pytest_config"),
         patch.object(w, "_safe_set_state"),
-        patch.object(w, "_backup_plan_files", return_value=[]),
-        patch.object(w, "_launch_worker", return_value=fake_process),
-        patch.object(w, "_ensure_ollama_running") as mock_ollama,
-        patch.object(w, "_ensure_litellm_running") as mock_litellm,
+        patch("app.core.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch.object(w._services, "ensure_ollama_running") as mock_ollama,
+        patch.object(w._services, "ensure_litellm_running") as mock_litellm,
     ):
         w._dispatch_next_ticket()
 
@@ -382,14 +306,14 @@ def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch.object(w, "_create_worktree", return_value=tmp_path),
-        patch.object(w, "_copy_manifest_to_worktree"),
-        patch.object(w, "_write_worker_pytest_config"),
+        patch("app.core.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.write_worker_pytest_config"),
         patch.object(w, "_safe_set_state"),
-        patch.object(w, "_backup_plan_files", return_value=[]),
-        patch.object(w, "_launch_worker", return_value=fake_process),
-        patch.object(w, "_ensure_ollama_running") as mock_ollama,
-        patch.object(w, "_ensure_litellm_running") as mock_litellm,
+        patch("app.core.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch.object(w._services, "ensure_ollama_running") as mock_ollama,
+        patch.object(w._services, "ensure_litellm_running") as mock_litellm,
     ):
         w._dispatch_next_ticket()
 

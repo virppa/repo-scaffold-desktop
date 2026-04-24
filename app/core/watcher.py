@@ -35,22 +35,9 @@ from app.core.watcher_helpers import (
     check_allowed_paths_overlap,
     resolve_effective_mode,
 )
-from app.core.watcher_helpers import (
-    _parse_ollama_model as _parse_ollama_model,  # noqa: F401 — backward-compat re-export
-)
-from app.core.watcher_helpers import (
-    _tee_worker_output as _tee_worker_output,  # noqa: F401 — backward-compat re-export
-)
-from app.core.watcher_helpers import (
-    build_worker_cmd as build_worker_cmd,  # noqa: F401 — backward-compat re-export
-)
-from app.core.watcher_helpers import (
-    build_worker_env as build_worker_env,  # noqa: F401 — backward-compat re-export
-)
 from app.core.watcher_services import ServiceManager
 from app.core.watcher_subprocess import (
-    build_snippet_tool_restrictions,
-    expand_skill,
+    create_pr,
     fetch_sonar_findings,
     launch_worker,
     run_checks,
@@ -60,13 +47,8 @@ from app.core.watcher_types import (
     _LOCAL_MODEL,
     _PID_FILE,
     ActiveWorker,
+    LinearClientProtocol,
     _to_metrics_mode,
-)
-from app.core.watcher_types import (
-    LinearClientProtocol as LinearClientProtocol,  # noqa: F401 — backward-compat re-export
-)
-from app.core.watcher_types import (
-    is_watcher_running as is_watcher_running,  # noqa: F401 — backward-compat re-export
 )
 from app.core.watcher_worktrees import (
     backup_plan_files,
@@ -74,7 +56,6 @@ from app.core.watcher_worktrees import (
     copy_manifest_to_worktree,
     create_worktree,
     preserve_worker_artifacts,
-    rebase_worktree_from_base,
     restore_plan_files,
     write_worker_pytest_config,
 )
@@ -157,6 +138,18 @@ class Watcher:
             self._services.stop()
             self._remove_pid_file()
             logger.info("Watcher stopped cleanly")
+
+    def _cleanup_orphaned_worktrees(self) -> None:
+        from app.core.watcher_types import _WORKTREE_BASE
+
+        base = self._repo_root.parent / _WORKTREE_BASE
+        if not base.exists():
+            return
+        for worktree_dir in base.iterdir():
+            if not worktree_dir.is_dir():
+                continue
+            logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
+            cleanup_worktree(self._repo_root, worktree_dir)
 
     # ------------------------------------------------------------------
     # WaitingForDeps promotion
@@ -384,9 +377,9 @@ class Watcher:
                 )
                 return
 
-        worktree_path = self._create_worktree(manifest)
-        self._copy_manifest_to_worktree(manifest, worktree_path)
-        self._write_worker_pytest_config(worktree_path)
+        worktree_path = create_worktree(self._repo_root, manifest)
+        copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)
+        write_worker_pytest_config(worktree_path)
 
         self._safe_set_state(
             linear_id, manifest.ticket_state_map.in_progress_local, ticket_id
@@ -394,11 +387,13 @@ class Watcher:
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
 
         if effective_mode == "local":
-            self._ensure_ollama_running()
-            self._ensure_litellm_running()
+            self._services.ensure_ollama_running()
+            self._services.ensure_litellm_running()
 
-        backed_up_plans = self._backup_plan_files()
-        process = self._launch_worker(manifest, worktree_path, effective_mode)
+        backed_up_plans = backup_plan_files()
+        process = launch_worker(
+            self._repo_root, manifest, worktree_path, effective_mode, self._verbose
+        )
         worker = ActiveWorker(
             ticket_id=ticket_id,
             linear_id=linear_id,
@@ -453,7 +448,7 @@ class Watcher:
         linear_id: str,
     ) -> Outcome:
         try:
-            pr_url = self._create_pr(manifest, worker.worktree_path)
+            pr_url = create_pr(manifest, worker.worktree_path)
         except subprocess.CalledProcessError as exc:
             err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
             logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
@@ -489,7 +484,7 @@ class Watcher:
                 escalated = True
             self._safe_set_state(linear_id, manifest.ticket_state_map.failed, ticket_id)
         else:
-            checks_ok = self._run_checks(manifest, worker.worktree_path)
+            checks_ok = run_checks(manifest, worker.worktree_path)
             if not checks_ok:
                 worker.retry_count += 1
             if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
@@ -498,7 +493,7 @@ class Watcher:
                     linear_id, manifest.ticket_state_map.failed, ticket_id
                 )
             else:
-                self._preserve_worker_artifacts(worker)
+                preserve_worker_artifacts(self._repo_root, worker)
                 artifacts_preserved = True
 
                 result_path = self._repo_root / manifest.artifact_paths.result_json
@@ -539,7 +534,7 @@ class Watcher:
                         )
                     outcome = "aborted"
                 else:  # fix_locally — classify Sonar severities before creating PR
-                    sonar_findings = self._fetch_sonar_findings(manifest.worker_branch)
+                    sonar_findings = fetch_sonar_findings(manifest.worker_branch)
                     sonar_escalate = False
                     if sonar_findings:
                         for severity in sonar_findings:
@@ -602,10 +597,10 @@ class Watcher:
             )
         )
 
-        self._restore_plan_files(worker.backed_up_plans)
+        restore_plan_files(worker.backed_up_plans)
         if not artifacts_preserved:
-            self._preserve_worker_artifacts(worker)
-        self._cleanup_worktree(worker.worktree_path)
+            preserve_worker_artifacts(self._repo_root, worker)
+        cleanup_worktree(self._repo_root, worker.worktree_path)
 
     # ------------------------------------------------------------------
     # Manifest loading
@@ -617,189 +612,6 @@ class Watcher:
         artifact = ArtifactPaths.from_ticket_id(ticket_id)
         manifest_path = self._repo_root / artifact.manifest_copy
         return ExecutionManifest.from_json(manifest_path)
-
-    # ------------------------------------------------------------------
-    # Worktree management — shims delegating to watcher_worktrees
-    # ------------------------------------------------------------------
-
-    def _create_worktree(self, manifest: ExecutionManifest) -> Path:
-        return create_worktree(self._repo_root, manifest)
-
-    def _rebase_worktree_from_base(self, worktree_path: Path, base_branch: str) -> None:
-        rebase_worktree_from_base(worktree_path, base_branch)
-
-    def _copy_manifest_to_worktree(
-        self, manifest: ExecutionManifest, worktree_path: Path
-    ) -> None:
-        copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)
-
-    def _backup_plan_files(self) -> list[Path]:
-        return backup_plan_files()
-
-    def _restore_plan_files(self, backed_up: list[Path]) -> None:
-        restore_plan_files(backed_up)
-
-    def _write_worker_pytest_config(self, worktree_path: Path) -> None:
-        write_worker_pytest_config(worktree_path)
-
-    def _preserve_worker_artifacts(self, worker: ActiveWorker) -> None:
-        preserve_worker_artifacts(self._repo_root, worker)
-
-    def _cleanup_worktree(self, worktree_path: Path) -> None:
-        cleanup_worktree(self._repo_root, worktree_path)
-
-    def _cleanup_orphaned_worktrees(self) -> None:
-        from app.core.watcher_types import _WORKTREE_BASE
-
-        base = self._repo_root.parent / _WORKTREE_BASE
-        if not base.exists():
-            return
-        for worktree_dir in base.iterdir():
-            if not worktree_dir.is_dir():
-                continue
-            logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
-            self._cleanup_worktree(worktree_dir)
-
-    # ------------------------------------------------------------------
-    # Worker subprocess — shims delegating to watcher_subprocess
-    # ------------------------------------------------------------------
-
-    def _expand_skill(self, ticket_id: str) -> str | None:
-        return expand_skill(self._repo_root, ticket_id)
-
-    @staticmethod
-    def _build_snippet_tool_restrictions(snippets: list[str]) -> list[str]:
-        return build_snippet_tool_restrictions(snippets)
-
-    def _launch_worker(
-        self,
-        manifest: ExecutionManifest,
-        worktree_path: Path,
-        effective_mode: str,
-    ) -> subprocess.Popen[bytes]:
-        return launch_worker(
-            self._repo_root, manifest, worktree_path, effective_mode, self._verbose
-        )
-
-    def _run_checks(self, manifest: ExecutionManifest, worktree_path: Path) -> bool:
-        return run_checks(manifest, worktree_path)
-
-    def _fetch_sonar_findings(self, branch: str) -> list[str] | None:
-        return fetch_sonar_findings(branch)
-
-    # ------------------------------------------------------------------
-    # PR creation
-    # ------------------------------------------------------------------
-
-    def _create_pr(self, manifest: ExecutionManifest, worktree_path: Path) -> str:
-        subprocess.run(  # nosec B603 B607
-            ["git", "push", "-u", "origin", manifest.worker_branch],
-            cwd=str(worktree_path),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        ahead = subprocess.run(  # nosec B603 B607
-            [
-                "git",
-                "log",
-                f"origin/{manifest.base_branch}..{manifest.worker_branch}",
-                "--oneline",
-            ],
-            cwd=str(worktree_path),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if not ahead.stdout.strip():
-            raise subprocess.CalledProcessError(
-                1,
-                "git log",
-                stderr=(
-                    f"No commits on {manifest.worker_branch} ahead of "
-                    f"{manifest.base_branch} — worker did not commit any changes"
-                ),
-            )
-        result = subprocess.run(  # nosec B603 B607
-            [
-                "gh",
-                "pr",
-                "create",
-                "--base",
-                manifest.base_branch,
-                "--head",
-                manifest.worker_branch,
-                "--title",
-                f"{manifest.ticket_id} {manifest.title}",
-                "--body",
-                f"Closes {manifest.ticket_id}\n\n{manifest.done_definition}",
-            ],
-            cwd=str(worktree_path),
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        pr_url = result.stdout.strip()
-        merge_result = subprocess.run(  # nosec B603 B607
-            ["gh", "pr", "merge", "--auto", "--squash", pr_url],
-            cwd=str(worktree_path),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if merge_result.returncode != 0:
-            output = (merge_result.stderr or merge_result.stdout).strip()
-            # "clean status" means no required checks on the target branch (e.g. epic
-            # branches) — PR is already mergeable, so fall back to immediate merge.
-            if "enablePullRequestAutoMerge" in output or "clean status" in output:
-                logger.info(
-                    "No required checks on target branch — merging %s immediately",
-                    pr_url,
-                )
-                immediate = subprocess.run(  # nosec B603 B607
-                    ["gh", "pr", "merge", "--squash", pr_url],
-                    cwd=str(worktree_path),
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if immediate.returncode != 0:
-                    imm_output = (immediate.stderr or immediate.stdout).strip()
-                    logger.warning(
-                        "gh pr merge --squash also failed for %s (rc=%d): %s",
-                        pr_url,
-                        immediate.returncode,
-                        imm_output,
-                    )
-            else:
-                logger.warning(
-                    "gh pr merge --auto failed for %s (rc=%d): %s",
-                    pr_url,
-                    merge_result.returncode,
-                    output,
-                )
-        return pr_url
-
-    # ------------------------------------------------------------------
-    # Service shims — delegate to self._services; removed in test-split step
-    # ------------------------------------------------------------------
-
-    def _ensure_ollama_running(self) -> None:
-        self._services.ensure_ollama_running()
-
-    def _ensure_litellm_running(self) -> None:
-        self._services.ensure_litellm_running()
-
-    def _stop_litellm_proxy(self) -> None:
-        self._services.stop()
-
-    @property
-    def _litellm_proc(self) -> subprocess.Popen[bytes] | None:
-        return self._services._litellm_proc
-
-    @_litellm_proc.setter
-    def _litellm_proc(self, value: subprocess.Popen[bytes] | None) -> None:
-        self._services._litellm_proc = value
 
     # ------------------------------------------------------------------
     # Graceful shutdown
