@@ -3,15 +3,110 @@
 from __future__ import annotations
 
 import io
-from unittest.mock import patch
+import logging
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher_helpers import _tee_worker_output
 from app.core.watcher_subprocess import (
     build_snippet_tool_restrictions,
+    create_pr,
     fetch_sonar_findings,
 )
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+def _make_manifest(**overrides: object) -> ExecutionManifest:
+    from typing import Any
+
+    defaults: dict[str, Any] = {
+        "ticket_id": "WOR-10",
+        "epic_id": "WOR-96",
+        "title": "Test ticket",
+        "priority": 2,
+        "status": "ReadyForLocal",
+        "parallel_safe": True,
+        "risk_level": "low",
+        "implementation_mode": "local",
+        "review_mode": "auto",
+        "base_branch": "main",
+        "worker_branch": "wor-10-test-ticket",
+        "objective": "Do the thing.",
+        "artifact_paths": ArtifactPaths.from_ticket_id("WOR-10"),
+        "allowed_paths": ["app/core/foo.py"],
+        "done_definition": "It works.",
+    }
+    defaults.update(overrides)
+    return ExecutionManifest(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# create_pr
+# ---------------------------------------------------------------------------
+
+
+def test_create_pr_pushes_branch_before_gh_pr(tmp_path: Path) -> None:
+    manifest = _make_manifest()
+    call_order: list[str] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        if cmd[:2] == ["git", "push"]:
+            call_order.append("push")
+        elif cmd[:3] == ["gh", "pr", "create"]:
+            call_order.append("gh_pr")
+        result = MagicMock()
+        result.stdout = "https://github.com/example/pr/1"
+        return result
+
+    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+        create_pr(manifest, tmp_path)
+
+    assert call_order == ["push", "gh_pr"]
+
+
+def test_create_pr_logs_warning_on_auto_merge_failure(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    manifest = _make_manifest()
+    pr_url = "https://github.com/example/pr/1"
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        if cmd[:3] == ["gh", "pr", "merge"]:
+            result.returncode = 1
+            result.stderr = "auto-merge is not enabled for this repository"
+            result.stdout = ""
+        elif cmd[:3] == ["gh", "pr", "create"]:
+            result.stdout = pr_url
+        elif cmd[:2] == ["git", "log"]:
+            result.stdout = "abc1234 some commit"
+        else:
+            result.stdout = pr_url
+        return result
+
+    with (
+        patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher_subprocess"),
+    ):
+        returned_url = create_pr(manifest, tmp_path)
+
+    assert returned_url == pr_url
+    assert any(
+        "gh pr merge --auto failed" in msg
+        and pr_url in msg
+        and "rc=1" in msg
+        and "auto-merge is not enabled" in msg
+        for msg in caplog.messages
+    )
+
 
 # ---------------------------------------------------------------------------
 # _tee_worker_output (lives in watcher_helpers; tested here as subprocess I/O)

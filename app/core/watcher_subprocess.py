@@ -148,6 +148,97 @@ def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
     return all_passed
 
 
+def create_pr(manifest: ExecutionManifest, worktree_path: Path) -> str:
+    """Push the worker branch and open a GitHub PR, enabling auto-merge."""
+    subprocess.run(  # nosec B603 B607
+        ["git", "push", "-u", "origin", manifest.worker_branch],
+        cwd=str(worktree_path),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    ahead = subprocess.run(  # nosec B603 B607
+        [
+            "git",
+            "log",
+            f"origin/{manifest.base_branch}..{manifest.worker_branch}",
+            "--oneline",
+        ],
+        cwd=str(worktree_path),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if not ahead.stdout.strip():
+        raise subprocess.CalledProcessError(
+            1,
+            "git log",
+            stderr=(
+                f"No commits on {manifest.worker_branch} ahead of "
+                f"{manifest.base_branch} — worker did not commit any changes"
+            ),
+        )
+    result = subprocess.run(  # nosec B603 B607
+        [
+            "gh",
+            "pr",
+            "create",
+            "--base",
+            manifest.base_branch,
+            "--head",
+            manifest.worker_branch,
+            "--title",
+            f"{manifest.ticket_id} {manifest.title}",
+            "--body",
+            f"Closes {manifest.ticket_id}\n\n{manifest.done_definition}",
+        ],
+        cwd=str(worktree_path),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    pr_url = result.stdout.strip()
+    merge_result = subprocess.run(  # nosec B603 B607
+        ["gh", "pr", "merge", "--auto", "--squash", pr_url],
+        cwd=str(worktree_path),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if merge_result.returncode != 0:
+        output = (merge_result.stderr or merge_result.stdout).strip()
+        # "clean status" means no required checks on the target branch (e.g. epic
+        # branches) — PR is already mergeable, so fall back to immediate merge.
+        if "enablePullRequestAutoMerge" in output or "clean status" in output:
+            logger.info(
+                "No required checks on target branch — merging %s immediately",
+                pr_url,
+            )
+            immediate = subprocess.run(  # nosec B603 B607
+                ["gh", "pr", "merge", "--squash", pr_url],
+                cwd=str(worktree_path),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if immediate.returncode != 0:
+                imm_output = (immediate.stderr or immediate.stdout).strip()
+                logger.warning(
+                    "gh pr merge --squash also failed for %s (rc=%d): %s",
+                    pr_url,
+                    immediate.returncode,
+                    imm_output,
+                )
+        else:
+            logger.warning(
+                "gh pr merge --auto failed for %s (rc=%d): %s",
+                pr_url,
+                merge_result.returncode,
+                output,
+            )
+    return pr_url
+
+
 def fetch_sonar_findings(branch: str) -> list[str] | None:
     """Return per-severity finding list from SonarCloud for *branch*, or None.
 

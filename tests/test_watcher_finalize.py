@@ -40,9 +40,9 @@ def test_finalize_worker_pr_failure_marks_blocked(tmp_path: Path) -> None:
     exc = subprocess.CalledProcessError(1, "gh", stderr="Head sha can't be blank")
 
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_create_pr", side_effect=exc),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch("app.core.watcher.create_pr", side_effect=exc),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -71,9 +71,11 @@ def test_finalize_worker_retry_count_zero_on_success(tmp_path: Path) -> None:
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -96,8 +98,8 @@ def test_finalize_worker_retry_count_increments_on_check_failure(
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch.object(w, "_run_checks", return_value=False),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=False),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics"),
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -120,9 +122,11 @@ def test_finalize_worker_retry_count_two_failures_then_success(
     )
     check_results = [False, False, True]
     with (
-        patch.object(w, "_run_checks", side_effect=check_results),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", side_effect=check_results),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -153,7 +157,7 @@ def test_finalize_worker_set_state_failure_nonzero_no_crash(tmp_path: Path) -> N
     )
 
     with (
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics"),
     ):
         w._finalize_worker(worker, returncode=1, wall_time=1.0)
@@ -176,9 +180,11 @@ def test_finalize_worker_set_state_failure_success_path_no_crash(
     )
 
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics"),
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -217,9 +223,11 @@ def test_finalize_worker_passes_usage_to_metrics(tmp_path: Path) -> None:
     )
 
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -242,9 +250,11 @@ def test_finalize_worker_usage_none_when_no_log(tmp_path: Path) -> None:
     )
 
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -270,11 +280,14 @@ def test_finalize_worker_sonar_count_wired_to_metrics(tmp_path: Path) -> None:
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
-        patch.object(
-            w, "_fetch_sonar_findings", return_value=["MAJOR", "MINOR", "MINOR"]
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
+        patch(
+            "app.core.watcher.fetch_sonar_findings",
+            return_value=["MAJOR", "MINOR", "MINOR"],
         ),
         patch.object(w, "_metrics") as metrics_mock,
     ):
@@ -295,10 +308,12 @@ def test_finalize_worker_sonar_count_none_when_unavailable(tmp_path: Path) -> No
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
-        patch.object(w, "_fetch_sonar_findings", return_value=None),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
+        patch("app.core.watcher.fetch_sonar_findings", return_value=None),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -336,11 +351,11 @@ def _make_finalize_worker_with_empty_result(
 def test_finalize_worker_sonar_blocker_escalates(tmp_path: Path) -> None:
     w, linear_mock, worker = _make_finalize_worker_with_empty_result(tmp_path)
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_preserve_worker_artifacts"),
-        patch.object(w, "_fetch_sonar_findings", return_value=["BLOCKER"]),
-        patch.object(w, "_create_pr") as mock_create_pr,
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch("app.core.watcher.preserve_worker_artifacts"),
+        patch("app.core.watcher.fetch_sonar_findings", return_value=["BLOCKER"]),
+        patch("app.core.watcher.create_pr") as mock_create_pr,
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -358,11 +373,13 @@ def test_finalize_worker_sonar_major_advisory_warning(
 ) -> None:
     w, _linear_mock, worker = _make_finalize_worker_with_empty_result(tmp_path)
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_preserve_worker_artifacts"),
-        patch.object(w, "_fetch_sonar_findings", return_value=["MAJOR"]),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch("app.core.watcher.preserve_worker_artifacts"),
+        patch("app.core.watcher.fetch_sonar_findings", return_value=["MAJOR"]),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
         caplog.at_level(logging.WARNING, logger="app.core.watcher"),
     ):
@@ -378,11 +395,13 @@ def test_finalize_worker_sonar_major_advisory_warning(
 def test_finalize_worker_sonar_none_no_escalation(tmp_path: Path) -> None:
     w, _linear_mock, worker = _make_finalize_worker_with_empty_result(tmp_path)
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_preserve_worker_artifacts"),
-        patch.object(w, "_fetch_sonar_findings", return_value=None),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch("app.core.watcher.preserve_worker_artifacts"),
+        patch("app.core.watcher.fetch_sonar_findings", return_value=None),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -425,10 +444,10 @@ def test_finalize_worker_scope_drift_escalates(tmp_path: Path) -> None:
         tmp_path, {"scope_drift": True}
     )
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_preserve_worker_artifacts"),
-        patch.object(w, "_create_pr") as mock_create_pr,
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch("app.core.watcher.preserve_worker_artifacts"),
+        patch("app.core.watcher.create_pr") as mock_create_pr,
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -447,10 +466,10 @@ def test_finalize_worker_forbidden_path_touched_escalates(tmp_path: Path) -> Non
         tmp_path, {"forbidden_path_touched": True}
     )
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_preserve_worker_artifacts"),
-        patch.object(w, "_create_pr") as mock_create_pr,
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch("app.core.watcher.preserve_worker_artifacts"),
+        patch("app.core.watcher.create_pr") as mock_create_pr,
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -467,10 +486,12 @@ def test_finalize_worker_forbidden_path_touched_escalates(tmp_path: Path) -> Non
 def test_finalize_worker_no_flags_proceeds_normally(tmp_path: Path) -> None:
     w, _linear_mock, worker = _make_finalize_worker_for_policy(tmp_path, {})
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_preserve_worker_artifacts"),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch("app.core.watcher.preserve_worker_artifacts"),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)
@@ -493,10 +514,12 @@ def test_finalize_worker_missing_result_json_proceeds_normally(tmp_path: Path) -
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch.object(w, "_run_checks", return_value=True),
-        patch.object(w, "_preserve_worker_artifacts"),
-        patch.object(w, "_create_pr", return_value="https://github.com/example/pr/1"),
-        patch.object(w, "_cleanup_worktree"),
+        patch("app.core.watcher.run_checks", return_value=True),
+        patch("app.core.watcher.preserve_worker_artifacts"),
+        patch(
+            "app.core.watcher.create_pr", return_value="https://github.com/example/pr/1"
+        ),
+        patch("app.core.watcher.cleanup_worktree"),
         patch.object(w, "_metrics") as metrics_mock,
     ):
         w._finalize_worker(worker, returncode=0, wall_time=1.0)

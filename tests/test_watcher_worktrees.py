@@ -107,9 +107,9 @@ def test_cleanup_orphaned_worktrees_removes_dirs(tmp_path: Path) -> None:
         repo_root=tmp_path,
     )
 
-    with patch.object(watcher, "_cleanup_worktree") as mock_cleanup:
+    with patch("app.core.watcher.cleanup_worktree") as mock_cleanup:
         watcher._cleanup_orphaned_worktrees()
-        mock_cleanup.assert_called_once_with(worktree_dir)
+        mock_cleanup.assert_called_once_with(watcher._repo_root, worktree_dir)
 
 
 def test_cleanup_orphaned_worktrees_skips_when_base_absent(tmp_path: Path) -> None:
