@@ -7,6 +7,7 @@ class boundary cleaner than threading a Popen handle through function signatures
 
 from __future__ import annotations
 
+import http.client
 import logging
 import os
 import socket
@@ -58,13 +59,21 @@ class ServiceManager:
         self._wait_for_ollama_ready()
 
     def _wait_for_ollama_ready(self, timeout: float = 120.0) -> None:
-        """Poll TCP until Ollama's port accepts connections."""
+        """Poll TCP then HTTP /api/tags until Ollama's API is ready."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(2)
-                if sock.connect_ex(("localhost", _OLLAMA_PORT)) == 0:
+                if sock.connect_ex(("localhost", _OLLAMA_PORT)) != 0:
+                    time.sleep(0.5)
+                    continue
+            try:
+                conn = http.client.HTTPConnection("localhost", _OLLAMA_PORT, timeout=2)
+                conn.request("GET", "/api/tags")
+                if conn.getresponse().status == 200:
                     return
+            except (OSError, http.client.HTTPException):
+                pass
             time.sleep(0.5)
         raise TimeoutError(f"Ollama not ready after {timeout}s.")
 
