@@ -33,6 +33,7 @@ class ServiceManager:
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
         self._litellm_proc: subprocess.Popen[bytes] | None = None
+        self._running = True
 
     def ensure_ollama_running(self) -> None:
         """Start Ollama with the configured model if not already on _OLLAMA_PORT."""
@@ -61,7 +62,7 @@ class ServiceManager:
     def _wait_for_ollama_ready(self, timeout: float = 120.0) -> None:
         """Poll TCP then HTTP /api/tags until Ollama's API is ready."""
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while time.monotonic() < deadline and self._running:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 sock.settimeout(2)
                 if sock.connect_ex(("localhost", _OLLAMA_PORT)) != 0:
@@ -75,6 +76,8 @@ class ServiceManager:
             except (OSError, http.client.HTTPException):
                 pass
             time.sleep(0.5)
+        if not self._running:
+            raise RuntimeError("Watcher shutting down")
         raise TimeoutError(f"Ollama not ready after {timeout}s.")
 
     def ensure_litellm_running(self) -> None:
@@ -151,6 +154,7 @@ class ServiceManager:
 
     def stop(self) -> None:
         """Terminate the LiteLLM proxy if it was started by this manager."""
+        self._running = False
         if not self._litellm_proc:
             return
         logger.info("Stopping LiteLLM proxy (pid=%d)…", self._litellm_proc.pid)

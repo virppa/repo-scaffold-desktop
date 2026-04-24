@@ -118,6 +118,17 @@ def test_ensure_ollama_running_starts_process(tmp_path: Path) -> None:
     assert "120m" in cmd
 
 
+def test_wait_for_ollama_ready_shutdown_interrupt(tmp_path: Path) -> None:
+    """RuntimeError raised promptly when _running is False before the call."""
+    mgr = ServiceManager(tmp_path)
+    mgr._running = False
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="shutting down"):
+        mgr._wait_for_ollama_ready()
+
+
 def test_wait_for_ollama_ready_http_retries(tmp_path: Path) -> None:
     """HTTP /api/tags is retried until it returns 200."""
     mgr = ServiceManager(tmp_path)
