@@ -25,3 +25,33 @@ source_modules =
 forbidden_modules =
     app.cli
     app.main
+
+[importlinter:contract:watcher-layers]
+name = watcher sub-modules form a strict dependency layer
+type = layers
+# watcher (orchestrator) imports all sub-modules.
+# watcher_subprocess, watcher_worktrees, watcher_services may import from
+# watcher_types and watcher_helpers — not from each other or from watcher.
+# watcher_helpers may import from watcher_types only.
+# watcher_types is a leaf: imports nothing from watcher siblings.
+# CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
+layers =
+    app.core.watcher
+    app.core.watcher_subprocess : app.core.watcher_worktrees : app.core.watcher_services
+    app.core.watcher_helpers
+    app.core.watcher_types
+
+[importlinter:contract:watcher-types-is-leaf]
+name = watcher_types must not import from sibling watcher modules
+type = forbidden
+# Belt-and-suspenders for watcher-layers: explicitly forbid the leaf from
+# importing any sibling watcher module.
+# CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
+source_modules =
+    app.core.watcher_types
+forbidden_modules =
+    app.core.watcher
+    app.core.watcher_helpers
+    app.core.watcher_subprocess
+    app.core.watcher_worktrees
+    app.core.watcher_services

@@ -17,276 +17,69 @@ Worker modes:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import shlex
-import shutil
 import signal
 import subprocess  # nosec B404
-import sys
-import threading
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any, Protocol
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES, LinearError
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import ImplementationMode, MetricsStore, Outcome, TicketMetrics
+from app.core.metrics import MetricsStore, Outcome, TicketMetrics
+from app.core.watcher_helpers import (
+    _POLICY_FLAGS,
+    _parse_worker_usage,
+    _read_result_flags,
+    check_allowed_paths_overlap,
+    resolve_effective_mode,
+)
+from app.core.watcher_helpers import (
+    _parse_ollama_model as _parse_ollama_model,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_helpers import (
+    _tee_worker_output as _tee_worker_output,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_helpers import (
+    build_worker_cmd as build_worker_cmd,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_helpers import (
+    build_worker_env as build_worker_env,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_services import ServiceManager
+from app.core.watcher_subprocess import (
+    build_snippet_tool_restrictions,
+    expand_skill,
+    fetch_sonar_findings,
+    launch_worker,
+    run_checks,
+)
+from app.core.watcher_types import (
+    _CLAUDE_DIR,
+    _LOCAL_MODEL,
+    _PID_FILE,
+    ActiveWorker,
+    _to_metrics_mode,
+)
+from app.core.watcher_types import (
+    LinearClientProtocol as LinearClientProtocol,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_types import (
+    is_watcher_running as is_watcher_running,  # noqa: F401 — backward-compat re-export
+)
+from app.core.watcher_worktrees import (
+    backup_plan_files,
+    cleanup_worktree,
+    copy_manifest_to_worktree,
+    create_worktree,
+    preserve_worker_artifacts,
+    rebase_worktree_from_base,
+    restore_plan_files,
+    write_worker_pytest_config,
+)
 
 logger = logging.getLogger(__name__)
-
-_CLAUDE_DIR = ".claude"
-_PID_FILE = Path(_CLAUDE_DIR) / "watcher.pid"
-_LITELLM_PORT = 8082
-_LITELLM_CONFIG = "litellm-local.yaml"
-_LOCAL_MODEL = "qwen3-coder:30b"
-_LITELLM_BASE_URL = f"http://localhost:{_LITELLM_PORT}"
-_OLLAMA_PORT = 11434
-_OLLAMA_KEEPALIVE = "120m"
-_WORKTREE_BASE = Path("worktrees")
-
-_ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(
-    {
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_MODEL",
-        "OPENAI_API_BASE",
-    }
-)
-
-
-# ---------------------------------------------------------------------------
-# Protocol for dependency injection (testability)
-# ---------------------------------------------------------------------------
-
-
-class LinearClientProtocol(Protocol):
-    def list_ready_for_local(self) -> list[dict[str, Any]]: ...
-    def get_open_blockers(self, issue_id: str) -> list[str]: ...
-    def set_state(self, issue_id: str, state_name: str) -> None: ...
-    def post_comment(self, issue_id: str, body: str) -> None: ...
-    def get_issue_state_type(self, identifier: str) -> str | None: ...
-
-
-# ---------------------------------------------------------------------------
-# Active worker tracking
-# ---------------------------------------------------------------------------
-
-
-def _parse_worker_usage(log_path: Path) -> tuple[int | None, int | None]:
-    """Read stream-json worker log and return (local_tokens, context_compactions)."""
-    try:
-        with log_path.open(encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") == "result":
-                    usage = obj.get("usage") or {}
-                    local_tokens = (usage.get("input_tokens") or 0) + (
-                        usage.get("output_tokens") or 0
-                    )
-                    context_compactions = obj.get("context_compactions")
-                    return local_tokens, context_compactions
-    except Exception:
-        return None, None
-    return None, None
-
-
-@dataclass
-class ActiveWorker:
-    ticket_id: str
-    linear_id: str
-    manifest: ExecutionManifest
-    worktree_path: Path
-    process: subprocess.Popen[bytes]
-    start_time: float = field(default_factory=time.monotonic)
-    backed_up_plans: list[Path] = field(default_factory=list)
-    retry_count: int = 0
-
-
-# ---------------------------------------------------------------------------
-# Pure helper functions (unit-testable, no I/O)
-# ---------------------------------------------------------------------------
-
-
-def check_allowed_paths_overlap(
-    active: list[ActiveWorker], candidate: ExecutionManifest
-) -> list[str]:
-    """Return identifiers of active workers whose allowed_paths overlap with candidate.
-
-    Two manifests overlap when they share at least one allowed_path pattern.
-    An empty allowed_paths list means "no restriction" — treated as overlap with
-    everything to be safe.
-    """
-    if not candidate.allowed_paths:
-        return [w.manifest.ticket_id for w in active]
-
-    conflicts: list[str] = []
-    candidate_set = set(candidate.allowed_paths)
-    for worker in active:
-        if not worker.manifest.allowed_paths or candidate_set & set(
-            worker.manifest.allowed_paths
-        ):
-            conflicts.append(worker.manifest.ticket_id)
-    return conflicts
-
-
-def build_worker_env(
-    mode: str,
-    base_env: dict[str, str],
-) -> dict[str, str]:
-    """Return a subprocess environment dict for the given worker mode.
-
-    cloud   — strips ANTHROPIC_BASE_URL and related vars so the process routes
-              to the real Anthropic API.
-    local   — injects ANTHROPIC_BASE_URL pointing to the LiteLLM proxy and sets
-              ANTHROPIC_API_KEY=sk-dummy if not already present (LiteLLM doesn't
-              validate the key; this satisfies Claude Code's auth check).
-    default — passes base_env unchanged.
-    """
-    env = dict(base_env)
-    if mode == "cloud":
-        for var in _ENV_VARS_TO_STRIP_FOR_CLOUD:
-            env.pop(var, None)
-    elif mode == "local":
-        env["ANTHROPIC_BASE_URL"] = _LITELLM_BASE_URL
-        env.setdefault("ANTHROPIC_API_KEY", "sk-dummy")
-    return env
-
-
-def build_worker_cmd(
-    ticket_id: str,
-    mode: str,
-    worktree_path: Path,
-    prompt: str | None = None,
-    disallowed_tools: list[str] | None = None,
-) -> list[str]:
-    """Return the claude subprocess command list for the given mode.
-
-    prompt — pre-expanded skill content; defaults to the /implement-ticket
-    slash-command shortcut (requires commands to be loaded by Claude Code).
-    In --bare mode the shortcut is unavailable, so callers should pass the
-    expanded implement-ticket.md content with $ARGUMENTS substituted.
-
-    disallowed_tools — list of tool-call patterns passed to --disallowed-tools
-    (e.g. ["Read(*watcher.py)", "Read(*metrics.py)"]) to enforce context_snippets.
-    """
-    if prompt is None:
-        prompt = f"/implement-ticket {ticket_id}"
-    # --bare strips auto-memory, hooks, and CLAUDE.md auto-discovery, keeping
-    # the system prompt lean. --add-dir re-adds the worktree CLAUDE.md.
-    # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
-    # from blocking ~180s on OAuth in non-interactive mode.
-    # NOTE: --bare also strips OAuth credential loading, so it must NOT be used
-    # for cloud mode where the worker authenticates via OAuth (Claude Max).
-    # Local mode uses a dummy API key via LiteLLM, so --bare is safe there.
-    base = [
-        "claude",
-        "--dangerously-skip-permissions",
-        "--add-dir",
-        str(worktree_path),
-        "--strict-mcp-config",
-        "--mcp-config",
-        '{"mcpServers":{}}',
-        "--effort",
-        "max",
-        "--verbose",
-        "--output-format",
-        "stream-json",
-    ]
-    if mode == "local":
-        base.insert(2, "--bare")
-    if disallowed_tools:
-        base += ["--disallowed-tools", ",".join(disallowed_tools)]
-    if mode == "local":
-        return base + ["--model", _LOCAL_MODEL, "-p", prompt]
-    return base + ["-p", prompt]
-
-
-def resolve_effective_mode(worker_mode: str, manifest_mode: str) -> str:
-    """Return the effective implementation mode.
-
-    worker_mode takes precedence when it is not 'default'.
-    Falls back to manifest_mode ('local', 'cloud', or 'hybrid').
-    Hybrid is treated as 'cloud' for subprocess purposes.
-    """
-    if worker_mode != "default":
-        return worker_mode
-    if manifest_mode == "hybrid":
-        return "cloud"
-    return manifest_mode
-
-
-def _tee_worker_output(
-    pipe: IO[bytes],
-    log_file: IO[bytes],
-    prefix: bytes,
-    dest: IO[bytes],
-) -> None:
-    """Read *pipe* line-by-line, writing each line to *log_file* and *dest*.
-
-    Runs in a daemon thread; returns when the pipe reaches EOF (worker exit).
-    Closes *log_file* in the finally block — ownership transfers from the
-    caller to this thread in verbose mode.
-    """
-    try:
-        for raw_line in pipe:
-            log_file.write(raw_line)
-            log_file.flush()
-            dest.write(prefix + raw_line)
-            dest.flush()
-    finally:
-        log_file.close()
-
-
-_POLICY_FLAGS = (
-    "scope_drift",
-    "forbidden_path_touched",
-    "import_linter_violation",
-    "security_blocker",
-)
-
-
-def _read_result_flags(result_path: Path) -> dict[str, bool]:
-    """Load result.json and return the four escalation-policy boolean flags.
-
-    Returns all-False defaults when the file is missing or malformed.
-    """
-    try:
-        raw = json.loads(result_path.read_text(encoding="utf-8"))
-    except Exception:
-        return dict.fromkeys(_POLICY_FLAGS, False)
-    return {f: bool(raw.get(f, False)) for f in _POLICY_FLAGS}
-
-
-def _parse_ollama_model(config_path: Path) -> str:
-    """Return the bare Ollama model name from a LiteLLM YAML config.
-
-    Scans for the first 'model: ollama_chat/<name>' line and returns <name>.
-    Raises ValueError if none is found, FileNotFoundError if the file is absent.
-    """
-    import re
-
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"LiteLLM config not found: {config_path}. "
-            "Copy litellm-local.yaml.example to litellm-local.yaml and configure it."
-        )
-    text = config_path.read_text(encoding="utf-8")
-    match = re.search(r"model:\s+ollama_chat/(\S+)", text)
-    if match is None:
-        raise ValueError(
-            f"No ollama_chat/ model found in {config_path}. "
-            "Add a model_list entry with litellm_params.model = 'ollama_chat/<model>'."
-        )
-    return match.group(1)
 
 
 # ---------------------------------------------------------------------------
@@ -325,10 +118,8 @@ class Watcher:
         self._local_active: list[ActiveWorker] = []
         self._cloud_active: list[ActiveWorker] = []
         self._running = True
-        self._litellm_proc: subprocess.Popen[bytes] | None = None
+        self._services = ServiceManager(self._repo_root)
         self._verbose = verbose
-        self._worker_counter = 0
-        self._worker_counter_lock = threading.Lock()
         self._retry_counters: dict[str, int] = {}
         self._escalation_policy = EscalationPolicy.from_toml()
 
@@ -343,7 +134,7 @@ class Watcher:
         self._cleanup_orphaned_worktrees()
 
         if self._mode == "local":
-            self._ensure_litellm_running()
+            self._services.ensure_litellm_running()
 
         logger.info(
             "Watcher started (mode=%s, max_local_workers=%d, max_cloud_workers=%d)",
@@ -363,7 +154,7 @@ class Watcher:
                 time.sleep(self._POLL_INTERVAL)
         finally:
             self._wait_for_active_workers()
-            self._stop_litellm_proxy()
+            self._services.stop()
             self._remove_pid_file()
             logger.info("Watcher stopped cleanly")
 
@@ -828,172 +619,38 @@ class Watcher:
         return ExecutionManifest.from_json(manifest_path)
 
     # ------------------------------------------------------------------
-    # Worktree management
+    # Worktree management — shims delegating to watcher_worktrees
     # ------------------------------------------------------------------
 
     def _create_worktree(self, manifest: ExecutionManifest) -> Path:
-        worktree_name = manifest.worktree_name or manifest.worker_branch
-        if ".." in Path(worktree_name).parts:
-            raise ValueError(f"Invalid worktree name: {worktree_name!r}")
-        worktree_path = self._repo_root.parent / _WORKTREE_BASE / worktree_name
-        subprocess.run(  # nosec B603 B607
-            [
-                "git",
-                "-C",
-                str(self._repo_root),
-                "worktree",
-                "add",
-                str(worktree_path),
-                manifest.worker_branch,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        logger.info("Worktree created at %s", worktree_path)
-        self._rebase_worktree_from_base(worktree_path, manifest.base_branch)
-        return worktree_path
+        return create_worktree(self._repo_root, manifest)
 
     def _rebase_worktree_from_base(self, worktree_path: Path, base_branch: str) -> None:
-        """Fetch and rebase the worktree from origin/<base_branch>.
-
-        Ensures the worker starts from the latest epic state, not a stale
-        snapshot from when the branch was created.  Logs a warning on failure
-        rather than raising — a stale start is preferable to no start at all.
-        """
-        try:
-            subprocess.run(  # nosec B603 B607
-                ["git", "-C", str(worktree_path), "fetch", "origin", base_branch],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            subprocess.run(  # nosec B603 B607
-                [
-                    "git",
-                    "-C",
-                    str(worktree_path),
-                    "rebase",
-                    f"origin/{base_branch}",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            logger.debug(
-                "Worktree at %s rebased onto origin/%s", worktree_path, base_branch
-            )
-        except subprocess.CalledProcessError as exc:
-            logger.warning(
-                "Could not rebase worktree onto origin/%s (worker will start from "
-                "branch tip instead): %s",
-                base_branch,
-                (exc.stderr or exc.stdout or str(exc)).strip(),
-            )
+        rebase_worktree_from_base(worktree_path, base_branch)
 
     def _copy_manifest_to_worktree(
         self, manifest: ExecutionManifest, worktree_path: Path
     ) -> None:
-        src = self._repo_root / manifest.artifact_paths.manifest_copy
-        dest = worktree_path / manifest.artifact_paths.manifest_copy
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src, dest)
+        copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)
 
     def _backup_plan_files(self) -> list[Path]:
-        """Move ~/.claude/plans/*.md aside so the worker doesn't enter plan mode.
-
-        Claude Code enters plan mode whenever it finds a plan file in the plans
-        directory at startup. Workers must never enter plan mode — they run
-        non-interactively and ExitPlanMode would silently terminate the session.
-        Returns the list of backup paths so the caller can restore them later.
-        """
-        plans_dir = Path.home() / _CLAUDE_DIR / "plans"
-        if not plans_dir.exists():
-            return []
-        backup_dir = plans_dir.parent / "plans_worker_backup"
-        backup_dir.mkdir(exist_ok=True)
-        moved: list[Path] = []
-        for plan_file in plans_dir.glob("*.md"):
-            dest = backup_dir / plan_file.name
-            shutil.move(str(plan_file), dest)
-            moved.append(dest)
-        if moved:
-            logger.debug("Backed up %d plan file(s) to %s", len(moved), backup_dir)
-        return moved
+        return backup_plan_files()
 
     def _restore_plan_files(self, backed_up: list[Path]) -> None:
-        """Restore plan files moved by _backup_plan_files."""
-        if not backed_up:
-            return
-        plans_dir = Path.home() / _CLAUDE_DIR / "plans"
-        plans_dir.mkdir(exist_ok=True)
-        for plan_file in backed_up:
-            shutil.move(str(plan_file), plans_dir / plan_file.name)
-        logger.debug("Restored %d plan file(s)", len(backed_up))
+        restore_plan_files(backed_up)
 
     def _write_worker_pytest_config(self, worktree_path: Path) -> None:
-        """Write pytest.ini overriding pyproject.toml addopts in the worktree.
-
-        pytest.ini takes precedence over pyproject.toml, so this strips
-        --cov-fail-under from every pytest call the worker makes. Coverage
-        is still enforced by CI on the PR.
-        """
-        (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
+        write_worker_pytest_config(worktree_path)
 
     def _preserve_worker_artifacts(self, worker: ActiveWorker) -> None:
-        """Copy worker log and result.json from the worktree to the repo artifact dir.
-
-        The worktree is removed after this call, so any file not copied here is lost.
-        """
-        artifact_dir = (
-            self._repo_root / worker.manifest.artifact_paths.result_json
-        ).parent
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-
-        log_src = (
-            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-        )
-        if log_src.exists():
-            shutil.copy2(log_src, artifact_dir / log_src.name)
-            logger.info("Worker log preserved at %s", artifact_dir / log_src.name)
-
-        result_src = worker.worktree_path / worker.manifest.artifact_paths.result_json
-        if result_src.exists():
-            shutil.copy2(result_src, artifact_dir / result_src.name)
-            logger.info(
-                "Result artifact preserved at %s", artifact_dir / result_src.name
-            )
-        else:
-            logger.warning(
-                "No result artifact found at %s for %s",
-                result_src,
-                worker.ticket_id,
-            )
+        preserve_worker_artifacts(self._repo_root, worker)
 
     def _cleanup_worktree(self, worktree_path: Path) -> None:
-        try:
-            subprocess.run(  # nosec B603 B607
-                [
-                    "git",
-                    "-C",
-                    str(self._repo_root),
-                    "worktree",
-                    "remove",
-                    "--force",
-                    str(worktree_path),
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            logger.info("Worktree removed: %s", worktree_path)
-        except subprocess.CalledProcessError as exc:
-            logger.warning(
-                "Failed to remove worktree %s: %s", worktree_path, exc.stderr
-            )
+        cleanup_worktree(self._repo_root, worktree_path)
 
     def _cleanup_orphaned_worktrees(self) -> None:
-        """Remove any leftover watcher-managed worktrees from a prior run."""
+        from app.core.watcher_types import _WORKTREE_BASE
+
         base = self._repo_root.parent / _WORKTREE_BASE
         if not base.exists():
             return
@@ -1004,47 +661,15 @@ class Watcher:
             self._cleanup_worktree(worktree_dir)
 
     # ------------------------------------------------------------------
-    # Worker subprocess
+    # Worker subprocess — shims delegating to watcher_subprocess
     # ------------------------------------------------------------------
 
     def _expand_skill(self, ticket_id: str) -> str | None:
-        """Return the implement-ticket skill content with $ARGUMENTS substituted.
-
-        Returns None if the skill file cannot be read (caller falls back to
-        the /implement-ticket shortcut).
-        """
-        skill_path = self._repo_root / _CLAUDE_DIR / "commands" / "implement-ticket.md"
-        try:
-            return skill_path.read_text(encoding="utf-8").replace(
-                "$ARGUMENTS", ticket_id
-            )
-        except OSError:
-            logger.warning("Could not read skill file %s; using shortcut", skill_path)
-            return None
+        return expand_skill(self._repo_root, ticket_id)
 
     @staticmethod
     def _build_snippet_tool_restrictions(snippets: list[str]) -> list[str]:
-        """Return --disallowed-tools patterns derived from context_snippets headers.
-
-        Each snippet starts with a comment line like:
-            # app/core/watcher.py lines 574-589
-        We extract the basename and return glob patterns that block Read on those
-        files regardless of the absolute path the worker uses.
-        """
-        import re
-
-        seen: set[str] = set()
-        patterns: list[str] = []
-        header_re = re.compile(r"^#\s+(\S+)\s+lines?\s+\d")
-        for snippet in snippets:
-            first_line = snippet.splitlines()[0] if snippet else ""
-            m = header_re.match(first_line)
-            if m:
-                basename = Path(m.group(1)).name
-                if basename not in seen:
-                    seen.add(basename)
-                    patterns.append(f"Read(*{basename})")
-        return patterns
+        return build_snippet_tool_restrictions(snippets)
 
     def _launch_worker(
         self,
@@ -1052,136 +677,15 @@ class Watcher:
         worktree_path: Path,
         effective_mode: str,
     ) -> subprocess.Popen[bytes]:
-        prompt = self._expand_skill(manifest.ticket_id)
-
-        disallowed_tools: list[str] | None = None
-        if manifest.context_snippets and effective_mode == "cloud":
-            disallowed_tools = self._build_snippet_tool_restrictions(
-                manifest.context_snippets
-            )
-            if disallowed_tools and prompt:
-                file_list = ", ".join(
-                    p.removeprefix("Read(*").removesuffix(")") for p in disallowed_tools
-                )
-                warning = (
-                    f"CRITICAL: The following files are pre-loaded as context_snippets "
-                    f"in the manifest: {file_list}. "
-                    f"DO NOT use the Read tool on these files — "
-                    f"the tool is blocked and attempting to read them will "
-                    f"abort the task. "
-                    f"Use only the snippets already provided.\n\n"
-                )
-                prompt = warning + (prompt or "")
-
-        cmd = build_worker_cmd(
-            manifest.ticket_id, effective_mode, worktree_path, prompt, disallowed_tools
+        return launch_worker(
+            self._repo_root, manifest, worktree_path, effective_mode, self._verbose
         )
-        env = build_worker_env(effective_mode, dict(os.environ))
-
-        log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path, "wb")  # noqa: SIM115
-
-        if self._verbose:
-            with self._worker_counter_lock:
-                self._worker_counter += 1
-            prefix = f"[{manifest.ticket_id}] ".encode()
-            process = subprocess.Popen(  # nosec B603 B607
-                cmd,
-                cwd=str(worktree_path),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            assert process.stdout is not None  # guaranteed by stdout=PIPE  # nosec B101
-            stderr_buf: IO[bytes] = (
-                getattr(sys.stderr, "buffer", None) or sys.stderr.buffer
-            )
-            threading.Thread(
-                target=_tee_worker_output,
-                args=(process.stdout, log_file, prefix, stderr_buf),
-                daemon=True,
-                name=f"tee-{manifest.ticket_id}",
-            ).start()
-            return process
-
-        return subprocess.Popen(  # nosec B603 B607
-            cmd,
-            cwd=str(worktree_path),
-            env=env,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-        )
-
-    # ------------------------------------------------------------------
-    # Check runner
-    # ------------------------------------------------------------------
 
     def _run_checks(self, manifest: ExecutionManifest, worktree_path: Path) -> bool:
-        all_passed = True
-        for check_cmd in manifest.required_checks:
-            logger.info("Running check: %s", check_cmd)
-            result = subprocess.run(  # nosec B603
-                shlex.split(check_cmd),
-                cwd=str(worktree_path),
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode != 0:
-                logger.error(
-                    "Check failed: %s\n%s", check_cmd, result.stdout + result.stderr
-                )
-                all_passed = False
-        return all_passed
-
-    # ------------------------------------------------------------------
-    # SonarCloud findings count (Option B: REST API, best-effort)
-    # ------------------------------------------------------------------
+        return run_checks(manifest, worktree_path)
 
     def _fetch_sonar_findings(self, branch: str) -> list[str] | None:
-        # Calls the SonarCloud issues API for the worker branch to get per-severity
-        # issue data for escalation classification.  Returns a list of severity
-        # strings (e.g. ['BLOCKER', 'CRITICAL']) or None when SONAR_TOKEN /
-        # SONAR_PROJECT_KEY are absent or the API call fails.  An empty list means
-        # the branch was scanned and has no open issues.
-        import base64
-        import ssl
-        import urllib.parse
-        import urllib.request
-
-        token = os.environ.get("SONAR_TOKEN")
-        project_key = os.environ.get("SONAR_PROJECT_KEY")
-        if not token or not project_key:
-            return None
-
-        params = urllib.parse.urlencode(
-            {
-                "componentKeys": project_key,
-                "branch": branch,
-                "resolved": "false",
-                "ps": "500",
-            }
-        )
-        url = f"https://sonarcloud.io/api/issues/search?{params}"
-        creds = base64.b64encode(f"{token}:".encode()).decode()
-        req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
-        ctx = ssl.create_default_context()
-        try:
-            with urllib.request.urlopen(  # nosec B310  # nosemgrep
-                req, timeout=10, context=ctx
-            ) as resp:
-                data: dict[str, object] = json.loads(resp.read())
-            issues = data.get("issues") or []
-            return [
-                str(issue["severity"])
-                for issue in (issues if isinstance(issues, list) else [])
-                if isinstance(issue, dict) and issue.get("severity")
-            ]
-        except Exception:
-            logger.debug(
-                "Could not fetch Sonar findings for branch %s", branch, exc_info=True
-            )
-        return None
+        return fetch_sonar_findings(branch)
 
     # ------------------------------------------------------------------
     # PR creation
@@ -1277,135 +781,25 @@ class Watcher:
         return pr_url
 
     # ------------------------------------------------------------------
-    # LiteLLM proxy
+    # Service shims — delegate to self._services; removed in test-split step
     # ------------------------------------------------------------------
 
     def _ensure_ollama_running(self) -> None:
-        """Start Ollama with the configured model if not already on _OLLAMA_PORT."""
-        import socket
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            already_up = sock.connect_ex(("localhost", _OLLAMA_PORT)) == 0
-
-        if already_up:
-            logger.info("Ollama already running on port %d", _OLLAMA_PORT)
-            return
-
-        config_path = self._repo_root / _LITELLM_CONFIG
-        model = _parse_ollama_model(config_path)
-        logger.info(
-            "Starting Ollama (model=%s, keepalive=%s)…", model, _OLLAMA_KEEPALIVE
-        )
-        if sys.platform == "win32":
-            creation_flags = subprocess.CREATE_NEW_CONSOLE
-        else:
-            creation_flags = 0
-        subprocess.Popen(  # nosec B603 B607
-            ["ollama", "run", model, "--keepalive", _OLLAMA_KEEPALIVE],
-            creationflags=creation_flags,
-        )
-        self._wait_for_ollama_ready()
-
-    def _wait_for_ollama_ready(self, timeout: float = 120.0) -> None:
-        """Poll TCP until Ollama's port accepts connections."""
-        import socket
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
-                if sock.connect_ex(("localhost", _OLLAMA_PORT)) == 0:
-                    return
-            time.sleep(0.5)
-        raise TimeoutError(f"Ollama not ready after {timeout}s.")
+        self._services.ensure_ollama_running()
 
     def _ensure_litellm_running(self) -> None:
-        """Start the LiteLLM proxy if not already listening on _LITELLM_PORT."""
-        import socket
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            already_up = sock.connect_ex(("localhost", _LITELLM_PORT)) == 0
-
-        if already_up:
-            logger.info("LiteLLM proxy already running on port %d", _LITELLM_PORT)
-            return
-
-        config_path = self._repo_root / _LITELLM_CONFIG
-        if not config_path.exists():
-            raise FileNotFoundError(
-                f"LiteLLM config not found: {config_path}. "
-                "Copy litellm-local.yaml.example to litellm-local.yaml "
-                "and configure it."
-            )
-
-        logger.info("Starting LiteLLM proxy (port %d)…", _LITELLM_PORT)
-        env = {**os.environ, "PYTHONUTF8": "1"}
-        if sys.platform == "win32":
-            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
-                [
-                    "litellm",
-                    "--config",
-                    str(config_path),
-                    "--port",
-                    str(_LITELLM_PORT),
-                    "--drop_params",
-                ],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-                env=env,
-            )
-        else:
-            log_path = self._repo_root / _CLAUDE_DIR / "litellm.log"
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_file = open(log_path, "wb")  # noqa: SIM115
-            logger.info("LiteLLM log: %s", log_path)
-            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
-                [
-                    "litellm",
-                    "--config",
-                    str(config_path),
-                    "--port",
-                    str(_LITELLM_PORT),
-                    "--drop_params",
-                ],
-                stdout=log_file,
-                stderr=log_file,
-                env=env,
-            )
-        self._wait_for_litellm_ready()
-
-    def _wait_for_litellm_ready(self, timeout: float = 60.0) -> None:
-        """Poll TCP until LiteLLM's port accepts connections or process dies."""
-        import socket
-
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._litellm_proc and self._litellm_proc.poll() is not None:
-                rc = self._litellm_proc.returncode
-                raise RuntimeError(
-                    f"LiteLLM proxy exited (rc={rc}). "
-                    f"Check .claude/litellm.log for details."
-                )
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
-                if sock.connect_ex(("localhost", _LITELLM_PORT)) == 0:
-                    return
-            time.sleep(0.5)
-        raise TimeoutError(
-            f"LiteLLM proxy not ready after {timeout}s. "
-            f"Check .claude/litellm.log for details."
-        )
+        self._services.ensure_litellm_running()
 
     def _stop_litellm_proxy(self) -> None:
-        if not self._litellm_proc:
-            return
-        logger.info("Stopping LiteLLM proxy (pid=%d)…", self._litellm_proc.pid)
-        self._litellm_proc.terminate()
-        try:
-            self._litellm_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            logger.info("LiteLLM proxy did not exit after 5s — sending kill")
-            self._litellm_proc.kill()
-        self._litellm_proc = None
+        self._services.stop()
+
+    @property
+    def _litellm_proc(self) -> subprocess.Popen[bytes] | None:
+        return self._services._litellm_proc
+
+    @_litellm_proc.setter
+    def _litellm_proc(self, value: subprocess.Popen[bytes] | None) -> None:
+        self._services._litellm_proc = value
 
     # ------------------------------------------------------------------
     # Graceful shutdown
@@ -1420,7 +814,7 @@ class Watcher:
         logger.info(
             "Signal %d received — finishing active workers then exiting", signum
         )
-        self._stop_litellm_proxy()
+        self._services.stop()
         self._running = False
 
     def _wait_for_active_workers(self) -> None:
@@ -1448,39 +842,3 @@ class Watcher:
             _PID_FILE.unlink()
         except FileNotFoundError:
             pass
-
-
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
-
-
-def is_watcher_running(pid_file: Path = _PID_FILE) -> bool:
-    """Return True if a watcher process is currently running."""
-    if not pid_file.exists():
-        return False
-    try:
-        pid = int(pid_file.read_text(encoding="utf-8").strip())
-    except (ValueError, OSError):
-        return False
-    # Check if process is alive (cross-platform)
-    if sys.platform == "win32":
-        import ctypes
-
-        handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)
-        if not handle:
-            return False
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return True
-    else:
-        try:
-            os.kill(pid, 0)
-            return True
-        except (ProcessLookupError, PermissionError):
-            return False
-
-
-def _to_metrics_mode(mode: str) -> ImplementationMode:
-    if mode in ("local", "cloud", "hybrid"):
-        return mode  # type: ignore[return-value]
-    return "cloud"
