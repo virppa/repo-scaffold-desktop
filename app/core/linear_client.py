@@ -6,14 +6,23 @@ No third-party HTTP dependencies — uses only urllib.request from stdlib.
 
 from __future__ import annotations
 
+import http.client
 import json
+import logging
 import os
+import time
+import urllib.error
 import urllib.request
 from typing import Any, cast
 
 _LINEAR_API_URL = "https://api.linear.app/graphql"
 
 DONE_STATE_TYPES = frozenset({"completed", "cancelled"})
+
+_RETRY_DELAYS = (1, 2, 4)
+_RETRYABLE_HTTP_CODES = frozenset({429, 500, 502, 503})
+
+logger = logging.getLogger(__name__)
 
 
 class LinearError(Exception):
@@ -206,8 +215,39 @@ class LinearClient:
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310
-            body = json.loads(resp.read())
-        if "errors" in body:
-            raise LinearError(f"Linear API error: {body['errors']}")
-        return body["data"]  # type: ignore[no-any-return]
+        last_exc: Exception | None = None
+        max_retries = len(_RETRY_DELAYS)
+        for attempt in range(max_retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310
+                    body: dict[str, Any] = json.loads(resp.read())
+                errors = body.get("errors")
+                if errors:
+                    raise LinearError(f"Linear API error: {errors}")
+                data = body.get("data")
+                if data is None:
+                    raise LinearError(f"Linear API returned no data: {body!r}")
+                return cast(dict[str, Any], data)
+            except LinearError:
+                raise
+            except urllib.error.HTTPError as exc:
+                if exc.code not in _RETRYABLE_HTTP_CODES:
+                    raise LinearError(
+                        f"Linear API HTTP {exc.code}: {exc.reason}"
+                    ) from exc
+                last_exc = exc
+            except (urllib.error.URLError, http.client.RemoteDisconnected) as exc:
+                last_exc = exc
+            if attempt < max_retries:
+                delay = _RETRY_DELAYS[attempt]
+                logger.warning(
+                    "Linear API transient error on attempt %d/%d — retrying in %ds: %s",
+                    attempt + 1,
+                    max_retries + 1,
+                    delay,
+                    last_exc,
+                )
+                time.sleep(delay)
+        raise LinearError(
+            f"Linear API failed after {max_retries + 1} attempts: {last_exc}"
+        ) from last_exc
