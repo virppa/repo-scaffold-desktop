@@ -37,7 +37,8 @@ from app.core.metrics import ImplementationMode, MetricsStore, Outcome, TicketMe
 
 logger = logging.getLogger(__name__)
 
-_PID_FILE = Path(".claude/watcher.pid")
+_CLAUDE_DIR = ".claude"
+_PID_FILE = Path(_CLAUDE_DIR) / "watcher.pid"
 _LITELLM_PORT = 8082
 _LITELLM_CONFIG = "litellm-local.yaml"
 _LOCAL_MODEL = "qwen3-coder:30b"
@@ -344,7 +345,7 @@ class Watcher:
         # TODO: detect when a predecessor goes to 'Blocked' (failed) and surface it
         # as a comment rather than waiting forever.
         """
-        artifacts_root = self._repo_root / ".claude" / "artifacts"
+        artifacts_root = self._repo_root / _CLAUDE_DIR / "artifacts"
         if not artifacts_root.exists():
             return
 
@@ -370,25 +371,7 @@ class Watcher:
                 self._notify_promotion(manifest)
                 continue
 
-            all_satisfied = True
-            for blocker_id in manifest.blocked_by_tickets:
-                try:
-                    state_type = self._linear.get_issue_state_type(blocker_id)
-                except Exception as exc:
-                    logger.warning(
-                        "Could not fetch state for blocker %s of %s: %s",
-                        blocker_id,
-                        manifest.ticket_id,
-                        exc,
-                    )
-                    all_satisfied = False
-                    break
-
-                if state_type is None or state_type not in DONE_STATE_TYPES:
-                    all_satisfied = False
-                    break
-
-            if all_satisfied:
+            if self._all_blockers_satisfied(manifest):
                 logger.info(
                     "All blockers for %s satisfied — promoting to ReadyForLocal",
                     manifest.ticket_id,
@@ -397,6 +380,22 @@ class Watcher:
                     manifest, manifest_path, "ReadyForLocal"
                 )
                 self._notify_promotion(manifest)
+
+    def _all_blockers_satisfied(self, manifest: ExecutionManifest) -> bool:
+        for blocker_id in manifest.blocked_by_tickets:
+            try:
+                state_type = self._linear.get_issue_state_type(blocker_id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not fetch state for blocker %s of %s: %s",
+                    blocker_id,
+                    manifest.ticket_id,
+                    exc,
+                )
+                return False
+            if state_type is None or state_type not in DONE_STATE_TYPES:
+                return False
+        return True
 
     def _notify_promotion(self, manifest: ExecutionManifest) -> None:
         if not manifest.linear_id:
@@ -719,7 +718,7 @@ class Watcher:
         non-interactively and ExitPlanMode would silently terminate the session.
         Returns the list of backup paths so the caller can restore them later.
         """
-        plans_dir = Path.home() / ".claude" / "plans"
+        plans_dir = Path.home() / _CLAUDE_DIR / "plans"
         if not plans_dir.exists():
             return []
         backup_dir = plans_dir.parent / "plans_worker_backup"
@@ -737,7 +736,7 @@ class Watcher:
         """Restore plan files moved by _backup_plan_files."""
         if not backed_up:
             return
-        plans_dir = Path.home() / ".claude" / "plans"
+        plans_dir = Path.home() / _CLAUDE_DIR / "plans"
         plans_dir.mkdir(exist_ok=True)
         for plan_file in backed_up:
             shutil.move(str(plan_file), plans_dir / plan_file.name)
@@ -825,7 +824,7 @@ class Watcher:
         Returns None if the skill file cannot be read (caller falls back to
         the /implement-ticket shortcut).
         """
-        skill_path = self._repo_root / ".claude" / "commands" / "implement-ticket.md"
+        skill_path = self._repo_root / _CLAUDE_DIR / "commands" / "implement-ticket.md"
         try:
             return skill_path.read_text(encoding="utf-8").replace(
                 "$ARGUMENTS", ticket_id
@@ -1111,7 +1110,7 @@ class Watcher:
                 "and configure it."
             )
 
-        log_path = self._repo_root / ".claude" / "litellm.log"
+        log_path = self._repo_root / _CLAUDE_DIR / "litellm.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_file = open(log_path, "wb")  # noqa: SIM115
         logger.info(
