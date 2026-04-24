@@ -25,38 +25,24 @@ import time
 from pathlib import Path
 
 from app.core.escalation_policy import EscalationPolicy
-from app.core.linear_client import DONE_STATE_TYPES, LinearError
+from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import MetricsStore, Outcome, TicketMetrics
-from app.core.watcher_helpers import (
-    _POLICY_FLAGS,
-    _parse_worker_usage,
-    _read_result_flags,
-    check_allowed_paths_overlap,
-    resolve_effective_mode,
-)
+from app.core.metrics import MetricsStore
+from app.core.watcher_finalize import finalize_worker, safe_set_state
+from app.core.watcher_helpers import check_allowed_paths_overlap, resolve_effective_mode
 from app.core.watcher_services import ServiceManager
-from app.core.watcher_subprocess import (
-    create_pr,
-    fetch_sonar_findings,
-    launch_worker,
-    run_checks,
-)
+from app.core.watcher_subprocess import launch_worker
 from app.core.watcher_types import (
     _CLAUDE_DIR,
-    _LOCAL_MODEL,
     _PID_FILE,
     ActiveWorker,
     LinearClientProtocol,
-    _to_metrics_mode,
 )
 from app.core.watcher_worktrees import (
     backup_plan_files,
     cleanup_worktree,
     copy_manifest_to_worktree,
     create_worktree,
-    preserve_worker_artifacts,
-    restore_plan_files,
     write_worker_pytest_config,
 )
 
@@ -255,7 +241,7 @@ class Watcher:
         self._transition_waiting_manifest(manifest, manifest_path, "Backlog")
         if not manifest.linear_id:
             return
-        self._safe_set_state(manifest.linear_id, "Backlog", manifest.ticket_id)
+        safe_set_state(self._linear, manifest.linear_id, "Backlog", manifest.ticket_id)
         try:
             msg = (
                 f"Predecessor {blocker_id} moved to {state_type}"
@@ -290,7 +276,9 @@ class Watcher:
     def _notify_promotion(self, manifest: ExecutionManifest) -> None:
         if not manifest.linear_id:
             return
-        self._safe_set_state(manifest.linear_id, "ReadyForLocal", manifest.ticket_id)
+        safe_set_state(
+            self._linear, manifest.linear_id, "ReadyForLocal", manifest.ticket_id
+        )
         try:
             self._linear.post_comment(
                 manifest.linear_id,
@@ -381,8 +369,11 @@ class Watcher:
         copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)
         write_worker_pytest_config(worktree_path)
 
-        self._safe_set_state(
-            linear_id, manifest.ticket_state_map.in_progress_local, ticket_id
+        safe_set_state(
+            self._linear,
+            linear_id,
+            manifest.ticket_state_map.in_progress_local,
+            ticket_id,
         )
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
 
@@ -425,182 +416,22 @@ class Watcher:
                 rc,
                 elapsed,
             )
-            self._finalize_worker(worker, returncode=rc, wall_time=elapsed)
+            finalize_worker(
+                worker,
+                returncode=rc,
+                wall_time=elapsed,
+                linear=self._linear,
+                metrics=self._metrics,
+                escalation_policy=self._escalation_policy,
+                repo_root=self._repo_root,
+                mode=self._mode,
+                project_id=self._project_id,
+            )
         return still_running
 
     def _reap_finished_workers(self) -> None:
         self._local_active = self._reap_pool(self._local_active)
         self._cloud_active = self._reap_pool(self._cloud_active)
-
-    def _safe_set_state(self, linear_id: str, state: str, ticket_id: str) -> None:
-        try:
-            self._linear.set_state(linear_id, state)
-        except LinearError as exc:
-            logger.warning(
-                "set_state failed for %s (state=%s): %s", ticket_id, state, exc
-            )
-
-    def _attempt_pr(
-        self,
-        manifest: ExecutionManifest,
-        worker: ActiveWorker,
-        ticket_id: str,
-        linear_id: str,
-    ) -> Outcome:
-        try:
-            pr_url = create_pr(manifest, worker.worktree_path)
-        except subprocess.CalledProcessError as exc:
-            err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
-            logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
-            self._safe_set_state(linear_id, manifest.ticket_state_map.failed, ticket_id)
-            try:
-                body = f"PR creation failed for `{ticket_id}`:\n```\n{err_detail}\n```"
-                self._linear.post_comment(linear_id, body)
-            except Exception:
-                logger.warning(
-                    "Could not post failure comment to Linear for %s", ticket_id
-                )
-            return "failure"
-        logger.info("PR created for %s: %s", ticket_id, pr_url)
-        return "success"
-
-    def _finalize_worker(
-        self, worker: ActiveWorker, *, returncode: int, wall_time: float
-    ) -> None:
-        ticket_id = worker.ticket_id
-        linear_id = worker.linear_id
-        manifest = worker.manifest
-
-        outcome: Outcome
-        escalated = False
-        artifacts_preserved = False
-        sonar_findings: list[str] | None = None
-
-        if returncode != 0:
-            logger.error("Worker %s exited non-zero (%d)", ticket_id, returncode)
-            outcome = "failure"
-            if manifest.failure_policy.escalate_to_cloud:
-                logger.info("Escalating %s to cloud per failure policy", ticket_id)
-                escalated = True
-            self._safe_set_state(linear_id, manifest.ticket_state_map.failed, ticket_id)
-        else:
-            checks_ok = run_checks(manifest, worker.worktree_path)
-            if not checks_ok:
-                worker.retry_count += 1
-            if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
-                outcome = "failure"
-                self._safe_set_state(
-                    linear_id, manifest.ticket_state_map.failed, ticket_id
-                )
-            else:
-                preserve_worker_artifacts(self._repo_root, worker)
-                artifacts_preserved = True
-
-                result_path = self._repo_root / manifest.artifact_paths.result_json
-                flags = _read_result_flags(result_path)
-                action = self._escalation_policy.classify_result(**flags)
-
-                if action == "escalate":
-                    triggering = next(
-                        (f for f in _POLICY_FLAGS if flags.get(f)), "unknown"
-                    )
-                    logger.info(
-                        "Escalating %s to cloud (flag=%s)", ticket_id, triggering
-                    )
-                    escalated = True
-                    self._safe_set_state(linear_id, "In Progress", ticket_id)
-                    try:
-                        self._linear.post_comment(
-                            linear_id,
-                            f"Local worker escalating `{ticket_id}` to cloud. "
-                            f"Triggering flag: `{triggering}`.",
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Could not post escalation comment for %s", ticket_id
-                        )
-                    outcome = "escalated"
-                elif action == "human":
-                    logger.info("Human review required for %s per policy", ticket_id)
-                    try:
-                        self._linear.post_comment(
-                            linear_id,
-                            f"Human review required for `{ticket_id}` before "
-                            f"proceeding. Please inspect the result artifact.",
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Could not post human review comment for %s", ticket_id
-                        )
-                    outcome = "aborted"
-                else:  # fix_locally — classify Sonar severities before creating PR
-                    sonar_findings = fetch_sonar_findings(manifest.worker_branch)
-                    sonar_escalate = False
-                    if sonar_findings:
-                        for severity in sonar_findings:
-                            sonar_action = (
-                                self._escalation_policy.classify_sonar_finding(
-                                    severity.lower()
-                                )
-                            )
-                            if sonar_action == "escalate":
-                                sonar_escalate = True
-                            else:
-                                logger.warning(
-                                    "Sonar finding for %s: severity=%s — fix_locally",
-                                    ticket_id,
-                                    severity,
-                                )
-                    if sonar_escalate:
-                        escalated = True
-                        self._safe_set_state(linear_id, "In Progress", ticket_id)
-                        try:
-                            self._linear.post_comment(
-                                linear_id,
-                                f"Local worker escalating `{ticket_id}` to cloud due "
-                                f"to Sonar finding requiring immediate action.",
-                            )
-                        except Exception:
-                            logger.warning(
-                                "Could not post Sonar escalation comment for %s",
-                                ticket_id,
-                            )
-                        outcome = "escalated"
-                    else:
-                        outcome = self._attempt_pr(
-                            manifest, worker, ticket_id, linear_id
-                        )
-
-        log_path = (
-            worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-        )
-        local_tokens, context_compactions = _parse_worker_usage(log_path)
-        eff = resolve_effective_mode(self._mode, manifest.implementation_mode)
-        self._metrics.record(
-            TicketMetrics(
-                ticket_id=ticket_id,
-                project_id=self._project_id,
-                epic_id=manifest.epic_id,
-                implementation_mode=_to_metrics_mode(eff),
-                local_used=(eff == "local"),
-                local_model=(_LOCAL_MODEL if eff == "local" else None),
-                cloud_used=(eff == "cloud"),
-                local_tokens=local_tokens,
-                local_wall_time=wall_time,
-                escalated_to_cloud=escalated,
-                outcome=outcome,
-                retry_count=worker.retry_count,
-                context_compactions=context_compactions,
-                sonar_findings_count=(
-                    len(sonar_findings) if sonar_findings is not None else None
-                ),
-            )
-        )
-
-        restore_plan_files(worker.backed_up_plans)
-        if not artifacts_preserved:
-            preserve_worker_artifacts(self._repo_root, worker)
-        cleanup_worktree(self._repo_root, worker.worktree_path)
 
     # ------------------------------------------------------------------
     # Manifest loading
