@@ -57,3 +57,6 @@ litellm-local.yaml
 # Claude Code watcher logs
 .claude/*.log
 .claude/*.pid
+
+# Benchmark fixtures (generated locally, not committed)
+scripts/bench/fixtures/
