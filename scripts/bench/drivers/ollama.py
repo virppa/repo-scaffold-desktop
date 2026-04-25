@@ -39,15 +39,23 @@ class OllamaDriver:
             return False
 
     def generate(
-        self, model: str, messages: list[dict[str, str]], context_size: int
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        context_size: int,
+        max_tokens: int,
+        temperature: float,
+        seed: int | None,
     ) -> GenerationResult:
+        options: dict[str, int | float] = {
+            "num_ctx": context_size,
+            "num_predict": max_tokens,
+            "temperature": temperature,
+        }
+        if seed is not None:
+            options["seed"] = seed
         payload = json.dumps(
-            {
-                "model": model,
-                "messages": messages,
-                "stream": True,
-                "options": {"num_ctx": context_size},
-            }
+            {"model": model, "messages": messages, "stream": True, "options": options}
         ).encode()
         req = urllib.request.Request(
             f"{self._base_url}/api/chat",

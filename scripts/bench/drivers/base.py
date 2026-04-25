@@ -24,5 +24,11 @@ class GenerationResult:
 class BackendDriver(Protocol):
     def is_available(self) -> bool: ...
     def generate(
-        self, model: str, messages: list[dict[str, str]], context_size: int
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        context_size: int,
+        max_tokens: int,
+        temperature: float,
+        seed: int | None,
     ) -> GenerationResult: ...

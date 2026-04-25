@@ -21,4 +21,11 @@ _TEXT = (
 
 def make_coding_prompt() -> BenchPrompt:
     prompt_hash = hashlib.sha256(_TEXT.encode()).hexdigest()
-    return BenchPrompt(text=_TEXT, prompt_hash=prompt_hash, task_type="coding")
+    return BenchPrompt(
+        text=_TEXT,
+        prompt_hash=prompt_hash,
+        task_type="coding",
+        max_tokens=512,
+        temperature=0.0,
+        seed=42,
+    )

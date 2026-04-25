@@ -25,4 +25,11 @@ def make_prefill_shared_prompt(suffix_index: int = 0) -> BenchPrompt:
     suffix = _SUFFIX_TEMPLATE.format(index=suffix_index)
     text = doc + suffix
     prompt_hash = hashlib.sha256(text.encode()).hexdigest()
-    return BenchPrompt(text=text, prompt_hash=prompt_hash, task_type="prefill_shared")
+    return BenchPrompt(
+        text=text,
+        prompt_hash=prompt_hash,
+        task_type="prefill_shared",
+        max_tokens=128,
+        temperature=0.7,
+        seed=None,
+    )

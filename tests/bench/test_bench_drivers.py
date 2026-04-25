@@ -33,6 +33,11 @@ def _mock_urlopen(body: bytes) -> MagicMock:
     return mock
 
 
+def _captured_payload(mock_open: MagicMock) -> dict:
+    """Extract and decode the JSON payload sent to urlopen."""
+    return json.loads(mock_open.call_args[0][0].data)
+
+
 # ---------------------------------------------------------------------------
 # OllamaDriver
 # ---------------------------------------------------------------------------
@@ -74,7 +79,9 @@ _OLLAMA_WARM_BODY = _ndjson(
 def test_ollama_generate_cold_start_timings():
     with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_COLD_BODY)):
         driver = OllamaDriver()
-        result = driver.generate("q", [{"role": "user", "content": "hi"}], 4096)
+        result = driver.generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
 
     assert result.error is None
     assert result.text == "Hello world"
@@ -90,7 +97,9 @@ def test_ollama_generate_cold_start_timings():
 def test_ollama_generate_warm_start_no_load_duration():
     with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_WARM_BODY)):
         driver = OllamaDriver()
-        result = driver.generate("q", [{"role": "user", "content": "hi"}], 4096)
+        result = driver.generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
 
     assert result.error is None
     assert result.raw_load_duration_ns is None
@@ -106,7 +115,9 @@ def test_ollama_generate_returns_error_on_url_error():
         side_effect=urllib.error.URLError("Connection refused"),
     ):
         driver = OllamaDriver()
-        result = driver.generate("q", [{"role": "user", "content": "hi"}], 4096)
+        result = driver.generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
 
     assert result.error is not None
     assert "Connection refused" in result.error
@@ -115,9 +126,49 @@ def test_ollama_generate_returns_error_on_url_error():
 def test_ollama_generate_returns_error_on_generic_exception():
     with patch("urllib.request.urlopen", side_effect=OSError("socket error")):
         driver = OllamaDriver()
-        result = driver.generate("q", [{"role": "user", "content": "hi"}], 4096)
+        result = driver.generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
 
     assert result.error is not None
+
+
+def test_ollama_generate_payload_contains_num_predict_and_temperature():
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = io.BytesIO(_OLLAMA_WARM_BODY)
+        OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 32768, 256, 0.7, None
+        )
+        payload = _captured_payload(mock_open)
+
+    assert payload["options"]["num_ctx"] == 32768
+    assert payload["options"]["num_predict"] == 256
+    assert payload["options"]["temperature"] == pytest.approx(0.7)
+    assert "seed" not in payload["options"]
+
+
+def test_ollama_generate_payload_includes_seed_when_set():
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = io.BytesIO(_OLLAMA_WARM_BODY)
+        OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 512, 0.0, 42
+        )
+        payload = _captured_payload(mock_open)
+
+    assert payload["options"]["temperature"] == pytest.approx(0.0)
+    assert payload["options"]["num_predict"] == 512
+    assert payload["options"]["seed"] == 42
+
+
+def test_ollama_generate_payload_omits_seed_when_none():
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = io.BytesIO(_OLLAMA_WARM_BODY)
+        OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 128, 0.7, None
+        )
+        payload = _captured_payload(mock_open)
+
+    assert "seed" not in payload["options"]
 
 
 def test_ollama_is_available_returns_false_when_unreachable():
@@ -166,7 +217,9 @@ _VLLM_BODY = _sse(
 def test_vllm_generate_success():
     with patch("urllib.request.urlopen", _mock_urlopen(_VLLM_BODY)):
         driver = VllmDriver()
-        result = driver.generate("mistral", [{"role": "user", "content": "hi"}], 4096)
+        result = driver.generate(
+            "mistral", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
 
     assert result.error is None
     assert result.text == "Hello world"
@@ -181,7 +234,9 @@ def test_vllm_generate_returns_error_on_url_error():
         side_effect=urllib.error.URLError("Connection refused"),
     ):
         driver = VllmDriver()
-        result = driver.generate("mistral", [{"role": "user", "content": "hi"}], 4096)
+        result = driver.generate(
+            "mistral", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
 
     assert result.error is not None
     assert "Connection refused" in result.error
@@ -190,9 +245,37 @@ def test_vllm_generate_returns_error_on_url_error():
 def test_vllm_generate_returns_error_on_generic_exception():
     with patch("urllib.request.urlopen", side_effect=RuntimeError("boom")):
         driver = VllmDriver()
-        result = driver.generate("mistral", [{"role": "user", "content": "hi"}], 4096)
+        result = driver.generate(
+            "mistral", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
 
     assert result.error is not None
+
+
+def test_vllm_generate_payload_contains_max_tokens_and_temperature():
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = io.BytesIO(_VLLM_BODY)
+        VllmDriver().generate(
+            "m", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+        payload = _captured_payload(mock_open)
+
+    assert payload["max_tokens"] == 256
+    assert payload["temperature"] == pytest.approx(0.7)
+    assert "seed" not in payload
+
+
+def test_vllm_generate_payload_includes_seed_when_set():
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = io.BytesIO(_VLLM_BODY)
+        VllmDriver().generate(
+            "m", [{"role": "user", "content": "hi"}], 4096, 512, 0.0, 42
+        )
+        payload = _captured_payload(mock_open)
+
+    assert payload["max_tokens"] == 512
+    assert payload["temperature"] == pytest.approx(0.0)
+    assert payload["seed"] == 42
 
 
 def test_vllm_is_available_returns_false_when_unreachable():

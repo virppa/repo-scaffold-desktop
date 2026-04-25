@@ -60,9 +60,14 @@ def make_prefill_unshared_prompt(target: int = 50000, seed: int = 42) -> BenchPr
     text = " ".join(words)
     token_count_estimate = len(text) // _CHARS_PER_TOKEN
     prompt_hash = hashlib.sha256(text.encode()).hexdigest()
+    # seed here is the RNG seed for text generation, not the LLM generation seed.
+    # BenchPrompt.seed (None) controls LLM reproducibility separately.
     return BenchPrompt(
         text=text,
         prompt_hash=prompt_hash,
         task_type="prefill_unshared",
+        max_tokens=128,
+        temperature=0.7,
+        seed=None,
         token_count_estimate=token_count_estimate,
     )
