@@ -288,6 +288,8 @@ def test_vllm_is_available_returns_false_when_unreachable():
 
 
 def test_vllm_is_available_returns_true_when_reachable():
-    with patch("urllib.request.urlopen", _mock_urlopen(b"ok")):
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = io.BytesIO(b"ok")
         driver = VllmDriver()
         assert driver.is_available() is True
+        assert mock_open.call_args[0][0].full_url.endswith("/v1/models")
