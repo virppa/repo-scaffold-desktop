@@ -76,8 +76,9 @@ class TestRoundTrip:
         store = _store(tmp_path)
         run = _run()
         store.record(run)
-        result = store.get_by_run_id("run-001")
-        assert result is not None
+        results = store.get_by_run_id("run-001")
+        assert len(results) == 1
+        result = results[0]
         assert result.run_id == "run-001"
         assert result.case_id == "case-a"
         assert result.repeat_index == 1
@@ -86,8 +87,9 @@ class TestRoundTrip:
         store = _store(tmp_path)
         run = _run()
         store.record(run)
-        result = store.get_by_run_id("run-001")
-        assert result is not None
+        results = store.get_by_run_id("run-001")
+        assert len(results) == 1
+        result = results[0]
         assert result.tier is None
         assert result.context_size is None
         assert result.concurrency is None
@@ -164,9 +166,9 @@ class TestRoundTrip:
             error_message=None,
         )
         store.record(run)
-        result = store.get_by_run_id("run-001")
-        assert result is not None
-        assert result == run
+        results = store.get_by_run_id("run-001")
+        assert len(results) == 1
+        assert results[0] == run
 
     def test_bool_fields_round_trip_true(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
@@ -179,8 +181,9 @@ class TestRoundTrip:
             quality_mypy_passed=True,
         )
         store.record(run)
-        result = store.get_by_run_id("run-001")
-        assert result is not None
+        results = store.get_by_run_id("run-001")
+        assert len(results) == 1
+        result = results[0]
         assert result.cpu_offload_detected is True
         assert result.ollama_model_loaded is True
         assert result.quality_task_success is True
@@ -199,19 +202,20 @@ class TestRoundTrip:
             quality_mypy_passed=False,
         )
         store.record(run)
-        result = store.get_by_run_id("run-001")
-        assert result is not None
+        results = store.get_by_run_id("run-001")
+        assert len(results) == 1
+        result = results[0]
         assert result.cpu_offload_detected is False
         assert result.ollama_model_loaded is False
         assert result.quality_task_success is False
 
-    def test_missing_run_returns_none(self, tmp_path: Path) -> None:
+    def test_missing_run_returns_empty_list(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
-        assert store.get_by_run_id("nonexistent") is None
+        assert store.get_by_run_id("nonexistent") == []
 
 
 class TestAppendOnly:
-    def test_duplicate_run_id_raises(self, tmp_path: Path) -> None:
+    def test_duplicate_run_case_repeat_raises(self, tmp_path: Path) -> None:
         import sqlite3 as _sqlite3
 
         store = _store(tmp_path)
@@ -224,9 +228,30 @@ class TestAppendOnly:
         store.record(_run(run_id="run-1"))
         store.record(_run(run_id="run-2"))
         store.record(_run(run_id="run-3"))
-        assert store.get_by_run_id("run-1") is not None
-        assert store.get_by_run_id("run-2") is not None
-        assert store.get_by_run_id("run-3") is not None
+        assert len(store.get_by_run_id("run-1")) == 1
+        assert len(store.get_by_run_id("run-2")) == 1
+        assert len(store.get_by_run_id("run-3")) == 1
+
+
+class TestGetByRunId:
+    def test_returns_all_cases_for_run(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run(run_id="batch-1", case_id="case-a", repeat_index=0))
+        store.record(_run(run_id="batch-1", case_id="case-a", repeat_index=1))
+        store.record(_run(run_id="batch-1", case_id="case-b", repeat_index=0))
+        store.record(_run(run_id="batch-2", case_id="case-a", repeat_index=0))
+        results = store.get_by_run_id("batch-1")
+        assert len(results) == 3
+        assert all(r.run_id == "batch-1" for r in results)
+        assert {(r.case_id, r.repeat_index) for r in results} == {
+            ("case-a", 0),
+            ("case-a", 1),
+            ("case-b", 0),
+        }
+
+    def test_unknown_run_returns_empty_list(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        assert store.get_by_run_id("no-such-run") == []
 
 
 class TestGetByCaseId:
