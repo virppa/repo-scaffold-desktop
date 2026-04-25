@@ -104,6 +104,11 @@ class OllamaDriver:
             raw_eval_duration_ns / 1e9 if raw_eval_duration_ns is not None else None
         )
 
+        # Fall back to Ollama-reported prompt_eval_duration when client-side TTFT
+        # was not captured (e.g. thinking models stream empty content chunks first).
+        if ttft_s is None and final_frame.get("prompt_eval_duration"):
+            ttft_s = final_frame["prompt_eval_duration"] / 1e9
+
         return GenerationResult(
             text="".join(text_parts),
             ttft_s=ttft_s,
