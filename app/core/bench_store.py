@@ -22,7 +22,7 @@ _DB_NAME = "bench.db"
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS bench_run (
-    run_id                  TEXT    NOT NULL PRIMARY KEY,
+    run_id                  TEXT    NOT NULL,
     case_id                 TEXT    NOT NULL,
     repeat_index            INTEGER NOT NULL,
     tier                    TEXT,
@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS bench_run (
     quality_mypy_passed     INTEGER,
     outcome                 TEXT,
     error_message           TEXT,
-    recorded_at             TEXT NOT NULL DEFAULT (datetime('now'))
+    recorded_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (run_id, case_id, repeat_index)
 )
 """
 
@@ -235,16 +236,14 @@ class BenchStore:
         with self._connect() as conn:
             conn.execute(_INSERT, d)
 
-    def get_by_run_id(self, run_id: str) -> BenchRun | None:
-        """Return the BenchRun for the given run_id, or None if not found."""
+    def get_by_run_id(self, run_id: str) -> list[BenchRun]:
+        """Return all BenchRun records for the given run_id, oldest first."""
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM bench_run WHERE run_id = ?",
+            rows = conn.execute(
+                "SELECT * FROM bench_run WHERE run_id = ? ORDER BY recorded_at",
                 (run_id,),
-            ).fetchone()
-        if row is None:
-            return None
-        return _row_to_bench_run(row)
+            ).fetchall()
+        return [_row_to_bench_run(r) for r in rows]
 
     def get_by_case_id(self, case_id: str) -> list[BenchRun]:
         """Return all BenchRun records for a given case_id, oldest first."""
