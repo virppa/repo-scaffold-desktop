@@ -152,15 +152,40 @@ def _execute_finalization(
         escalated = bool(manifest.failure_policy.escalate_to_cloud)
         if escalated:
             logger.info("Escalating %s to cloud per failure policy", ticket_id)
-        safe_set_state(linear, linear_id, manifest.ticket_state_map.failed, ticket_id)
+            safe_set_state(linear, linear_id, "In Progress", ticket_id)
+            _try_post_comment(
+                linear,
+                linear_id,
+                ticket_id,
+                f"Local worker failed for `{ticket_id}` (non-zero exit). "
+                f"Escalating to cloud per failure policy.",
+            )
+        else:
+            safe_set_state(
+                linear, linear_id, manifest.ticket_state_map.failed, ticket_id
+            )
         return "failure", escalated, False, None
 
     checks_ok = run_checks(manifest, worker.worktree_path)
     if not checks_ok:
         worker.retry_count += 1
     if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
-        safe_set_state(linear, linear_id, manifest.ticket_state_map.failed, ticket_id)
-        return "failure", False, False, None
+        escalated = bool(manifest.failure_policy.escalate_to_cloud)
+        if escalated:
+            logger.info("Escalating %s to cloud after check failure", ticket_id)
+            safe_set_state(linear, linear_id, "In Progress", ticket_id)
+            _try_post_comment(
+                linear,
+                linear_id,
+                ticket_id,
+                f"Local worker failed checks for `{ticket_id}`. "
+                f"Escalating to cloud per failure policy.",
+            )
+        else:
+            safe_set_state(
+                linear, linear_id, manifest.ticket_state_map.failed, ticket_id
+            )
+        return "failure", escalated, False, None
 
     preserve_worker_artifacts(repo_root, worker)
     flags = _read_result_flags(repo_root / manifest.artifact_paths.result_json)
