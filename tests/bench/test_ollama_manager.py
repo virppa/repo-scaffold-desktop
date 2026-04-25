@@ -46,24 +46,22 @@ _FLUSH_RESPONSE = json.dumps({}).encode()
 def test_get_ps_status_returns_model_status():
     with patch("urllib.request.urlopen", _mock_urlopen(_PS_RESPONSE)):
         manager = OllamaManager()
-        statuses = manager.get_ps_status()
+        status = manager.get_ps_status("llama3:latest")
 
-    assert len(statuses) == 1
-    s = statuses[0]
-    assert isinstance(s, ModelStatus)
-    assert s.name == "llama3:latest"
-    assert s.size == 4_000_000_000
-    assert s.size_vram == 4_000_000_000
-    assert s.processor_status == "100% GPU"
-    assert s.expires_at == "2024-12-31T23:59:59Z"
+    assert isinstance(status, ModelStatus)
+    assert status.name == "llama3:latest"
+    assert status.size == 4_000_000_000
+    assert status.size_vram == 4_000_000_000
+    assert status.processor_status == "100% GPU"
+    assert status.expires_at == "2024-12-31T23:59:59Z"
 
 
-def test_get_ps_status_returns_empty_list_when_no_models():
+def test_get_ps_status_returns_none_when_not_loaded():
     with patch(
         "urllib.request.urlopen", _mock_urlopen(json.dumps({"models": []}).encode())
     ):
         manager = OllamaManager()
-        assert manager.get_ps_status() == []
+        assert manager.get_ps_status("llama3:latest") is None
 
 
 def test_get_ps_status_processor_status_defaults_to_unknown():
@@ -81,9 +79,10 @@ def test_get_ps_status_processor_status_defaults_to_unknown():
     ).encode()
     with patch("urllib.request.urlopen", _mock_urlopen(body)):
         manager = OllamaManager()
-        statuses = manager.get_ps_status()
+        status = manager.get_ps_status("phi3:latest")
 
-    assert statuses[0].processor_status == "unknown"
+    assert status is not None
+    assert status.processor_status == "unknown"
 
 
 # ---------------------------------------------------------------------------

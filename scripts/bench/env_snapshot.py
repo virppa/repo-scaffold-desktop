@@ -11,6 +11,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from .config import BenchConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,9 +27,7 @@ class EnvSnapshot:
     settings_hash: str
 
     @classmethod
-    def capture(
-        cls, backend: str, model: str, settings: dict[str, Any]
-    ) -> "EnvSnapshot":
+    def capture(cls, backend: str, model: str, config: BenchConfig) -> "EnvSnapshot":
         gpu_driver, cuda_ver = _get_nvidia_info()
         return cls(
             backend=backend,
@@ -36,7 +36,7 @@ class EnvSnapshot:
             cuda_version=cuda_ver,
             python_version=sys.version,
             os_version=platform.platform(),
-            settings_hash=_hash_settings(settings),
+            settings_hash=_hash_settings(config.model_dump()),
         )
 
 

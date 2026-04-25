@@ -98,18 +98,18 @@ class OllamaManager:
         with urllib.request.urlopen(req, timeout=30) as resp:
             resp.read()
 
-    def get_ps_status(self) -> list[ModelStatus]:
-        """Return currently loaded models from /api/ps."""
+    def get_ps_status(self, model_id: str) -> ModelStatus | None:
+        """Return status of model_id from /api/ps, or None if not loaded."""
         req = urllib.request.Request(f"{self._base_url}/api/ps")
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-        return [
-            ModelStatus(
-                name=m["name"],
-                size=m.get("size", 0),
-                size_vram=m.get("size_vram", 0),
-                processor_status=m.get("processor", "unknown"),
-                expires_at=m.get("expires_at", ""),
-            )
-            for m in data.get("models", [])
-        ]
+        for m in data.get("models", []):
+            if m["name"] == model_id:
+                return ModelStatus(
+                    name=m["name"],
+                    size=m.get("size", 0),
+                    size_vram=m.get("size_vram", 0),
+                    processor_status=m.get("processor", "unknown"),
+                    expires_at=m.get("expires_at", ""),
+                )
+        return None
