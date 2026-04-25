@@ -68,8 +68,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--config",
-        default="bench.toml",
-        help="Path to bench.toml (default: bench.toml)",
+        default="config/bench.toml",
+        help="Path to bench.toml (default: config/bench.toml)",
     )
     parser.add_argument(
         "--tier",
