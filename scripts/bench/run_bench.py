@@ -12,16 +12,14 @@ from __future__ import annotations
 
 import argparse
 import logging
-import platform
-import sqlite3
 import subprocess  # nosec B404
 import sys
 import time
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
+from app.core.bench_store import BenchRun, BenchStore
 from scripts.bench.config import BenchCase, BenchConfig
 from scripts.bench.drivers.ollama import OllamaDriver
 from scripts.bench.drivers.vllm import VllmDriver
@@ -38,135 +36,7 @@ from scripts.bench.tasks.speed import make_speed_prompt
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
-# ── DB constants (mirrors app/core/bench_store.py — no app.* imports allowed) ─
-
-_APP_DIR = "repo-scaffold"
-_DB_NAME = "bench.db"
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
-
-_CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS bench_run (
-    run_id                  TEXT    NOT NULL PRIMARY KEY,
-    case_id                 TEXT    NOT NULL,
-    repeat_index            INTEGER NOT NULL,
-    tier                    TEXT,
-    context_size            INTEGER,
-    concurrency             INTEGER,
-    backend_id              TEXT,
-    model_id                TEXT,
-    settings_hash           TEXT,
-    prompt_hash             TEXT,
-    backend_base_url        TEXT,
-    gpu_driver_version      TEXT,
-    cuda_version            TEXT,
-    python_version          TEXT,
-    os_version              TEXT,
-    ttft_s                  REAL,
-    wall_time_s             REAL,
-    throughput_tok_s        REAL,
-    prompt_tokens           INTEGER,
-    completion_tokens       INTEGER,
-    total_tokens            INTEGER,
-    peak_vram_gb            REAL,
-    avg_gpu_util_pct        REAL,
-    avg_gpu_mem_util_pct    REAL,
-    avg_power_w             REAL,
-    peak_temp_c             REAL,
-    avg_sm_clock_mhz        REAL,
-    avg_mem_clock_mhz       REAL,
-    peak_ram_gb             REAL,
-    cpu_offload_detected    INTEGER,
-    ollama_model_loaded     INTEGER,
-    ollama_num_ctx          INTEGER,
-    quality_task_success    INTEGER,
-    quality_pytest_passed   INTEGER,
-    quality_ruff_passed     INTEGER,
-    quality_mypy_passed     INTEGER,
-    outcome                 TEXT,
-    error_message           TEXT,
-    recorded_at             TEXT NOT NULL DEFAULT (datetime('now'))
-)
-"""
-
-_CREATE_INDEX = """
-CREATE INDEX IF NOT EXISTS idx_bench_run_case_id
-    ON bench_run (case_id)
-"""
-
-_INSERT = """
-INSERT INTO bench_run (
-    run_id, case_id, repeat_index,
-    tier, context_size, concurrency, backend_id, model_id,
-    settings_hash, prompt_hash,
-    backend_base_url, gpu_driver_version, cuda_version, python_version, os_version,
-    ttft_s, wall_time_s, throughput_tok_s,
-    prompt_tokens, completion_tokens, total_tokens,
-    peak_vram_gb, avg_gpu_util_pct, avg_gpu_mem_util_pct, avg_power_w,
-    peak_temp_c, avg_sm_clock_mhz, avg_mem_clock_mhz,
-    peak_ram_gb, cpu_offload_detected,
-    ollama_model_loaded, ollama_num_ctx,
-    quality_task_success, quality_pytest_passed,
-    quality_ruff_passed, quality_mypy_passed,
-    outcome, error_message
-) VALUES (
-    :run_id, :case_id, :repeat_index,
-    :tier, :context_size, :concurrency, :backend_id, :model_id,
-    :settings_hash, :prompt_hash,
-    :backend_base_url, :gpu_driver_version, :cuda_version, :python_version, :os_version,
-    :ttft_s, :wall_time_s, :throughput_tok_s,
-    :prompt_tokens, :completion_tokens, :total_tokens,
-    :peak_vram_gb, :avg_gpu_util_pct, :avg_gpu_mem_util_pct, :avg_power_w,
-    :peak_temp_c, :avg_sm_clock_mhz, :avg_mem_clock_mhz,
-    :peak_ram_gb, :cpu_offload_detected,
-    :ollama_model_loaded, :ollama_num_ctx,
-    :quality_task_success, :quality_pytest_passed,
-    :quality_ruff_passed, :quality_mypy_passed,
-    :outcome, :error_message
-)
-"""
-
-# ── DB helpers ────────────────────────────────────────────────────────────────
-
-
-def _get_db_path() -> Path:
-    if platform.system() == "Windows":
-        base = Path.home() / "AppData" / "Roaming"
-    else:
-        base = Path.home() / ".config"
-    return base / _APP_DIR / _DB_NAME
-
-
-@contextmanager
-def _connect(db_path: Path) -> Generator[sqlite3.Connection, None, None]:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _ensure_schema(db_path: Path) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with _connect(db_path) as conn:
-        conn.execute(_CREATE_TABLE)
-        conn.execute(_CREATE_INDEX)
-
-
-def _run_id_exists(db_path: Path, run_id: str) -> bool:
-    with _connect(db_path) as conn:
-        return (
-            conn.execute(
-                "SELECT 1 FROM bench_run WHERE run_id = ?", (run_id,)
-            ).fetchone()
-            is not None
-        )
-
-
-def _insert_row(db_path: Path, row: dict[str, Any]) -> None:
-    with _connect(db_path) as conn:
-        conn.execute(_INSERT, row)
 
 
 # ── ID helpers ────────────────────────────────────────────────────────────────
@@ -365,7 +235,7 @@ def _run(args: argparse.Namespace, db_path: Path) -> None:
     )
     print(f"Sweep: {sweep_id}  DB: {db_path}")
 
-    _ensure_schema(db_path)
+    store = BenchStore(db_path)
 
     backends = {b.id: b for b in config.backends if b.enabled}
 
@@ -377,7 +247,7 @@ def _run(args: argparse.Namespace, db_path: Path) -> None:
     for case in cases:
         row_run_id = _row_run_id(sweep_id, case)
 
-        if args.resume and _run_id_exists(db_path, row_run_id):
+        if args.resume and store.get_by_run_id(row_run_id):
             print(
                 f"[SKIP] {case.model_id}/{case.tier}"
                 f"/ctx={case.context_size}/c={case.concurrency}/r={case.repeat_index}"
@@ -418,13 +288,8 @@ def _run(args: argparse.Namespace, db_path: Path) -> None:
         prev_model_id = case.model_id
         prev_backend_id = case.backend_id
 
-        settings: dict[str, Any] = {
-            "tier": case.tier,
-            "context_size": case.context_size,
-            "concurrency": case.concurrency,
-        }
         env = EnvSnapshot.capture(
-            backend=case.backend_id, model=case.model_id, settings=settings
+            backend=case.backend_id, model=case.model_id, config=config
         )
 
         # First prefill_shared per model = warm; subsequent = prefix_warm
@@ -494,66 +359,54 @@ def _run(args: argparse.Namespace, db_path: Path) -> None:
         ollama_model_loaded: bool | None = None
         if manager is not None:
             try:
-                statuses = manager.get_ps_status()
-                ollama_model_loaded = any(s.name == case.model_id for s in statuses)
+                status = manager.get_ps_status(case.model_id)
+                ollama_model_loaded = status is not None
             except Exception:
                 pass
 
-        row: dict[str, Any] = {
-            "run_id": row_run_id,
-            "case_id": _case_id(case),
-            "repeat_index": case.repeat_index,
-            "tier": case.tier,
-            "context_size": case.context_size,
-            "concurrency": case.concurrency,
-            "backend_id": case.backend_id,
-            "model_id": case.model_id,
-            "settings_hash": env.settings_hash,
-            "prompt_hash": prompt.prompt_hash,
-            "backend_base_url": backend_cfg.base_url,
-            "gpu_driver_version": env.gpu_driver_version,
-            "cuda_version": env.cuda_version,
-            "python_version": env.python_version,
-            "os_version": env.os_version,
-            "ttft_s": result.ttft_s if not oom else None,
-            "wall_time_s": wall_time_s if not oom else None,
-            "throughput_tok_s": throughput_tok_s,
-            "prompt_tokens": result.input_tokens,
-            "completion_tokens": result.output_tokens,
-            "total_tokens": total_tokens,
-            "peak_vram_gb": gpu_sample.peak_vram_gb,
-            "avg_gpu_util_pct": gpu_sample.avg_gpu_util_pct,
-            "avg_gpu_mem_util_pct": gpu_sample.avg_gpu_mem_util_pct,
-            "avg_power_w": gpu_sample.avg_power_w,
-            "peak_temp_c": gpu_sample.peak_temp_c,
-            "avg_sm_clock_mhz": gpu_sample.avg_sm_clock_mhz,
-            "avg_mem_clock_mhz": gpu_sample.avg_mem_clock_mhz,
-            "peak_ram_gb": sys_result.peak_ram_gb,
-            "cpu_offload_detected": int(sys_result.cpu_offload_detected),
-            "ollama_model_loaded": (
-                int(ollama_model_loaded) if ollama_model_loaded is not None else None
-            ),
-            "ollama_num_ctx": case.context_size,
-            "quality_task_success": (
-                int(quality_task_success) if quality_task_success is not None else None
-            ),
-            "quality_pytest_passed": (
-                int(quality_pytest_passed)
-                if quality_pytest_passed is not None
-                else None
-            ),
-            "quality_ruff_passed": (
-                int(quality_ruff_passed) if quality_ruff_passed is not None else None
-            ),
-            "quality_mypy_passed": (
-                int(quality_mypy_passed) if quality_mypy_passed is not None else None
-            ),
-            "outcome": outcome,
-            "error_message": error_message,
-        }
+        bench_run = BenchRun(
+            run_id=row_run_id,
+            case_id=_case_id(case),
+            repeat_index=case.repeat_index,
+            tier=case.tier,
+            context_size=case.context_size,
+            concurrency=case.concurrency,
+            backend_id=case.backend_id,
+            model_id=case.model_id,
+            settings_hash=env.settings_hash,
+            prompt_hash=prompt.prompt_hash,
+            backend_base_url=backend_cfg.base_url,
+            gpu_driver_version=env.gpu_driver_version,
+            cuda_version=env.cuda_version,
+            python_version=env.python_version,
+            os_version=env.os_version,
+            ttft_s=result.ttft_s if not oom else None,
+            wall_time_s=wall_time_s if not oom else None,
+            throughput_tok_s=throughput_tok_s,
+            prompt_tokens=result.input_tokens,
+            completion_tokens=result.output_tokens,
+            total_tokens=total_tokens,
+            peak_vram_gb=gpu_sample.peak_vram_gb,
+            avg_gpu_util_pct=gpu_sample.avg_gpu_util_pct,
+            avg_gpu_mem_util_pct=gpu_sample.avg_gpu_mem_util_pct,
+            avg_power_w=gpu_sample.avg_power_w,
+            peak_temp_c=gpu_sample.peak_temp_c,
+            avg_sm_clock_mhz=gpu_sample.avg_sm_clock_mhz,
+            avg_mem_clock_mhz=gpu_sample.avg_mem_clock_mhz,
+            peak_ram_gb=sys_result.peak_ram_gb,
+            cpu_offload_detected=sys_result.cpu_offload_detected,
+            ollama_model_loaded=ollama_model_loaded,
+            ollama_num_ctx=case.context_size,
+            quality_task_success=quality_task_success,
+            quality_pytest_passed=quality_pytest_passed,
+            quality_ruff_passed=quality_ruff_passed,
+            quality_mypy_passed=quality_mypy_passed,
+            outcome=outcome,
+            error_message=error_message,
+        )
 
         # Write before moving to next case (resume safety invariant)
-        _insert_row(db_path, row)
+        store.record(bench_run)
 
         ttft_str = f" ttft={result.ttft_s:.2f}s" if result.ttft_s else ""
         tok_str = f" tok/s={throughput_tok_s:.0f}" if throughput_tok_s else ""
@@ -645,7 +498,7 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
-    db_path = Path(args.db_path) if args.db_path else _get_db_path()
+    db_path = Path(args.db_path) if args.db_path else BenchStore.get_db_path()
 
     if args.generate_fixtures:
         _generate_fixtures()
