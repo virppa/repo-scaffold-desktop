@@ -77,6 +77,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Filter by tier: speed|coding|prefill_shared|prefill_unshared|boundary",
     )
     parser.add_argument(
+        "--model",
+        default=None,
+        metavar="MODEL_ID",
+        help="Run only cases matching this model id (e.g. qwen3:14b)",
+    )
+    parser.add_argument(
+        "--backend",
+        default=None,
+        metavar="BACKEND_ID",
+        help="Run only cases matching this backend id (e.g. local_qwen)",
+    )
+    parser.add_argument(
         "--resume",
         metavar="SWEEP_ID",
         default=None,
@@ -141,6 +153,8 @@ def main() -> int:
         args.config,
         db_path,
         tier=args.tier,
+        model=args.model,
+        backend=args.backend,
         resume=args.resume,
         output_json=args.output_json,
         output_csv=args.output_csv,

@@ -9,8 +9,9 @@
 #   python scripts/bench/run_bench.py                       # full matrix — all tiers, all models
 #   python scripts/bench/run_bench.py --browse              # explore results in Datasette
 #
-# To run a single model:
+# To run a single model or backend:
 #   python scripts/bench/run_bench.py --model qwen3-coder:30b --tier speed
+#   python scripts/bench/run_bench.py --backend local_vllm --tier prefill_shared
 #
 # Enable vLLM: set local_vllm.enabled = true, start server (see backend comment below),
 # then re-run. vLLM model ids must match --model arg used when starting the server.
