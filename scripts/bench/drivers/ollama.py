@@ -38,9 +38,16 @@ class OllamaDriver:
         except Exception:
             return False
 
-    def generate(self, model: str, messages: list[dict[str, str]]) -> GenerationResult:
+    def generate(
+        self, model: str, messages: list[dict[str, str]], context_size: int
+    ) -> GenerationResult:
         payload = json.dumps(
-            {"model": model, "messages": messages, "stream": True}
+            {
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "options": {"num_ctx": context_size},
+            }
         ).encode()
         req = urllib.request.Request(
             f"{self._base_url}/api/chat",

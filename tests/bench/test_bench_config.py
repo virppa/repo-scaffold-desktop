@@ -58,7 +58,8 @@ def _write_toml(tmp_path: Path, content: str) -> Path:
 
 def test_from_toml_loads_real_config() -> None:
     cfg = BenchConfig.from_toml(_BENCH_TOML)
-    assert cfg.matrix.context_sizes == [1024, 4096]
+    assert len(cfg.matrix.context_sizes) >= 1
+    assert len(cfg.matrix.boundary_context_sizes) >= 1
     assert len(cfg.backends) >= 1
     assert len(cfg.models) >= 1
     assert len(cfg.tiers) >= 1

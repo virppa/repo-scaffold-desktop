@@ -74,7 +74,7 @@ _OLLAMA_WARM_BODY = _ndjson(
 def test_ollama_generate_cold_start_timings():
     with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_COLD_BODY)):
         driver = OllamaDriver()
-        result = driver.generate("q", [{"role": "user", "content": "hi"}])
+        result = driver.generate("q", [{"role": "user", "content": "hi"}], 4096)
 
     assert result.error is None
     assert result.text == "Hello world"
@@ -90,7 +90,7 @@ def test_ollama_generate_cold_start_timings():
 def test_ollama_generate_warm_start_no_load_duration():
     with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_WARM_BODY)):
         driver = OllamaDriver()
-        result = driver.generate("q", [{"role": "user", "content": "hi"}])
+        result = driver.generate("q", [{"role": "user", "content": "hi"}], 4096)
 
     assert result.error is None
     assert result.raw_load_duration_ns is None
@@ -106,7 +106,7 @@ def test_ollama_generate_returns_error_on_url_error():
         side_effect=urllib.error.URLError("Connection refused"),
     ):
         driver = OllamaDriver()
-        result = driver.generate("q", [{"role": "user", "content": "hi"}])
+        result = driver.generate("q", [{"role": "user", "content": "hi"}], 4096)
 
     assert result.error is not None
     assert "Connection refused" in result.error
@@ -115,7 +115,7 @@ def test_ollama_generate_returns_error_on_url_error():
 def test_ollama_generate_returns_error_on_generic_exception():
     with patch("urllib.request.urlopen", side_effect=OSError("socket error")):
         driver = OllamaDriver()
-        result = driver.generate("q", [{"role": "user", "content": "hi"}])
+        result = driver.generate("q", [{"role": "user", "content": "hi"}], 4096)
 
     assert result.error is not None
 
@@ -166,7 +166,7 @@ _VLLM_BODY = _sse(
 def test_vllm_generate_success():
     with patch("urllib.request.urlopen", _mock_urlopen(_VLLM_BODY)):
         driver = VllmDriver()
-        result = driver.generate("mistral", [{"role": "user", "content": "hi"}])
+        result = driver.generate("mistral", [{"role": "user", "content": "hi"}], 4096)
 
     assert result.error is None
     assert result.text == "Hello world"
@@ -181,7 +181,7 @@ def test_vllm_generate_returns_error_on_url_error():
         side_effect=urllib.error.URLError("Connection refused"),
     ):
         driver = VllmDriver()
-        result = driver.generate("mistral", [{"role": "user", "content": "hi"}])
+        result = driver.generate("mistral", [{"role": "user", "content": "hi"}], 4096)
 
     assert result.error is not None
     assert "Connection refused" in result.error
@@ -190,7 +190,7 @@ def test_vllm_generate_returns_error_on_url_error():
 def test_vllm_generate_returns_error_on_generic_exception():
     with patch("urllib.request.urlopen", side_effect=RuntimeError("boom")):
         driver = VllmDriver()
-        result = driver.generate("mistral", [{"role": "user", "content": "hi"}])
+        result = driver.generate("mistral", [{"role": "user", "content": "hi"}], 4096)
 
     assert result.error is not None
 

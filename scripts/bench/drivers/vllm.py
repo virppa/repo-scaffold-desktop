@@ -40,7 +40,9 @@ class VllmDriver:
         except Exception:
             return False
 
-    def generate(self, model: str, messages: list[dict[str, str]]) -> GenerationResult:
+    def generate(
+        self, model: str, messages: list[dict[str, str]], _context_size: int
+    ) -> GenerationResult:
         payload = json.dumps(
             {
                 "model": model,

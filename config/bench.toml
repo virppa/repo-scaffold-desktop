@@ -1,43 +1,148 @@
-# Benchmark configuration.
+# Benchmark configuration for the WOR-180 local LLM testbench.
 # Load with BenchConfig.from_toml("config/bench.toml").
-# expand_matrix() produces the full Cartesian product of models x tiers x contexts x concurrency.
-# Disabled backends are excluded from the matrix.
-# The boundary tier uses boundary_context_sizes; all other tiers use context_sizes.
+# expand_matrix() produces the full Cartesian product of models × tiers × contexts × concurrency.
+# Disabled backends and their models are excluded from the matrix.
+#
+# Quick-start (Ollama already running, all models pre-pulled):
+#   python scripts/bench/run_bench.py --generate-fixtures   # one-time: build 50k-token fixture
+#   python scripts/bench/run_bench.py --tier speed          # fast sanity check (~10 min, 5 models)
+#   python scripts/bench/run_bench.py                       # full matrix — all tiers, all models
+#   python scripts/bench/run_bench.py --browse              # explore results in Datasette
+#
+# To run a single model:
+#   python scripts/bench/run_bench.py --model qwen3-coder:30b --tier speed
+#
+# Enable vLLM: set local_vllm.enabled = true, start server (see backend comment below),
+# then re-run. vLLM model ids must match --model arg used when starting the server.
 
 [matrix]
-# Context sizes (in tokens) for non-boundary tiers.
-context_sizes = [1024, 4096]
-# Context sizes used exclusively by the boundary tier.
-boundary_context_sizes = [8192, 16384]
+# Non-boundary context windows (all tiers except boundary).
+#   4096  = speed/coding warm-up; fits in any KV budget
+#   16384 = realistic coding context
+#   32768 = 32K — common production window
+#   65536 = 64K — confirmed safe on RTX 5090 + qwen3-coder:30b (spike WOR-76)
+context_sizes = [4096, 16384, 32768, 65536]
+# Boundary tier only — OOM cliff probe per WOR-180 (96K / 128K / 160K).
+#   qwen2.5-coder:32b and qwen3-coder:30b will OOM here — that's expected and recorded.
+#   MoE models (35b-a3b, 27b) tolerate larger contexts due to sparse activation.
+boundary_context_sizes = [98304, 131072, 163840]
 # Concurrent requests per probe point.
-concurrency_levels = [1, 4]
-# Number of real (non-warmup) runs per probe point.
-repeats = 1
+# Single Ollama GPU serialises beyond 2; 2 exposes queue-depth effects.
+concurrency_levels = [1, 2]
+# Real (non-warmup) runs per probe point. 3 gives statistical confidence.
+repeats = 3
+
+# ── Backends ──────────────────────────────────────────────────────────────────
+# Driver selection: backend id containing "vllm" → VllmDriver; otherwise → OllamaDriver.
+# OllamaDriver calls {base_url}/api/chat — do NOT include /v1 in the Ollama base_url.
 
 [[backends]]
+# Primary: Ollama. Auto-managed — runner starts, pulls, and flushes models as needed.
 id = "local_qwen"
 enabled = true
-base_url = "http://localhost:11434/v1"
+base_url = "http://localhost:11434"
 
 [[backends]]
-id = "cloud_gpt4o"
+# vLLM — NOT auto-managed. Start manually before enabling, one model at a time:
+#
+#   # Dense models (one at a time — they fill most of the 32 GB):
+#   python -m vllm.entrypoints.openai.api_server \
+#     --model Qwen/Qwen3-14B --port 8000 --max-model-len 65536 \
+#     --gpu-memory-utilization 0.90 --enable-prefix-caching
+#
+#   # MoE models (lower VRAM active; higher max-model-len feasible):
+#   python -m vllm.entrypoints.openai.api_server \
+#     --model Qwen/Qwen3.6-35B-A3B --port 8000 --max-model-len 131072 \
+#     --gpu-memory-utilization 0.90 --enable-prefix-caching
+#
+# The key benefit to measure: vLLM APC on prefill_shared tier vs Ollama.
+# Run with --tier prefill_shared after enabling to isolate that comparison.
+id = "local_vllm"
 enabled = false
-base_url = "https://api.openai.com/v1"
+base_url = "http://localhost:8000"
+
+# ── Ollama models (enabled) ────────────────────────────────────────────────────
+# Model IDs must exactly match Ollama's name format — verify with: ollama list
+# All 5 are confirmed present on this machine (ollama list, 2026-04-26).
 
 [[models]]
-id = "qwen3-coder-30b"
+# 9.3 GB | Dense 14B — lightweight baseline and fastest model.
+id = "qwen3:14b"
 backend_id = "local_qwen"
 
 [[models]]
-id = "qwen3-14b"
+# 23 GB | MoE 35B total / ~3B active — low KV pressure despite large param count.
+# Candidate from WOR-180: expected to match or beat dense 30B on coding quality.
+id = "qwen3.6:35b-a3b"
 backend_id = "local_qwen"
 
 [[models]]
-id = "gpt-4o"
-backend_id = "cloud_gpt4o"
+# 17 GB | Dense 27B — mid-range candidate from WOR-180.
+id = "qwen3.6:27b"
+backend_id = "local_qwen"
+
+[[models]]
+# 18 GB | Dense 30B coder — current production model (spike WOR-76 baseline).
+id = "qwen3-coder:30b"
+backend_id = "local_qwen"
+
+[[models]]
+# 19 GB | Dense 32B coder Q4_K_M — previous spike candidate, ruled "too tight" at 65K
+# but worth re-benchmarking at lower context sizes for coding quality comparison.
+id = "qwen2.5-coder:32b-instruct-q4_K_M"
+backend_id = "local_qwen"
+
+# ── vLLM models (disabled via local_vllm backend) ─────────────────────────────
+# vLLM model ids are HuggingFace repo ids. The model arg must match --model used
+# when starting the server. Enable local_vllm backend and run one model at a time.
+# Verify HuggingFace repo names at https://huggingface.co/Qwen before starting.
+
+[[models]]
+# HF: Qwen/Qwen3-14B
+id = "Qwen/Qwen3-14B"
+backend_id = "local_vllm"
+
+[[models]]
+# HF: verify exact repo name — may be Qwen/Qwen3.6-35B-A3B or similar
+id = "Qwen/Qwen3.6-35B-A3B"
+backend_id = "local_vllm"
+
+[[models]]
+# HF: verify exact repo name — may be Qwen/Qwen3.6-27B or similar
+id = "Qwen/Qwen3.6-27B"
+backend_id = "local_vllm"
+
+[[models]]
+# HF: verify exact repo name — may be Qwen/Qwen3-Coder-30B-Instruct or similar
+id = "Qwen/Qwen3-Coder-30B-Instruct"
+backend_id = "local_vllm"
+
+[[models]]
+# HF: Qwen/Qwen2.5-Coder-32B-Instruct (use unquantized; apply --quantization awq if needed)
+id = "Qwen/Qwen2.5-Coder-32B-Instruct"
+backend_id = "local_vllm"
+
+# ── Tiers ─────────────────────────────────────────────────────────────────────
+# All five tiers. Use --tier <name> for a single-tier run.
+# prefill_shared requires the 50k fixture: run --generate-fixtures once first.
 
 [[tiers]]
+# Raw generation speed: short prompt, ~256 tokens out. No fixture needed.
 name = "speed"
 
 [[tiers]]
+# Real coding task with pytest/ruff/mypy quality evaluation. Temperature=0.
+name = "coding"
+
+[[tiers]]
+# TTFT with shared 50k-token repo prefix. Measures vLLM APC reuse vs Ollama.
+# First request per model = cache warm; subsequent = prefix_warm.
+name = "prefill_shared"
+
+[[tiers]]
+# TTFT with randomized same-length content. APC null baseline (cold prefill every run).
+name = "prefill_unshared"
+
+[[tiers]]
+# Long-context OOM cliff probe at boundary_context_sizes. OOM is recorded, not fatal.
 name = "boundary"
