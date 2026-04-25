@@ -1,0 +1,43 @@
+# Benchmark configuration.
+# Load with BenchConfig.from_toml("config/bench.toml").
+# expand_matrix() produces the full Cartesian product of models x tiers x contexts x concurrency.
+# Disabled backends are excluded from the matrix.
+# The boundary tier uses boundary_context_sizes; all other tiers use context_sizes.
+
+[matrix]
+# Context sizes (in tokens) for non-boundary tiers.
+context_sizes = [1024, 4096]
+# Context sizes used exclusively by the boundary tier.
+boundary_context_sizes = [8192, 16384]
+# Concurrent requests per probe point.
+concurrency_levels = [1, 4]
+# Number of real (non-warmup) runs per probe point.
+repeats = 1
+
+[[backends]]
+id = "local_qwen"
+enabled = true
+base_url = "http://localhost:11434/v1"
+
+[[backends]]
+id = "cloud_gpt4o"
+enabled = false
+base_url = "https://api.openai.com/v1"
+
+[[models]]
+id = "qwen3-coder-30b"
+backend_id = "local_qwen"
+
+[[models]]
+id = "qwen3-14b"
+backend_id = "local_qwen"
+
+[[models]]
+id = "gpt-4o"
+backend_id = "cloud_gpt4o"
+
+[[tiers]]
+name = "speed"
+
+[[tiers]]
+name = "boundary"
