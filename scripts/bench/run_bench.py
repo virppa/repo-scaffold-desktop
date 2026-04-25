@@ -16,6 +16,9 @@ import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
+# Ensure repo root is on sys.path when run as `python scripts/bench/run_bench.py`
+sys.path.insert(0, str(Path(__file__).parents[2]))
+
 from app.core.bench_store import BenchStore
 from scripts.bench.fixtures import generate_fixtures
 from scripts.bench.runner import run
