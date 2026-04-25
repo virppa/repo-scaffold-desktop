@@ -532,8 +532,7 @@ class Watcher:
                     logger.warning(
                         "Could not post epic-complete comment on %s: %s", epic_id, exc
                     )
-
-        self._running = False
+            self._running = False
 
     # ------------------------------------------------------------------
     # Manifest loading
