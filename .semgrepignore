@@ -1,2 +1,8 @@
 # URL is a hardcoded constant (https://api.linear.app/graphql) — not user-controlled.
 app/core/linear_client.py
+
+# URLs are operator-provided config values validated to http/https scheme at construction
+# time (ValueError on any other scheme). Not user-controlled input from an untrusted source.
+scripts/bench/drivers/ollama.py
+scripts/bench/drivers/vllm.py
+scripts/bench/lifecycle/ollama_manager.py
