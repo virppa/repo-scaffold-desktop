@@ -11,4 +11,11 @@ _TEXT = "Count from 1 to 10."
 
 def make_speed_prompt() -> BenchPrompt:
     prompt_hash = hashlib.sha256(_TEXT.encode()).hexdigest()
-    return BenchPrompt(text=_TEXT, prompt_hash=prompt_hash, task_type="speed")
+    return BenchPrompt(
+        text=_TEXT,
+        prompt_hash=prompt_hash,
+        task_type="speed",
+        max_tokens=256,
+        temperature=0.7,
+        seed=None,
+    )

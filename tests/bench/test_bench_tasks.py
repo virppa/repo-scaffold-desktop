@@ -17,6 +17,9 @@ def test_speed_prompt_returns_bench_prompt() -> None:
     assert prompt.task_type == "speed"
     assert len(prompt.text) > 0
     assert len(prompt.prompt_hash) == 64  # SHA-256 hex digest
+    assert prompt.max_tokens == 256
+    assert prompt.temperature == pytest.approx(0.7)
+    assert prompt.seed is None
 
 
 def test_prefill_shared_raises_when_fixture_missing(
@@ -48,6 +51,14 @@ def test_prefill_unshared_token_count_within_5pct() -> None:
     assert abs(prompt.token_count_estimate - target) <= tolerance
 
 
+def test_prefill_unshared_llm_seed_is_none() -> None:
+    prompt = make_prefill_unshared_prompt(target=100, seed=42)
+    # seed=42 above is the RNG seed for text generation
+    # BenchPrompt.seed (None) is the LLM generation seed — a separate concept
+    assert prompt.seed is None
+    assert prompt.max_tokens == 128
+
+
 def test_prefill_unshared_deterministic() -> None:
     p1 = make_prefill_unshared_prompt(target=1000, seed=42)
     p2 = make_prefill_unshared_prompt(target=1000, seed=42)
@@ -66,6 +77,9 @@ def test_coding_prompt_returns_bench_prompt() -> None:
     assert prompt.task_type == "coding"
     assert len(prompt.text) > 0
     assert len(prompt.prompt_hash) == 64
+    assert prompt.max_tokens == 512
+    assert prompt.temperature == pytest.approx(0.0)
+    assert prompt.seed == 42
 
 
 def test_boundary_prompt_returns_bench_prompt() -> None:
@@ -73,3 +87,5 @@ def test_boundary_prompt_returns_bench_prompt() -> None:
     assert prompt.task_type == "boundary"
     assert len(prompt.text) > 0
     assert len(prompt.prompt_hash) == 64
+    assert prompt.max_tokens == 128
+    assert prompt.seed is None

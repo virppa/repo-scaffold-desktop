@@ -20,4 +20,11 @@ _TEXT = (
 
 def make_boundary_prompt() -> BenchPrompt:
     prompt_hash = hashlib.sha256(_TEXT.encode()).hexdigest()
-    return BenchPrompt(text=_TEXT, prompt_hash=prompt_hash, task_type="boundary")
+    return BenchPrompt(
+        text=_TEXT,
+        prompt_hash=prompt_hash,
+        task_type="boundary",
+        max_tokens=128,
+        temperature=0.7,
+        seed=None,
+    )

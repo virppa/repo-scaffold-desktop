@@ -41,16 +41,25 @@ class VllmDriver:
             return False
 
     def generate(
-        self, model: str, messages: list[dict[str, str]], _context_size: int
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        _context_size: int,
+        max_tokens: int,
+        temperature: float,
+        seed: int | None,
     ) -> GenerationResult:
-        payload = json.dumps(
-            {
-                "model": model,
-                "messages": messages,
-                "stream": True,
-                "stream_options": {"include_usage": True},
-            }
-        ).encode()
+        body: dict[str, object] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+        if seed is not None:
+            body["seed"] = seed
+        payload = json.dumps(body).encode()
         req = urllib.request.Request(
             f"{self._base_url}/v1/chat/completions",
             data=payload,

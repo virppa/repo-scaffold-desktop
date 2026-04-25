@@ -17,7 +17,6 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from app.core.bench_store import BenchRun, BenchStore
 from scripts.bench.config import BenchCase, BenchConfig
@@ -28,6 +27,7 @@ from scripts.bench.gpu_monitor import GpuMonitor
 from scripts.bench.lifecycle.ollama_manager import OllamaManager
 from scripts.bench.quality import evaluate_coding_output
 from scripts.bench.sys_monitor import SysMonitor
+from scripts.bench.tasks import BenchPrompt
 from scripts.bench.tasks.boundary import make_boundary_prompt
 from scripts.bench.tasks.coding import make_coding_prompt
 from scripts.bench.tasks.prefill_shared import make_prefill_shared_prompt
@@ -69,7 +69,7 @@ def _is_oom(error: str) -> bool:
 # ── Prompt factory ────────────────────────────────────────────────────────────
 
 
-def _make_prompt(tier: str, repeat_index: int) -> Any:
+def _make_prompt(tier: str, repeat_index: int) -> BenchPrompt:
     if tier == "speed":
         return make_speed_prompt()
     if tier == "coding":
@@ -311,7 +311,14 @@ def _run(args: argparse.Namespace, db_path: Path) -> None:
 
         messages: list[dict[str, str]] = [{"role": "user", "content": prompt.text}]
         t_start = time.monotonic()
-        result = driver.generate(case.model_id, messages, case.context_size)
+        result = driver.generate(
+            case.model_id,
+            messages,
+            case.context_size,
+            prompt.max_tokens,
+            prompt.temperature,
+            prompt.seed,
+        )
         wall_time_s = time.monotonic() - t_start
 
         gpu_sample = gpu_mon.stop()
