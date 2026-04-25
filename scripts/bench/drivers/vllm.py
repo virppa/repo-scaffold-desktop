@@ -34,7 +34,7 @@ class VllmDriver:
 
     def is_available(self) -> bool:
         try:
-            req = urllib.request.Request(f"{self._base_url}/health")
+            req = urllib.request.Request(f"{self._base_url}/v1/models")
             with urllib.request.urlopen(req, timeout=2):
                 return True
         except Exception:
