@@ -311,7 +311,7 @@ def _run(args: argparse.Namespace, db_path: Path) -> None:
 
         messages: list[dict[str, str]] = [{"role": "user", "content": prompt.text}]
         t_start = time.monotonic()
-        result = driver.generate(case.model_id, messages)
+        result = driver.generate(case.model_id, messages, case.context_size)
         wall_time_s = time.monotonic() - t_start
 
         gpu_sample = gpu_mon.stop()
