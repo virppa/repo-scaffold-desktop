@@ -71,6 +71,8 @@ def run(
     db_path: Path,
     *,
     tier: str | None = None,
+    model: str | None = None,
+    backend: str | None = None,
     resume: str | None = None,
     output_json: str | None = None,
     output_csv: str | None = None,
@@ -80,6 +82,10 @@ def run(
 
     if tier:
         cases = [c for c in cases if c.tier == tier]
+    if model:
+        cases = [c for c in cases if c.model_id == model]
+    if backend:
+        cases = [c for c in cases if c.backend_id == backend]
 
     sweep_id: str = (
         resume
