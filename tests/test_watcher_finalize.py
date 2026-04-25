@@ -12,6 +12,7 @@ import pytest
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
+from app.core.manifest import FailurePolicy
 from app.core.watcher_finalize import _try_post_comment, finalize_worker
 from app.core.watcher_types import ActiveWorker
 from tests.conftest import make_manifest
@@ -591,3 +592,86 @@ def test_try_post_comment_swallows_exception(
         _try_post_comment(linear_mock, "lin-id", "WOR-10", "some comment body")
 
     assert any("Could not post comment" in msg for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# escalate_to_cloud branching in _execute_finalization
+# ---------------------------------------------------------------------------
+
+
+def test_execute_finalization_check_failure_escalates_to_cloud(tmp_path: Path) -> None:
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        failure_policy=FailurePolicy(on_check_failure="abort", escalate_to_cloud=True),
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch("app.core.watcher_finalize.run_checks", return_value=False),
+        patch("app.core.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
+    linear_mock.post_comment.assert_called_once()
+    m = metrics_mock.record.call_args[0][0]
+    assert m.escalated_to_cloud is True
+
+
+def test_execute_finalization_check_failure_blocked_when_no_escalate(
+    tmp_path: Path,
+) -> None:
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch("app.core.watcher_finalize.run_checks", return_value=False),
+        patch("app.core.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    linear_mock.set_state.assert_called_with("fake-linear-id", "Blocked")
+    m = metrics_mock.record.call_args[0][0]
+    assert m.escalated_to_cloud is False
+
+
+def test_execute_finalization_nonzero_exit_escalates_to_cloud(tmp_path: Path) -> None:
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        failure_policy=FailurePolicy(escalate_to_cloud=True),
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with patch("app.core.watcher_finalize.cleanup_worktree"):
+        _call_finalize(worker, returncode=1, linear=linear_mock, metrics=metrics_mock)
+
+    linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
+    linear_mock.post_comment.assert_called_once()
+    m = metrics_mock.record.call_args[0][0]
+    assert m.escalated_to_cloud is True
