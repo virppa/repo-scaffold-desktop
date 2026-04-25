@@ -371,7 +371,20 @@ def test_check_epic_completion_no_tickets_processed_no_comment_exits(
         w._check_epic_completion()
 
     linear_mock.post_comment.assert_not_called()
-    assert w._running is False
+    assert w._running is True
+
+
+def test_check_epic_completion_empty_startup_keeps_polling(tmp_path: Path) -> None:
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    assert not w._processed_tickets
+
+    with patch.object(w, "_has_waiting_deps", return_value=False):
+        w._check_epic_completion()
+
+    assert w._running is True
 
 
 # ---------------------------------------------------------------------------
