@@ -219,8 +219,8 @@ def run(
             try:
                 status = manager.get_ps_status(case.model_id)
                 ollama_model_loaded = status is not None
-            except Exception:
-                pass
+            except Exception as exc:
+                logging.debug("Could not check model status: %s", exc)
 
         bench_run = BenchRun(
             run_id=row_run_id,

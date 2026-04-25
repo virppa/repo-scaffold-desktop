@@ -79,7 +79,12 @@ def evaluate_coding_output(model_output: str, repo_path: Path) -> QualityResult:
             ruff_passed=ruff_passed,
             mypy_passed=mypy_passed,
         )
-    except Exception as exc:
+    except (
+        json.JSONDecodeError,
+        ValueError,
+        OSError,
+        subprocess.SubprocessError,
+    ) as exc:
         return QualityResult(
             task_success=False,
             pytest_passed=False,

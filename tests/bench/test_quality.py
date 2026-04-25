@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -112,7 +113,7 @@ def test_temp_dir_cleaned_up_on_exception(tmp_path: Path) -> None:
     with patch.object(quality_mod.tempfile, "mkdtemp", side_effect=capturing_mkdtemp):
         with patch(
             "scripts.bench.quality.subprocess.run",
-            side_effect=RuntimeError("simulated failure"),
+            side_effect=subprocess.SubprocessError("simulated failure"),
         ):
             result = evaluate_coding_output(_make_patch_output(), tmp_path)
 
