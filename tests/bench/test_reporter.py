@@ -6,7 +6,7 @@ import io
 from contextlib import redirect_stdout
 from typing import Any
 
-from scripts.bench.reporter import _is_eligible, print_ranking
+from scripts.bench.reporter import _cv, _is_eligible, _percentile, print_ranking
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -332,3 +332,159 @@ class TestPrintRankingRejectionReasons:
             print_ranking(rows)
         output = buf.getvalue()
         assert "RECOMMENDED" in output
+
+
+# ── _percentile() unit tests ──────────────────────────────────────────────────
+
+
+class TestPercentile:
+    def test_empty_returns_none(self) -> None:
+        assert _percentile([], 95) is None
+
+    def test_single_value_returns_none(self) -> None:
+        assert _percentile([1.0], 95) is None
+
+    def test_two_values_p95_in_range(self) -> None:
+        result = _percentile([0.0, 1.0], 95)
+        assert result is not None
+        assert 0.0 <= result <= 1.0
+
+    def test_p95_higher_than_p50_with_outlier(self) -> None:
+        values = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 5.0]
+        p50 = _percentile(values, 50)
+        p95 = _percentile(values, 95)
+        assert p50 is not None and p95 is not None
+        assert p95 > p50
+
+    def test_uniform_values_returns_that_value(self) -> None:
+        result = _percentile([3.0, 3.0, 3.0], 95)
+        assert result == 3.0
+
+    def test_p100_returns_max(self) -> None:
+        values = [0.1, 0.5, 1.0]
+        assert _percentile(values, 100) == 1.0
+
+
+# ── _cv() unit tests ──────────────────────────────────────────────────────────
+
+
+class TestCV:
+    def test_empty_returns_none(self) -> None:
+        assert _cv([]) is None
+
+    def test_single_value_returns_none(self) -> None:
+        assert _cv([1.0]) is None
+
+    def test_zero_mean_returns_none(self) -> None:
+        assert _cv([0.0, 0.0]) is None
+
+    def test_identical_values_returns_zero(self) -> None:
+        result = _cv([2.0, 2.0, 2.0])
+        assert result == 0.0
+
+    def test_known_cv(self) -> None:
+        # mean=2.0, sample stdev=sqrt(2)≈1.414 → CV≈0.707
+        result = _cv([1.0, 3.0])
+        assert result is not None
+        assert abs(result - (2**0.5 / 2)) < 0.001
+
+    def test_high_variance_exceeds_threshold(self) -> None:
+        result = _cv([0.1, 1.9])
+        assert result is not None
+        assert result > 0.3
+
+    def test_low_variance_below_threshold(self) -> None:
+        result = _cv([0.30, 0.31])
+        assert result is not None
+        assert result < 0.3
+
+
+# ── print_ranking() variance / stability tests ────────────────────────────────
+
+
+class TestPrintRankingVariance:
+    def _make_row(
+        self,
+        *,
+        backend_id: str = "b",
+        model_id: str = "m",
+        context_size: int = 4096,
+        concurrency: int = 1,
+        repeat_index: int = 1,
+        ttft_s: float = 0.3,
+        throughput_tok_s: float = 80.0,
+        outcome: str = "ok",
+        cpu_offload_detected: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "backend_id": backend_id,
+            "model_id": model_id,
+            "context_size": context_size,
+            "concurrency": concurrency,
+            "repeat_index": repeat_index,
+            "ttft_s": ttft_s,
+            "throughput_tok_s": throughput_tok_s,
+            "outcome": outcome,
+            "cpu_offload_detected": cpu_offload_detected,
+            "tier": "speed",
+            "quality_task_success": None,
+        }
+
+    def test_header_includes_new_columns(self) -> None:
+        rows = [self._make_row()]
+        output = _capture(rows)
+        assert "TTFT p95(s)" in output
+        assert "CV" in output
+        assert "Stable" in output
+
+    def test_single_repeat_shows_dashes_for_p95_cv_stable(self) -> None:
+        rows = [self._make_row(ttft_s=0.3)]
+        output = _capture(rows)
+        # Single-repeat group: no [!] and no OK — stable column is "--"
+        assert "[!]" not in output
+        assert "OK" not in output
+
+    def test_multi_repeat_stable_shows_ok(self) -> None:
+        # ttft values [0.30, 0.31] → very low CV → stable
+        rows = [
+            self._make_row(repeat_index=1, ttft_s=0.30),
+            self._make_row(repeat_index=2, ttft_s=0.31),
+        ]
+        output = _capture(rows)
+        assert "OK" in output
+        assert "[!]" not in output
+
+    def test_multi_repeat_unstable_shows_warning(self) -> None:
+        # ttft values [0.1, 1.9] → CV ≈ 1.27 > 0.3 → unstable
+        rows = [
+            self._make_row(repeat_index=1, ttft_s=0.1),
+            self._make_row(repeat_index=2, ttft_s=1.9),
+        ]
+        output = _capture(rows)
+        assert "[!]" in output
+
+    def test_custom_cv_threshold_changes_stability(self) -> None:
+        # ttft [0.2, 0.4]: mean=0.3, stdev≈0.141, CV≈0.471
+        # default threshold 0.3 → unstable; relaxed threshold 0.5 → stable
+        rows = [
+            self._make_row(repeat_index=1, ttft_s=0.2),
+            self._make_row(repeat_index=2, ttft_s=0.4),
+        ]
+        output_strict = _capture(rows)  # cv_threshold=0.3 (default)
+        assert "[!]" in output_strict
+
+        output_relaxed = _capture(rows, cv_threshold=0.5)
+        assert "OK" in output_relaxed
+
+    def test_p95_appears_in_recommendation_for_multi_repeat(self) -> None:
+        rows = [
+            self._make_row(repeat_index=1, ttft_s=0.3),
+            self._make_row(repeat_index=2, ttft_s=0.32),
+        ]
+        output = _capture(rows)
+        assert "TTFT p95=" in output
+
+    def test_p95_absent_from_recommendation_for_single_repeat(self) -> None:
+        rows = [self._make_row(ttft_s=0.3)]
+        output = _capture(rows)
+        assert "TTFT p95=" not in output

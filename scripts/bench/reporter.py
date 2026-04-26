@@ -59,6 +59,29 @@ def _median(values: list[float]) -> float | None:
     return statistics.median(clean)
 
 
+def _percentile(values: list[float], pct: int) -> float | None:
+    """Return pct-th percentile via linear interpolation; None if < 2 values."""
+    if len(values) < 2:
+        return None
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+    idx = pct / 100 * (n - 1)
+    lo = int(idx)
+    hi = min(lo + 1, n - 1)
+    frac = idx - lo
+    return sorted_vals[lo] + frac * (sorted_vals[hi] - sorted_vals[lo])
+
+
+def _cv(values: list[float]) -> float | None:
+    """Return coefficient of variation (stddev/mean); None if < 2 values or mean==0."""
+    if len(values) < 2:
+        return None
+    m = statistics.mean(values)
+    if m == 0.0:
+        return None
+    return statistics.stdev(values) / m
+
+
 # ── Summary table ─────────────────────────────────────────────────────────────
 
 _SUMMARY_COLS = [
@@ -188,11 +211,14 @@ def print_ranking(
     *,
     min_useful_ctx: int = 4096,
     min_throughput_toks_per_s: float = 5.0,
+    cv_threshold: float = 0.3,
 ) -> None:
     """Print quality-gated ranking with recommendation banner.
 
     Ineligible configs are listed below the ranking table with their rejection reason.
     Threshold parameters keep defaults so existing callers need no changes.
+    When a config has > 1 repeat, ttft_p95 and ttft_cv are computed and the config is
+    flagged unstable when ttft_cv exceeds cv_threshold (default 0.3).
     """
     if not rows:
         return
@@ -236,10 +262,18 @@ def print_ranking(
             successes = sum(1 for r in coding_with_q if r.get("quality_task_success"))
             task_pct = 100.0 * successes / len(coding_with_q)
 
+        ttft_cv = _cv(ttft_values)
+        unstable: bool | None = None
+        if ttft_cv is not None:
+            unstable = ttft_cv > cv_threshold
+
         eligible.append(
             {
                 "config_key": config_key,
                 "ttft_p50": _median(ttft_values),
+                "ttft_p95": _percentile(ttft_values, 95),
+                "ttft_cv": ttft_cv,
+                "unstable": unstable,
                 "tok_p50": _median(tok_values),
                 "task_pct": task_pct,
             }
@@ -262,39 +296,54 @@ def print_ranking(
         )
     )
 
-    print("=" * 80)
+    _W = 108
+    print("=" * _W)
     print("QUALITY-ELIGIBLE RANKING  (oom=No, offload=No, err≤5%, task≥70%)")
-    print("=" * 80)
+    print("=" * _W)
     header = (
         f"{'Rank':>4}  {'Config (backend/model/ctx/c)':<44}  "
-        f"{'TTFT p50(s)':>10}  {'Tok/s p50':>9}  {'Task%':>5}"
+        f"{'TTFT p50(s)':>10}  {'TTFT p95(s)':>10}  {'CV':>6}  "
+        f"{'Tok/s p50':>9}  {'Task%':>5}  {'Stable':>6}"
     )
     print(header)
-    print("-" * 80)
+    print("-" * _W)
 
     for rank, entry in enumerate(eligible, start=1):
-        ttft_str = _fmt(entry["ttft_p50"], ".3f")
+        ttft_p50_str = _fmt(entry["ttft_p50"], ".3f")
+        ttft_p95_str = _fmt(entry["ttft_p95"], ".3f")
+        cv_str = _fmt(entry["ttft_cv"], ".3f")
         tok_str = _fmt(entry["tok_p50"], ".0f")
         task_str = _pct(entry["task_pct"])
+        if entry["unstable"] is None:
+            stable_str = "--"
+        elif entry["unstable"]:
+            stable_str = "[!]"
+        else:
+            stable_str = "OK"
         row_str = (
             f"{rank:>4}  {entry['config_key']:<44}  "
-            f"{ttft_str:>10}  {tok_str:>9}  {task_str:>5}"
+            f"{ttft_p50_str:>10}  {ttft_p95_str:>10}  {cv_str:>6}  "
+            f"{tok_str:>9}  {task_str:>5}  {stable_str:>6}"
         )
         print(row_str)
 
-    print("-" * 80)
+    print("-" * _W)
     best = eligible[0]
     print(f"\n  *** RECOMMENDED: {best['config_key']} ***")
     parts = []
     if best["ttft_p50"] is not None:
         parts.append(f"TTFT p50={best['ttft_p50']:.3f}s")
+    if best["ttft_p95"] is not None:
+        parts.append(f"TTFT p95={best['ttft_p95']:.3f}s")
+    if best["ttft_cv"] is not None:
+        parts.append(f"CV={best['ttft_cv']:.3f}")
     if best["tok_p50"] is not None:
         parts.append(f"tok/s p50={best['tok_p50']:.0f}")
     if best["task_pct"] is not None:
         parts.append(f"task={best['task_pct']:.0f}%")
     if parts:
         print("  " + " | ".join(parts))
-    print("=" * 80 + "\n")
+    print("=" * _W + "\n")
 
     if ineligible:
         print("INELIGIBLE CONFIGS:")
