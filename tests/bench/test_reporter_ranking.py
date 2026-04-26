@@ -351,6 +351,11 @@ class TestPrintRankingConcurrencyEfficiency:
         output = _capture(rows)
         assert "N/A" in output
 
+    def test_conc_eff_header_present(self) -> None:
+        rows = [self._make_row()]
+        output = _capture(rows)
+        assert "Conc.Eff" in output
+
     def test_super_linear_efficiency_displayed(self) -> None:
         rows = [
             self._make_row(concurrency=1, throughput_tok_s=50.0, ttft_s=0.3),
@@ -359,3 +364,148 @@ class TestPrintRankingConcurrencyEfficiency:
         output = _capture(rows)
         # efficiency = 150 / (2 * 50) = 1.500
         assert "1.500" in output
+
+
+# ── composite quality-tier ranking tests ──────────────────────────────────────
+
+
+class TestCompositeRanking:
+    def _make_speed_row(
+        self,
+        *,
+        model_id: str,
+        backend_id: str = "b",
+        context_size: int = 65536,
+        concurrency: int = 1,
+        repeat_index: int = 1,
+        throughput_tok_s: float = 80.0,
+        ttft_s: float = 0.5,
+        outcome: str = "ok",
+    ) -> dict[str, Any]:
+        return {
+            "backend_id": backend_id,
+            "model_id": model_id,
+            "context_size": context_size,
+            "concurrency": concurrency,
+            "repeat_index": repeat_index,
+            "ttft_s": ttft_s,
+            "throughput_tok_s": throughput_tok_s,
+            "outcome": outcome,
+            "cpu_offload_detected": False,
+            "tier": "speed",
+            "quality_task_success": None,
+        }
+
+    def _make_coding_row(
+        self,
+        *,
+        model_id: str,
+        backend_id: str = "b",
+        context_size: int = 65536,
+        concurrency: int = 1,
+        repeat_index: int = 1,
+        throughput_tok_s: float = 60.0,
+        task_success: bool = True,
+        outcome: str = "ok",
+    ) -> dict[str, Any]:
+        return {
+            "backend_id": backend_id,
+            "model_id": model_id,
+            "context_size": context_size,
+            "concurrency": concurrency,
+            "repeat_index": repeat_index,
+            "ttft_s": 1.0,
+            "throughput_tok_s": throughput_tok_s,
+            "outcome": outcome,
+            "cpu_offload_detected": False,
+            "tier": "coding",
+            "quality_task_success": task_success,
+        }
+
+    def test_high_quality_ranks_above_faster_speed_only(self) -> None:
+        # "quality" has 90% task_success but only 50 tok/s
+        # "fast" has no coding data but 200 tok/s
+        rows = [
+            self._make_speed_row(model_id="fast", throughput_tok_s=200.0),
+            self._make_speed_row(model_id="quality", throughput_tok_s=50.0),
+            self._make_coding_row(model_id="quality", task_success=True),
+        ]
+        output = _capture(rows)
+        quality_pos = output.index("quality")
+        fast_pos = output.index("fast")
+        assert quality_pos < fast_pos
+
+    def test_med_quality_ranks_above_speed_only(self) -> None:
+        # "med" is 75% task_success (MED tier); "fast" has no coding data
+        rows = [
+            self._make_speed_row(model_id="fast", throughput_tok_s=200.0),
+            self._make_speed_row(model_id="med", throughput_tok_s=50.0),
+            self._make_coding_row(model_id="med", task_success=True),
+            self._make_coding_row(model_id="med", task_success=True),
+            self._make_coding_row(model_id="med", task_success=True),
+            self._make_coding_row(model_id="med", task_success=False),
+        ]
+        output = _capture(rows)
+        med_pos = output.index("med")
+        fast_pos = output.index("fast")
+        assert med_pos < fast_pos
+
+    def test_within_same_tier_higher_tok_ranks_first(self) -> None:
+        # Both HIGH quality; "turbo" has more tok/s → should rank first
+        rows = [
+            self._make_speed_row(model_id="slow", throughput_tok_s=40.0),
+            self._make_speed_row(model_id="turbo", throughput_tok_s=120.0),
+            self._make_coding_row(model_id="slow", task_success=True),
+            self._make_coding_row(model_id="turbo", task_success=True),
+        ]
+        output = _capture(rows)
+        turbo_pos = output.index("turbo")
+        slow_pos = output.index("slow")
+        assert turbo_pos < slow_pos
+
+    def test_quality_tier_column_in_header(self) -> None:
+        rows = [self._make_speed_row(model_id="m")]
+        output = _capture(rows)
+        assert "Q.Tier" in output
+
+    def test_high_quality_label_shown(self) -> None:
+        rows = [
+            self._make_speed_row(model_id="m"),
+            self._make_coding_row(model_id="m", task_success=True),
+        ]
+        output = _capture(rows)
+        assert "HIGH" in output
+
+    def test_speed_only_dash_shown_when_no_coding_data(self) -> None:
+        rows = [self._make_speed_row(model_id="m")]
+        output = _capture(rows)
+        assert "—" in output
+
+    def test_recommendation_includes_quality_tier(self) -> None:
+        rows = [
+            self._make_speed_row(model_id="m"),
+            self._make_coding_row(model_id="m", task_success=True),
+        ]
+        output = _capture(rows)
+        assert "Q.Tier:" in output
+
+    def test_custom_high_quality_threshold(self) -> None:
+        # With high_quality_pct=95, a model at 90% falls to MED
+        rows = [
+            self._make_speed_row(model_id="m"),
+            self._make_coding_row(model_id="m", task_success=True),
+            self._make_coding_row(model_id="m", task_success=True),
+            self._make_coding_row(model_id="m", task_success=True),
+            self._make_coding_row(model_id="m", task_success=True),
+            self._make_coding_row(model_id="m", task_success=True),
+            self._make_coding_row(model_id="m", task_success=True),
+            self._make_coding_row(model_id="m", task_success=True),
+            self._make_coding_row(model_id="m", task_success=True),
+            self._make_coding_row(model_id="m", task_success=True),
+            self._make_coding_row(model_id="m", task_success=False),  # 90%
+        ]
+        output_default = _capture(rows)  # high_quality_pct=85 → HIGH
+        assert "HIGH" in output_default
+
+        output_strict = _capture(rows, high_quality_pct=95.0)  # 90% < 95 → MED
+        assert "MED" in output_strict

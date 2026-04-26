@@ -11,10 +11,31 @@ from scripts.bench._reporter_helpers import (
     _cv,
     _fmt,
     _median,
-    _pct,
     _percentile,
 )
 from scripts.bench.reporter_apc import print_apc_section
+
+
+def _quality_tier_rank(
+    task_pct: float | None,
+    high_pct: float,
+    med_pct: float,
+) -> int:
+    """0 = HIGH (≥high_pct), 1 = MED (≥med_pct), 2 = speed-only (no coding data).
+
+    Lower rank sorts first — quality beats speed within the composite ordering.
+    Models with no coding data are not penalised by the eligibility gate but
+    sort after all models with quality measurements.
+    """
+    if task_pct is None:
+        return 2
+    if task_pct >= high_pct:
+        return 0
+    return 1
+
+
+def _quality_tier_label(task_pct: float | None, high_pct: float, med_pct: float) -> str:
+    return ("HIGH", "MED", "—")[_quality_tier_rank(task_pct, high_pct, med_pct)]
 
 
 def _is_eligible(
@@ -22,6 +43,7 @@ def _is_eligible(
     *,
     min_useful_ctx: int = 4096,
     min_throughput_toks_per_s: float = 5.0,
+    min_task_success_pct: float = 70.0,
 ) -> str | None:
     """Return None if the config passes all quality gates, or a rejection reason string.
 
@@ -88,7 +110,7 @@ def _is_eligible(
         floor = min_throughput_toks_per_s
         return f"throughput too low ({median_tok:.1f} tok/s < {floor} tok/s)"
 
-    # task_success >= 70% for coding rows that have quality data
+    # task_success >= min_task_success_pct for coding rows that have quality data
     coding_with_quality = [
         r
         for r in real_runs
@@ -96,8 +118,9 @@ def _is_eligible(
     ]
     if coding_with_quality:
         successes = sum(1 for r in coding_with_quality if r.get("quality_task_success"))
-        if successes / len(coding_with_quality) < 0.70:
-            return f"task success {successes / len(coding_with_quality):.0%} < 70%"
+        rate = successes / len(coding_with_quality)
+        if rate < min_task_success_pct / 100:
+            return f"task success {rate:.0%} < {min_task_success_pct:.0f}%"
 
     return None
 
@@ -201,13 +224,16 @@ def print_ranking(
     min_useful_ctx: int = 4096,
     min_throughput_toks_per_s: float = 5.0,
     cv_threshold: float = 0.3,
+    high_quality_pct: float = 85.0,
+    medium_quality_pct: float = 70.0,
 ) -> None:
-    """Print quality-gated ranking with recommendation banner.
+    """Print composite-scored ranking with recommendation banner.
 
-    Ineligible configs are listed below the ranking table with their rejection reason.
-    Threshold parameters keep defaults so existing callers need no changes.
-    When a config has > 1 repeat, ttft_p95 and ttft_cv are computed and the config is
-    flagged unstable when ttft_cv exceeds cv_threshold (default 0.3).
+    Sort order: quality tier first (HIGH ≥ high_quality_pct > MED ≥ medium_quality_pct >
+    speed-only), then tok/s descending within each tier, then TTFT ascending.
+    Models below medium_quality_pct are ineligible when coding data is present.
+    Configs without coding data are eligible but sort after all quality-measured
+    configs.
     """
     if not rows:
         return
@@ -230,6 +256,7 @@ def print_ranking(
             config_rows,
             min_useful_ctx=min_useful_ctx,
             min_throughput_toks_per_s=min_throughput_toks_per_s,
+            min_task_success_pct=medium_quality_pct,
         )
         if reason is not None:
             ineligible.append((config_key, reason))
@@ -311,21 +338,26 @@ def print_ranking(
         print_concurrency_scaling_section(rows)
         return
 
-    # Sort by TTFT p50 ascending (lower is better); fall back to tok/s descending
+    # Composite sort: quality tier → tok/s descending → TTFT ascending
     eligible.sort(
         key=lambda e: (
-            e["ttft_p50"] if e["ttft_p50"] is not None else float("inf"),
+            _quality_tier_rank(e["task_pct"], high_quality_pct, medium_quality_pct),
             -(e["tok_p50"] if e["tok_p50"] is not None else 0.0),
+            e["ttft_p50"] if e["ttft_p50"] is not None else float("inf"),
         )
     )
 
     print("=" * _W)
-    print("QUALITY-ELIGIBLE RANKING  (oom=No, offload=No, err≤5%, task≥70%)")
+    print(
+        f"COMPOSITE RANKING  "
+        f"(HIGH≥{high_quality_pct:.0f}% → MED≥{medium_quality_pct:.0f}%"
+        f" → speed-only  |  within tier: tok/s↓ then TTFT↑)"
+    )
     print("=" * _W)
     header = (
         f"{'Rank':>4}  {'Config (backend/model/ctx/c)':<44}  "
         f"{'TTFT p50(s)':>10}  {'TTFT p95(s)':>10}  {'CV':>6}  "
-        f"{'Tok/s p50':>9}  {'Task%':>5}  {'Stable':>6}  "
+        f"{'Tok/s p50':>9}  {'Q.Tier':>6}  {'Stable':>6}  "
         f"{'VRAM Hdrm':>9}  {'Conc.Eff':>9}"
     )
     print(header)
@@ -336,7 +368,9 @@ def print_ranking(
         ttft_p95_str = _fmt(entry["ttft_p95"], ".3f")
         cv_str = _fmt(entry["ttft_cv"], ".3f")
         tok_str = _fmt(entry["tok_p50"], ".0f")
-        task_str = _pct(entry["task_pct"])
+        tier_str = _quality_tier_label(
+            entry["task_pct"], high_quality_pct, medium_quality_pct
+        )
         if entry["unstable"] is None:
             stable_str = "--"
         elif entry["unstable"]:
@@ -354,14 +388,17 @@ def print_ranking(
         row_str = (
             f"{rank:>4}  {entry['config_key']:<44}  "
             f"{ttft_p50_str:>10}  {ttft_p95_str:>10}  {cv_str:>6}  "
-            f"{tok_str:>9}  {task_str:>5}  {stable_str:>6}  "
+            f"{tok_str:>9}  {tier_str:>6}  {stable_str:>6}  "
             f"{headroom_str:>9}  {eff_str:>9}"
         )
         print(row_str)
 
     print("-" * _W)
     best = eligible[0]
-    print(f"\n  *** RECOMMENDED: {best['config_key']} ***")
+    best_tier = _quality_tier_label(
+        best["task_pct"], high_quality_pct, medium_quality_pct
+    )
+    print(f"\n  *** RECOMMENDED: {best['config_key']}  [Q.Tier: {best_tier}] ***")
     parts = []
     if best["ttft_p50"] is not None:
         parts.append(f"TTFT p50={best['ttft_p50']:.3f}s")
