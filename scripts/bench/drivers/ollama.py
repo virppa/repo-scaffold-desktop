@@ -104,16 +104,33 @@ class OllamaDriver:
             raw_eval_duration_ns / 1e9 if raw_eval_duration_ns is not None else None
         )
 
+        raw_prompt_eval_duration_ns: int | None = final_frame.get(
+            "prompt_eval_duration"
+        )
+        prompt_eval_duration_s: float | None = (
+            raw_prompt_eval_duration_ns / 1e9
+            if raw_prompt_eval_duration_ns is not None
+            else None
+        )
+        load_duration_s: float | None = (
+            raw_load_duration_ns / 1e9 if raw_load_duration_ns is not None else None
+        )
+
         # Fall back to Ollama-reported prompt_eval_duration when client-side TTFT
         # was not captured (e.g. thinking models stream empty content chunks first).
-        if ttft_s is None and final_frame.get("prompt_eval_duration"):
-            ttft_s = final_frame["prompt_eval_duration"] / 1e9
+        if ttft_s is None and prompt_eval_duration_s is not None:
+            ttft_s = prompt_eval_duration_s
+
+        cache_state: str | None = final_frame.get("cache_state") or None
 
         return GenerationResult(
             text="".join(text_parts),
             ttft_s=ttft_s,
             decode_time_s=decode_time_s,
-            raw_prompt_eval_duration_ns=final_frame.get("prompt_eval_duration"),
+            prompt_eval_duration_s=prompt_eval_duration_s,
+            load_duration_s=load_duration_s,
+            cache_state=cache_state,
+            raw_prompt_eval_duration_ns=raw_prompt_eval_duration_ns,
             raw_eval_duration_ns=raw_eval_duration_ns,
             raw_load_duration_ns=raw_load_duration_ns,
             input_tokens=final_frame.get("prompt_eval_count"),
