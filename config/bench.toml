@@ -162,13 +162,19 @@ name = "speed"
 name = "coding"
 
 [[tiers]]
-# TTFT with shared 50k-token repo prefix. Measures vLLM APC reuse vs Ollama.
+# TTFT with shared repo-prefix fixture. Measures vLLM APC reuse vs Ollama.
 # First request per model = cache warm; subsequent = prefix_warm.
+# context_sizes capped at 131072: fixture fills ~75% of context at each size.
+# Above 131072 the fixture becomes an increasingly small fraction of KV buffer,
+# making TTFT numbers reflect VRAM pressure rather than prefill performance.
 name = "prefill_shared"
+context_sizes = [16384, 32768, 65536, 131072]
 
 [[tiers]]
-# TTFT with randomized same-length content. APC null baseline (cold prefill every run).
+# TTFT with same-length randomised content. APC null baseline (cold prefill every run).
+# Same context_sizes cap as prefill_shared — content scales to 75% fill at each size.
 name = "prefill_unshared"
+context_sizes = [16384, 32768, 65536, 131072]
 
 [[tiers]]
 # Long-context OOM cliff probe at boundary_context_sizes. OOM is recorded, not fatal.

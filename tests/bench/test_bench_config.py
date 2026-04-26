@@ -267,6 +267,70 @@ name = "speed"
     assert cfg.matrix.skip_oom_larger_ctx is False
 
 
+def test_tier_context_sizes_overrides_matrix(tmp_path: Path) -> None:
+    """Per-tier context_sizes replaces matrix.context_sizes for that tier only."""
+    toml = """
+[matrix]
+context_sizes = [1024, 4096]
+boundary_context_sizes = [8192]
+concurrency_levels = [1]
+repeats = 1
+
+[[backends]]
+id = "local_a"
+enabled = true
+base_url = "http://localhost:1/"
+api_key = "x"
+
+[[models]]
+id = "m"
+backend_id = "local_a"
+
+[[tiers]]
+name = "speed"
+
+[[tiers]]
+name = "prefill_shared"
+context_sizes = [2048]
+"""
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, toml))
+    cases = cfg.expand_matrix()
+
+    speed_ctx = {c.context_size for c in cases if c.tier == "speed"}
+    prefill_ctx = {c.context_size for c in cases if c.tier == "prefill_shared"}
+
+    assert speed_ctx == {1024, 4096}
+    assert prefill_ctx == {2048}
+
+
+def test_tier_context_sizes_none_uses_matrix(tmp_path: Path) -> None:
+    """TierConfig without context_sizes falls back to matrix.context_sizes."""
+    toml = """
+[matrix]
+context_sizes = [1024, 4096]
+boundary_context_sizes = [8192]
+concurrency_levels = [1]
+repeats = 1
+
+[[backends]]
+id = "local_a"
+enabled = true
+base_url = "http://localhost:1/"
+api_key = "x"
+
+[[models]]
+id = "m"
+backend_id = "local_a"
+
+[[tiers]]
+name = "speed"
+"""
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, toml))
+    cases = cfg.expand_matrix()
+    ctx = {c.context_size for c in cases if c.tier == "speed"}
+    assert ctx == {1024, 4096}
+
+
 def test_matrix_require_single_concurrency_first_can_be_disabled(
     tmp_path: Path,
 ) -> None:

@@ -76,11 +76,16 @@ local worker sessions in isolated git worktrees.
 
 
 def generate_fixtures() -> None:
-    """Create scripts/bench/fixtures/prefill_50k.txt (~50k tokens)."""
+    """Create scripts/bench/fixtures/prefill_base.txt (~100k tokens / 400k chars).
+
+    The base fixture is sliced at runtime by prefill_shared/unshared prompts to
+    match each context_size (75% fill). At the largest prefill context (131072
+    tokens), 75% fill = ~98k tokens = ~393k chars, so 450k chars gives headroom.
+    """
     _FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
-    target = _FIXTURES_DIR / "prefill_50k.txt"
-    # Target: ~50k tokens ≈ 200k chars at 4 chars/token
-    target_chars = 200_000
+    target = _FIXTURES_DIR / "prefill_base.txt"
+    # 450k chars ≈ 112k tokens — covers 131k context at 75% fill with headroom
+    target_chars = 450_000
     base = _PROJECT_SUMMARY_TEMPLATE
     parts = [base]
     section_idx = 0

@@ -48,9 +48,16 @@ _WORDS = [
 _CHARS_PER_TOKEN = 4
 
 
-def make_prefill_unshared_prompt(target: int = 50000, seed: int = 42) -> BenchPrompt:
+def make_prefill_unshared_prompt(
+    context_size: int = 65536, seed: int = 42
+) -> BenchPrompt:
+    """Build a prefill_unshared prompt sized to 75% of context_size.
+
+    Content is freshly randomised each call (no shared prefix) — this is the
+    cold-prefill baseline against which prefill_shared APC gains are measured.
+    """
     rng = random.Random(seed)
-    target_chars = target * _CHARS_PER_TOKEN
+    target_chars = int(context_size * 0.75) * _CHARS_PER_TOKEN
     words: list[str] = []
     total = 0
     while total < target_chars:
@@ -60,8 +67,7 @@ def make_prefill_unshared_prompt(target: int = 50000, seed: int = 42) -> BenchPr
     text = " ".join(words)
     token_count_estimate = len(text) // _CHARS_PER_TOKEN
     prompt_hash = hashlib.sha256(text.encode()).hexdigest()
-    # seed here is the RNG seed for text generation, not the LLM generation seed.
-    # BenchPrompt.seed (None) controls LLM reproducibility separately.
+    # seed is the RNG seed for text generation, not the LLM generation seed.
     return BenchPrompt(
         text=text,
         prompt_hash=prompt_hash,

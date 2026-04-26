@@ -156,11 +156,19 @@ The 9B floor model can plausibly reach 256K, giving quality data at maximum nati
 
 Speed-tier data showed 98–105% concurrency efficiency across all 7 models. Ollama serialises requests on a single GPU — this is expected behaviour and will not change at higher context sizes. Removing `concurrency=2` halves the total matrix run count with no loss of useful data.
 
-### Prefill tiers at high context sizes — known limitation
+### Prefill tiers — size-matched fixture (implemented)
 
-The `prefill_shared` and `prefill_unshared` tiers use a fixed 50K-token fixture regardless of `context_size`. At 196K/256K context, the fixture fills only ~20% of the allocated KV buffer. TTFT numbers at those sizes reflect VRAM pressure from the large KV allocation, not genuine long-context prefill performance.
+`prefill_shared` and `prefill_unshared` now receive the current `context_size` at runtime and generate a prompt sized to **75% of that context** (e.g. ~49K tokens at 65K context, ~98K tokens at 131K context). The base fixture (`prefill_base.txt`, ~112K tokens / 450K chars) is generated once by `--generate-fixtures` and sliced per request.
 
-A **per-tier `context_sizes` override** in `BenchConfig` would fix this — prefill tiers could be capped at 65K (where 50K fills ~75% of context), and speed/coding tiers could run the full range independently. This is a worthwhile future config addition; interpret prefill results at 196K+ with the fixture-size limitation in mind.
+Both prefill tiers use a **per-tier `context_sizes` override** capped at 131072:
+
+```toml
+[[tiers]]
+name = "prefill_shared"
+context_sizes = [16384, 32768, 65536, 131072]
+```
+
+Speed and coding tiers continue to use the full `matrix.context_sizes` range. This decoupling is the key fix — prefill results now reflect genuine long-context prefill performance at each tested size, and the vLLM APC comparison is apples-to-apples across all four sizes.
 
 ### Final matrix configuration
 
@@ -182,4 +190,4 @@ New matrix (6 ctx × 1 conc × 3 repeats = 18 cases/model/tier): **25% fewer run
 - **qwen3.6:35b-a3b VRAM watch**: 3.9 GB headroom at speed tier; expect OOM somewhere between 131K and 196K. The adaptive skip records max working context automatically.
 - **devstral:24b 64K degradation**: coding tier will reveal whether quality compensates for the 50% throughput drop at 64K.
 - **qwen3.5:9b quant comparison**: Q4 vs Q8 quality delta in the coding tier is the key data point — if equivalent, Q4 at 6.6 GB is the clear production floor model.
-- **Per-tier context_sizes**: implement as a follow-on config addition to make prefill results at 196K+ meaningful.
+- **Per-tier context_sizes**: implemented — prefill tiers capped at 131K with 75%-fill fixture scaling.
