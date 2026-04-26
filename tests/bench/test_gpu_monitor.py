@@ -50,6 +50,7 @@ class TestAllNone:
         assert sample.avg_power_w is None
         assert sample.peak_temp_c is None
         assert sample.avg_sm_clock_mhz is None
+        assert sample.min_sm_clock_mhz is None
         assert sample.avg_mem_clock_mhz is None
 
 
@@ -72,6 +73,7 @@ class TestGpuMonitorPopulated:
         assert sample.avg_power_w == pytest.approx(200.5)
         assert sample.peak_temp_c == pytest.approx(75.0)
         assert sample.avg_sm_clock_mhz == pytest.approx(1530.0)
+        assert sample.min_sm_clock_mhz == pytest.approx(1530.0)
         assert sample.avg_mem_clock_mhz == pytest.approx(7000.0)
 
     def test_peak_fields_track_maximum(self) -> None:
@@ -87,6 +89,26 @@ class TestGpuMonitorPopulated:
         assert sample.peak_vram_gb == pytest.approx(3072 / 1024)
         assert sample.peak_temp_c == pytest.approx(85.0)
         assert sample.avg_gpu_util_pct == pytest.approx((60.0 + 90.0 + 75.0) / 3)
+
+    def test_min_sm_clock_tracks_minimum(self) -> None:
+        monitor = GpuMonitor()
+        monitor._samples = [
+            (1.0, 60.0, 40.0, 150.0, 70.0, 1800.0, 6000.0),
+            (1.0, 70.0, 45.0, 160.0, 72.0, 1200.0, 6000.0),
+            (1.0, 65.0, 42.0, 155.0, 71.0, 1600.0, 6000.0),
+        ]
+        sample = monitor.stop()
+
+        assert sample.min_sm_clock_mhz == pytest.approx(1200.0)
+        assert sample.avg_sm_clock_mhz == pytest.approx((1800.0 + 1200.0 + 1600.0) / 3)
+
+    def test_min_sm_clock_equals_avg_when_single_sample(self) -> None:
+        monitor = GpuMonitor()
+        monitor._samples = [(2.0, 80.0, 50.0, 200.0, 75.0, 1530.0, 7000.0)]
+        sample = monitor.stop()
+
+        assert sample.min_sm_clock_mhz == pytest.approx(1530.0)
+        assert sample.avg_sm_clock_mhz == pytest.approx(1530.0)
 
 
 class TestGpuMonitorAbsent:
@@ -105,6 +127,7 @@ class TestGpuMonitorAbsent:
         assert sample.avg_power_w is None
         assert sample.peak_temp_c is None
         assert sample.avg_sm_clock_mhz is None
+        assert sample.min_sm_clock_mhz is None
         assert sample.avg_mem_clock_mhz is None
 
     @patch("scripts.bench.gpu_monitor.subprocess.run")

@@ -28,6 +28,7 @@ class GpuSample:
     avg_power_w: float | None
     peak_temp_c: float | None
     avg_sm_clock_mhz: float | None
+    min_sm_clock_mhz: float | None
     avg_mem_clock_mhz: float | None
 
 
@@ -39,6 +40,7 @@ def _all_none() -> GpuSample:
         avg_power_w=None,
         peak_temp_c=None,
         avg_sm_clock_mhz=None,
+        min_sm_clock_mhz=None,
         avg_mem_clock_mhz=None,
     )
 
@@ -122,5 +124,6 @@ class GpuMonitor:
             avg_power_w=sum(power) / n,
             peak_temp_c=max(temp),
             avg_sm_clock_mhz=sum(sm_clk) / n,
+            min_sm_clock_mhz=min(sm_clk),
             avg_mem_clock_mhz=sum(mem_clk) / n,
         )

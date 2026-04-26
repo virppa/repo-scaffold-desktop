@@ -24,6 +24,8 @@ from scripts.bench.tasks.prefill_shared import make_prefill_shared_prompt
 from scripts.bench.tasks.prefill_unshared import make_prefill_unshared_prompt
 from scripts.bench.tasks.speed import make_speed_prompt
 
+THROTTLE_THRESHOLD = 0.10
+
 
 def _case_id(case: BenchCase) -> str:
     return (
@@ -282,6 +284,13 @@ def run(
         gpu_sample = gpu_mon.stop()
         sys_result = sys_mon.stop()
 
+        avg_sm = gpu_sample.avg_sm_clock_mhz
+        min_sm = gpu_sample.min_sm_clock_mhz
+        if avg_sm is None or avg_sm == 0.0 or min_sm is None:
+            thermal_throttle_detected: bool | None = None
+        else:
+            thermal_throttle_detected = (avg_sm - min_sm) / avg_sm > THROTTLE_THRESHOLD
+
         oom = False
         outcome = "ok"
         error_message: str | None = None
@@ -360,6 +369,8 @@ def run(
             avg_power_w=gpu_sample.avg_power_w,
             peak_temp_c=gpu_sample.peak_temp_c,
             avg_sm_clock_mhz=gpu_sample.avg_sm_clock_mhz,
+            min_sm_clock_mhz=gpu_sample.min_sm_clock_mhz,
+            thermal_throttle_detected=thermal_throttle_detected,
             avg_mem_clock_mhz=gpu_sample.avg_mem_clock_mhz,
             peak_ram_gb=sys_result.peak_ram_gb,
             cpu_offload_detected=sys_result.cpu_offload_detected,
