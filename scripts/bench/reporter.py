@@ -119,27 +119,55 @@ def print_summary_table(rows: list[dict[str, Any]]) -> None:
 # ── Quality-gated ranking ─────────────────────────────────────────────────────
 
 
-def _is_eligible(rows_for_model: list[dict[str, Any]]) -> bool:
-    """Return True if the model meets all quality-gate criteria."""
-    if not rows_for_model:
-        return False
+def _is_eligible(
+    rows_for_config: list[dict[str, Any]],
+    *,
+    min_useful_ctx: int = 4096,
+    min_throughput_toks_per_s: float = 5.0,
+) -> str | None:
+    """Return None if the config passes all quality gates, or a rejection reason string.
 
-    real_runs = [r for r in rows_for_model if r.get("repeat_index", 0) >= 1]
+    Evaluated per (model, context_size, concurrency) group — not across all configs for
+    a model. Each gate that fails returns a short human-readable reason so callers can
+    display it next to the disqualified config.
+    """
+    if not rows_for_config:
+        return "no data"
+
+    real_runs = [r for r in rows_for_config if r.get("repeat_index", 0) >= 1]
     if not real_runs:
-        return False
+        return "no real runs"
 
-    # Must have no OOM
+    # OOM at this specific (model, ctx, concurrency) config
     if any(r.get("outcome") == "oom" for r in real_runs):
-        return False
+        return "OOM"
 
-    # Must have no CPU offload
+    # CPU offload anywhere in this config
     if any(r.get("cpu_offload_detected") for r in real_runs):
-        return False
+        return "CPU offload"
 
     # error_rate <= 5%
     errors = sum(1 for r in real_runs if r.get("outcome") not in ("ok", None))
     if errors / len(real_runs) > 0.05:
-        return False
+        return f"error rate {errors / len(real_runs):.0%}"
+
+    # Context size too small: all runs used a context below the minimum useful threshold
+    ctx_values = [
+        r["context_size"] for r in real_runs if r.get("context_size") is not None
+    ]
+    if ctx_values and all(c < min_useful_ctx for c in ctx_values):
+        return f"context too small (max {max(ctx_values)} < {min_useful_ctx})"
+
+    # Throughput too low: median tok/s falls below the configured floor
+    tok_values = [
+        r["throughput_tok_s"]
+        for r in real_runs
+        if r.get("throughput_tok_s") is not None
+    ]
+    median_tok = _median(tok_values)
+    if median_tok is not None and median_tok < min_throughput_toks_per_s:
+        floor = min_throughput_toks_per_s
+        return f"throughput too low ({median_tok:.1f} tok/s < {floor} tok/s)"
 
     # task_success >= 70% for coding rows that have quality data
     coding_with_quality = [
@@ -150,13 +178,22 @@ def _is_eligible(rows_for_model: list[dict[str, Any]]) -> bool:
     if coding_with_quality:
         successes = sum(1 for r in coding_with_quality if r.get("quality_task_success"))
         if successes / len(coding_with_quality) < 0.70:
-            return False
+            return f"task success {successes / len(coding_with_quality):.0%} < 70%"
 
-    return True
+    return None
 
 
-def print_ranking(rows: list[dict[str, Any]]) -> None:
-    """Print quality-gated ranking with recommendation banner."""
+def print_ranking(
+    rows: list[dict[str, Any]],
+    *,
+    min_useful_ctx: int = 4096,
+    min_throughput_toks_per_s: float = 5.0,
+) -> None:
+    """Print quality-gated ranking with recommendation banner.
+
+    Ineligible configs are listed below the ranking table with their rejection reason.
+    Threshold parameters keep defaults so existing callers need no changes.
+    """
     if not rows:
         return
 
@@ -170,8 +207,15 @@ def print_ranking(rows: list[dict[str, Any]]) -> None:
         by_config.setdefault(key, []).append(r)
 
     eligible: list[dict[str, Any]] = []
+    ineligible: list[tuple[str, str]] = []  # (config_key, rejection_reason)
     for config_key, config_rows in by_config.items():
-        if not _is_eligible(config_rows):
+        reason = _is_eligible(
+            config_rows,
+            min_useful_ctx=min_useful_ctx,
+            min_throughput_toks_per_s=min_throughput_toks_per_s,
+        )
+        if reason is not None:
+            ineligible.append((config_key, reason))
             continue
         real_runs = [r for r in config_rows if r.get("repeat_index", 0) >= 1]
         ttft_values: list[float] = [
@@ -203,6 +247,11 @@ def print_ranking(rows: list[dict[str, Any]]) -> None:
 
     if not eligible:
         print("No quality-eligible configurations found for this sweep.\n")
+        if ineligible:
+            print("INELIGIBLE CONFIGS:")
+            for config_key, reason in ineligible:
+                print(f"  {config_key}  [{reason}]")
+            print()
         return
 
     # Sort by TTFT p50 ascending (lower is better); fall back to tok/s descending
@@ -246,6 +295,12 @@ def print_ranking(rows: list[dict[str, Any]]) -> None:
     if parts:
         print("  " + " | ".join(parts))
     print("=" * 80 + "\n")
+
+    if ineligible:
+        print("INELIGIBLE CONFIGS:")
+        for config_key, reason in ineligible:
+            print(f"  {config_key}  [{reason}]")
+        print()
 
 
 # ── Compare table ─────────────────────────────────────────────────────────────
