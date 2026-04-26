@@ -160,17 +160,20 @@ def print_ranking(rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
 
-    # Group by (backend_id, model_id)
-    by_model: dict[str, list[dict[str, Any]]] = {}
+    # Group by (backend_id, model_id, context_size, concurrency) — one row per config
+    by_config: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
-        key = f"{r.get('backend_id', '')} / {r.get('model_id', '')}"
-        by_model.setdefault(key, []).append(r)
+        key = (
+            f"{r.get('backend_id', '')}/{r.get('model_id', '')} "
+            f"ctx={r.get('context_size')} c={r.get('concurrency')}"
+        )
+        by_config.setdefault(key, []).append(r)
 
     eligible: list[dict[str, Any]] = []
-    for model_key, model_rows in by_model.items():
-        if not _is_eligible(model_rows):
+    for config_key, config_rows in by_config.items():
+        if not _is_eligible(config_rows):
             continue
-        real_runs = [r for r in model_rows if r.get("repeat_index", 0) >= 1]
+        real_runs = [r for r in config_rows if r.get("repeat_index", 0) >= 1]
         ttft_values: list[float] = [
             r["ttft_s"] for r in real_runs if r.get("ttft_s") is not None
         ]
@@ -191,7 +194,7 @@ def print_ranking(rows: list[dict[str, Any]]) -> None:
 
         eligible.append(
             {
-                "model_key": model_key,
+                "config_key": config_key,
                 "ttft_p50": _median(ttft_values),
                 "tok_p50": _median(tok_values),
                 "task_pct": task_pct,
@@ -210,29 +213,29 @@ def print_ranking(rows: list[dict[str, Any]]) -> None:
         )
     )
 
-    print("=" * 72)
+    print("=" * 80)
     print("QUALITY-ELIGIBLE RANKING  (oom=No, offload=No, err≤5%, task≥70%)")
-    print("=" * 72)
+    print("=" * 80)
     header = (
-        f"{'Rank':>4}  {'Model / Backend':<36}  "
+        f"{'Rank':>4}  {'Config (backend/model/ctx/c)':<44}  "
         f"{'TTFT p50(s)':>10}  {'Tok/s p50':>9}  {'Task%':>5}"
     )
     print(header)
-    print("-" * 72)
+    print("-" * 80)
 
     for rank, entry in enumerate(eligible, start=1):
         ttft_str = _fmt(entry["ttft_p50"], ".3f")
         tok_str = _fmt(entry["tok_p50"], ".0f")
         task_str = _pct(entry["task_pct"])
         row_str = (
-            f"{rank:>4}  {entry['model_key']:<36}  "
+            f"{rank:>4}  {entry['config_key']:<44}  "
             f"{ttft_str:>10}  {tok_str:>9}  {task_str:>5}"
         )
         print(row_str)
 
-    print("-" * 72)
+    print("-" * 80)
     best = eligible[0]
-    print(f"\n  *** RECOMMENDED: {best['model_key']} ***")
+    print(f"\n  *** RECOMMENDED: {best['config_key']} ***")
     parts = []
     if best["ttft_p50"] is not None:
         parts.append(f"TTFT p50={best['ttft_p50']:.3f}s")
@@ -242,7 +245,7 @@ def print_ranking(rows: list[dict[str, Any]]) -> None:
         parts.append(f"task={best['task_pct']:.0f}%")
     if parts:
         print("  " + " | ".join(parts))
-    print("=" * 72 + "\n")
+    print("=" * 80 + "\n")
 
 
 # ── Compare table ─────────────────────────────────────────────────────────────

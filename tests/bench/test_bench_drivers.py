@@ -186,6 +186,67 @@ def test_ollama_is_available_returns_true_when_reachable():
         assert driver.is_available() is True
 
 
+def test_ollama_generate_cold_start_populates_duration_fields():
+    with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_COLD_BODY)):
+        driver = OllamaDriver()
+        result = driver.generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+
+    # prompt_eval_duration_s = 100_000_000 ns / 1e9
+    assert result.prompt_eval_duration_s == pytest.approx(0.1)
+    # load_duration_s = 2_000_000 ns / 1e9
+    assert result.load_duration_s == pytest.approx(0.002)
+    # decode_time_s = 500_000_000 ns / 1e9
+    assert result.decode_time_s == pytest.approx(0.5)
+
+
+def test_ollama_generate_warm_start_load_duration_s_is_none():
+    with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_WARM_BODY)):
+        driver = OllamaDriver()
+        result = driver.generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+
+    assert result.load_duration_s is None
+    assert result.prompt_eval_duration_s == pytest.approx(0.05)
+
+
+def test_ollama_generate_cache_state_none_when_absent():
+    with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_COLD_BODY)):
+        result = OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+
+    assert result.cache_state is None
+
+
+def test_ollama_generate_cache_state_captured_from_response():
+    body = _ndjson(
+        {
+            "model": "q",
+            "message": {"role": "assistant", "content": "Hi"},
+            "done": False,
+        },
+        {
+            "model": "q",
+            "done": True,
+            "cache_state": "loaded",
+            "load_duration": 0,
+            "prompt_eval_count": 5,
+            "prompt_eval_duration": 50_000_000,
+            "eval_count": 10,
+            "eval_duration": 200_000_000,
+        },
+    )
+    with patch("urllib.request.urlopen", _mock_urlopen(body)):
+        result = OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+
+    assert result.cache_state == "loaded"
+
+
 # ---------------------------------------------------------------------------
 # VllmDriver
 # ---------------------------------------------------------------------------
