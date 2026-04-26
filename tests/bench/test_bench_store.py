@@ -417,6 +417,51 @@ class TestModelMetadataColumns:
         assert result.model_family is None
 
 
+class TestModelParamCountColumn:
+    """Tests for model_param_count TEXT column added in WOR-207."""
+
+    def test_model_param_count_defaults_to_none(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run())
+        result = store.get_by_run_id("run-001")[0]
+        assert result.model_param_count is None
+
+    def test_model_param_count_round_trips(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run(model_param_count="30.5B"))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.model_param_count == "30.5B"
+
+    def test_migration_adds_model_param_count_column(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "old_schema.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE bench_run (
+                run_id TEXT NOT NULL, case_id TEXT NOT NULL,
+                repeat_index INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (run_id, case_id, repeat_index)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bench_run(run_id, case_id, repeat_index) VALUES ('r1','c1',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        store = BenchStore(db_path=db_path)
+        result = store.get_by_run_id("r1")[0]
+        assert result.model_param_count is None
+
+    def test_bench_run_field_is_str_or_none(self) -> None:
+        run = _run(model_param_count="7B")
+        assert run.model_param_count == "7B"
+        run2 = _run()
+        assert run2.model_param_count is None
+
+
 class TestPrintRanking:
     """Tests for per-config grouping in print_ranking()."""
 

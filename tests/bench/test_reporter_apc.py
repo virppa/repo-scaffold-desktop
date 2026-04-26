@@ -13,6 +13,7 @@ from scripts.bench.reporter import (
     compute_apc_speedup,
     compute_concurrency_efficiency,
     print_apc_section,
+    print_concurrency_scaling_section,
     print_ranking,
 )
 
@@ -335,3 +336,139 @@ class TestComputeConcurrencyEfficiency:
         result = compute_concurrency_efficiency(rows)
         assert result[("x", "m", 4096, 2)] == pytest.approx(0.80)
         assert result[("y", "m", 4096, 2)] == pytest.approx(0.60)
+
+
+# ── print_apc_section() conditional label tests ───────────────────────────────
+
+
+class TestPrintApcSectionLabels:
+    def _capture_apc(self, rows: list[dict[str, Any]]) -> str:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_apc_section(rows)
+        return buf.getvalue()
+
+    def test_speedup_above_1p5_shows_apc_effective(self) -> None:
+        rows = [
+            _prefill_row("prefill_shared", ttft_s=1.0),
+            _prefill_row("prefill_unshared", ttft_s=2.0),  # 2.0x > 1.5
+        ]
+        assert "APC effective" in self._capture_apc(rows)
+
+    def test_speedup_below_1p1_shows_no_apc_benefit(self) -> None:
+        rows = [
+            _prefill_row("prefill_shared", ttft_s=1.0),
+            _prefill_row("prefill_unshared", ttft_s=1.05),  # 1.05x < 1.1
+        ]
+        assert "no APC benefit" in self._capture_apc(rows)
+
+    def test_speedup_between_1p1_and_1p5_shows_no_label(self) -> None:
+        rows = [
+            _prefill_row("prefill_shared", ttft_s=1.0),
+            _prefill_row("prefill_unshared", ttft_s=1.3),  # 1.3x
+        ]
+        output = self._capture_apc(rows)
+        assert "APC effective" not in output
+        assert "no APC benefit" not in output
+
+    def test_na_ratio_shows_no_label(self) -> None:
+        rows = [_prefill_row("prefill_shared", ttft_s=0.5)]
+        output = self._capture_apc(rows)
+        assert "APC effective" not in output
+        assert "no APC benefit" not in output
+
+    def test_exactly_1p5x_no_label(self) -> None:
+        # boundary: ratio == 1.5 (not strictly > 1.5)
+        rows = [
+            _prefill_row("prefill_shared", ttft_s=1.0),
+            _prefill_row("prefill_unshared", ttft_s=1.5),
+        ]
+        output = self._capture_apc(rows)
+        assert "APC effective" not in output
+
+    def test_exactly_1p1x_no_label(self) -> None:
+        # boundary: ratio == 1.1 (not strictly < 1.1)
+        rows = [
+            _prefill_row("prefill_shared", ttft_s=1.0),
+            _prefill_row("prefill_unshared", ttft_s=1.1),
+        ]
+        output = self._capture_apc(rows)
+        assert "no APC benefit" not in output
+
+
+# ── print_concurrency_scaling_section() tests ────────────────────────────────
+
+
+class TestPrintConcurrencyScalingSection:
+    def _capture_scaling(self, rows: list[dict[str, Any]]) -> str:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_concurrency_scaling_section(rows)
+        return buf.getvalue()
+
+    def test_no_concurrency_gt1_no_output(self) -> None:
+        assert self._capture_scaling([_eff_row(concurrency=1)]) == ""
+
+    def test_no_baseline_no_output(self) -> None:
+        assert self._capture_scaling([_eff_row(concurrency=2)]) == ""
+
+    def test_shows_concurrency_scaling_header(self) -> None:
+        rows = [
+            _eff_row(concurrency=1, throughput_tok_s=100.0),
+            _eff_row(concurrency=2, throughput_tok_s=80.0),
+        ]
+        assert "CONCURRENCY SCALING" in self._capture_scaling(rows)
+
+    def test_low_efficiency_shows_serialised(self) -> None:
+        # eff = 80 / (2 * 100) = 0.40 < 0.5
+        rows = [
+            _eff_row(concurrency=1, throughput_tok_s=100.0),
+            _eff_row(concurrency=2, throughput_tok_s=80.0),
+        ]
+        assert "serialised" in self._capture_scaling(rows)
+
+    def test_high_efficiency_shows_scales_well(self) -> None:
+        # eff = 180 / (2 * 100) = 0.90 > 0.8
+        rows = [
+            _eff_row(concurrency=1, throughput_tok_s=100.0),
+            _eff_row(concurrency=2, throughput_tok_s=180.0),
+        ]
+        assert "scales well" in self._capture_scaling(rows)
+
+    def test_medium_efficiency_no_label(self) -> None:
+        # eff = 140 / (2 * 100) = 0.70 (between 0.5 and 0.8)
+        rows = [
+            _eff_row(concurrency=1, throughput_tok_s=100.0),
+            _eff_row(concurrency=2, throughput_tok_s=140.0),
+        ]
+        output = self._capture_scaling(rows)
+        assert "serialised" not in output
+        assert "scales well" not in output
+
+    def test_efficiency_value_shown(self) -> None:
+        rows = [
+            _eff_row(concurrency=1, throughput_tok_s=100.0),
+            _eff_row(concurrency=2, throughput_tok_s=150.0),  # eff=0.750
+        ]
+        assert "0.750" in self._capture_scaling(rows)
+
+    def test_ranking_includes_scaling_section_when_concurrency_gt1(self) -> None:
+        base = {
+            "repeat_index": 1,
+            "outcome": "ok",
+            "cpu_offload_detected": False,
+            "context_size": 4096,
+            "tier": "speed",
+            "quality_task_success": None,
+            "backend_id": "b",
+            "model_id": "m",
+            "ttft_s": 0.3,
+        }
+        rows = [
+            {**base, "concurrency": 1, "throughput_tok_s": 100.0},
+            {**base, "concurrency": 2, "throughput_tok_s": 80.0},
+        ]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_ranking(rows)
+        assert "CONCURRENCY SCALING" in buf.getvalue()

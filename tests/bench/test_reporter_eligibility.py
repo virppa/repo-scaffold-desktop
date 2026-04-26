@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from scripts.bench.reporter import (
+    OOM_RISK_HEADROOM_GB,
     _cv,
     _is_eligible,
     _percentile,
@@ -289,3 +290,53 @@ class TestCV:
         result = _cv([0.30, 0.31])
         assert result is not None
         assert result < 0.3
+
+
+# ── _is_eligible() VRAM headroom gate tests ───────────────────────────────────
+
+
+class TestVramHeadroomGate:
+    def _vram_row(
+        self,
+        peak_vram_gb: float | None,
+        total_vram_gb: float | None,
+    ) -> dict[str, Any]:
+        r = _row()
+        r["peak_vram_gb"] = peak_vram_gb
+        r["total_vram_gb"] = total_vram_gb
+        return r
+
+    def test_low_headroom_disqualifies(self) -> None:
+        # headroom = 24.0 - 23.7 = 0.3 < OOM_RISK_HEADROOM_GB
+        rows = [self._vram_row(23.7, 24.0)]
+        reason = _is_eligible(rows)
+        assert reason is not None
+        assert "OOM risk" in reason
+
+    def test_headroom_at_threshold_passes(self) -> None:
+        # headroom = 24.0 - 23.5 = 0.5 (exactly at threshold — not strictly less than)
+        rows = [self._vram_row(24.0 - OOM_RISK_HEADROOM_GB, 24.0)]
+        assert _is_eligible(rows) is None
+
+    def test_sufficient_headroom_passes(self) -> None:
+        rows = [self._vram_row(20.0, 24.0)]  # headroom = 4.0
+        assert _is_eligible(rows) is None
+
+    def test_no_peak_vram_skips_gate(self) -> None:
+        rows = [self._vram_row(None, 24.0)]
+        assert _is_eligible(rows) is None
+
+    def test_no_total_vram_skips_gate(self) -> None:
+        rows = [self._vram_row(23.9, None)]
+        assert _is_eligible(rows) is None
+
+    def test_oom_risk_checked_after_cpu_offload(self) -> None:
+        # CPU offload takes priority over VRAM headroom gate
+        r = self._vram_row(23.9, 24.0)
+        r["cpu_offload_detected"] = True
+        reason = _is_eligible([r])
+        assert reason == "CPU offload"
+
+    def test_oom_risk_constant_is_float(self) -> None:
+        assert isinstance(OOM_RISK_HEADROOM_GB, float)
+        assert OOM_RISK_HEADROOM_GB == 0.5

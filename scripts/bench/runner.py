@@ -217,7 +217,11 @@ def run(
             if isinstance(driver, OllamaDriver):
                 info = driver.fetch_model_info(case.model_id)
             else:
-                info = {"model_quant": None, "model_family": None}
+                info = {
+                    "model_quant": None,
+                    "model_family": None,
+                    "model_param_count": None,
+                }
             m_cfg = model_cfgs.get(case.model_id)
             if m_cfg is not None and m_cfg.quant is not None:
                 info = {**info, "model_quant": m_cfg.quant}
@@ -379,6 +383,7 @@ def run(
             ollama_num_ctx=case.context_size,
             model_quant=model_info["model_quant"],
             model_family=model_info["model_family"],
+            model_param_count=model_info["model_param_count"],
             quality_task_success=quality_task_success,
             quality_pytest_passed=quality_pytest_passed,
             quality_ruff_passed=quality_ruff_passed,

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS bench_run (
     ollama_num_ctx          INTEGER,
     model_quant             TEXT,
     model_family            TEXT,
+    model_param_count       TEXT,
     quality_task_success    INTEGER,
     quality_pytest_passed   INTEGER,
     quality_ruff_passed     INTEGER,
@@ -95,6 +96,7 @@ INSERT INTO bench_run (
     thermal_throttle_detected, avg_mem_clock_mhz,
     peak_ram_gb, cpu_offload_detected,
     cache_state, ollama_model_loaded, ollama_num_ctx, model_quant, model_family,
+    model_param_count,
     quality_task_success, quality_pytest_passed,
     quality_ruff_passed, quality_mypy_passed,
     outcome, error_message
@@ -112,6 +114,7 @@ INSERT INTO bench_run (
     :thermal_throttle_detected, :avg_mem_clock_mhz,
     :peak_ram_gb, :cpu_offload_detected,
     :cache_state, :ollama_model_loaded, :ollama_num_ctx, :model_quant, :model_family,
+    :model_param_count,
     :quality_task_success, :quality_pytest_passed,
     :quality_ruff_passed, :quality_mypy_passed,
     :outcome, :error_message
@@ -206,6 +209,7 @@ class BenchRun(BaseModel):
     # model metadata (from /api/show)
     model_quant: str | None = None
     model_family: str | None = None
+    model_param_count: str | None = None
 
     # quality
     quality_task_success: bool | None = None
@@ -278,6 +282,8 @@ class BenchStore:
             conn.execute(
                 "ALTER TABLE bench_run ADD COLUMN thermal_throttle_detected INTEGER"
             )
+        if "model_param_count" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN model_param_count TEXT")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:

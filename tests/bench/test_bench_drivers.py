@@ -184,13 +184,14 @@ _OLLAMA_SHOW_BODY = json.dumps(
 ).encode()
 
 
-def test_fetch_model_info_returns_quant_and_family():
+def test_fetch_model_info_returns_quant_family_and_param_count():
     with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_SHOW_BODY)):
         driver = OllamaDriver()
         info = driver.fetch_model_info("qwen3-coder:30b")
 
     assert info["model_quant"] == "Q4_K_M"
-    assert info["model_family"] == "30.5B"
+    assert info["model_family"] == "qwen2"
+    assert info["model_param_count"] == "30.5B"
 
 
 def test_fetch_model_info_returns_none_on_network_error():
@@ -203,6 +204,7 @@ def test_fetch_model_info_returns_none_on_network_error():
 
     assert info["model_quant"] is None
     assert info["model_family"] is None
+    assert info["model_param_count"] is None
 
 
 def test_fetch_model_info_returns_none_when_details_missing():
@@ -213,6 +215,7 @@ def test_fetch_model_info_returns_none_when_details_missing():
 
     assert info["model_quant"] is None
     assert info["model_family"] is None
+    assert info["model_param_count"] is None
 
 
 def test_fetch_model_info_quantization_level_none_when_empty_string():
@@ -223,7 +226,8 @@ def test_fetch_model_info_quantization_level_none_when_empty_string():
         info = OllamaDriver().fetch_model_info("some-model:7b")
 
     assert info["model_quant"] is None
-    assert info["model_family"] == "7B"
+    assert info["model_param_count"] == "7B"
+    assert info["model_family"] is None
 
 
 def test_ollama_is_available_returns_false_when_unreachable():

@@ -47,11 +47,16 @@ class OllamaDriver:
             details: dict[str, Any] = data.get("details") or {}
             return {
                 "model_quant": details.get("quantization_level") or None,
-                "model_family": details.get("parameter_size") or None,
+                "model_family": details.get("family") or None,
+                "model_param_count": details.get("parameter_size") or None,
             }
         except Exception as exc:
             logger.warning("fetch_model_info failed for %s: %s", model_id, exc)
-            return {"model_quant": None, "model_family": None}
+            return {
+                "model_quant": None,
+                "model_family": None,
+                "model_param_count": None,
+            }
 
     def is_available(self) -> bool:
         try:
