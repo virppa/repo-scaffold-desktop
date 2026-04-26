@@ -96,8 +96,14 @@ class OllamaDriver:
 
     def _parse_streaming(self, resp: Any, t_start: float) -> GenerationResult:
         ttft_s: float | None = None
+        ttfut_s: float | None = None
         text_parts: list[str] = []
         final_frame: dict[str, Any] = {}
+
+        _THINK_TAG = "</think>"
+        _TAIL_LEN = len(_THINK_TAG) - 1
+        thinking_phase: bool = True
+        tail_buf: str = ""
 
         while True:
             raw = resp.readline()
@@ -115,6 +121,21 @@ class OllamaDriver:
                 content: str = frame.get("message", {}).get("content", "")
                 if content and ttft_s is None:
                     ttft_s = time.monotonic() - t_start
+                if thinking_phase and content:
+                    check = tail_buf + content
+                    idx = check.find(_THINK_TAG)
+                    if idx >= 0:
+                        thinking_phase = False
+                        after = check[idx + len(_THINK_TAG) :]
+                        if after:
+                            ttfut_s = time.monotonic() - t_start
+                        tail_buf = ""
+                    else:
+                        tail_buf = (
+                            check[-_TAIL_LEN:] if len(check) > _TAIL_LEN else check
+                        )
+                elif not thinking_phase and content and ttfut_s is None:
+                    ttfut_s = time.monotonic() - t_start
                 text_parts.append(content)
             else:
                 final_frame = frame
@@ -149,6 +170,7 @@ class OllamaDriver:
         return GenerationResult(
             text="".join(text_parts),
             ttft_s=ttft_s,
+            ttfut_s=ttfut_s,
             decode_time_s=decode_time_s,
             prompt_eval_duration_s=prompt_eval_duration_s,
             load_duration_s=load_duration_s,

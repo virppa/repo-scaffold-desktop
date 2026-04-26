@@ -344,6 +344,7 @@ def run(
             python_version=env.python_version,
             os_version=env.os_version,
             ttft_s=result.ttft_s if not oom else None,
+            ttfut_s=result.ttfut_s if not oom else None,
             wall_time_s=wall_time_s if not oom else None,
             throughput_tok_s=throughput_tok_s,
             prompt_eval_duration_s=result.prompt_eval_duration_s,
