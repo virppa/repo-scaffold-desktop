@@ -66,6 +66,59 @@ def _make_driver(backend_id: str, base_url: str) -> OllamaDriver | VllmDriver:
     return OllamaDriver(base_url=base_url)
 
 
+def _should_skip_oom(
+    case: BenchCase,
+    oom_ctx: dict[tuple[str, str], int],
+    skip_oom_larger_ctx: bool,
+) -> bool:
+    if not skip_oom_larger_ctx:
+        return False
+    threshold = oom_ctx.get((case.model_id, case.backend_id))
+    return threshold is not None and case.context_size > threshold
+
+
+def _should_skip_concurrency_gate(
+    case: BenchCase,
+    concurrency_gate: set[tuple[str, str, int]],
+    require_single_concurrency_first: bool,
+) -> bool:
+    if not require_single_concurrency_first or case.concurrency <= 1:
+        return False
+    return (case.model_id, case.backend_id, case.context_size) not in concurrency_gate
+
+
+def _update_adaptive_state(
+    case: BenchCase,
+    outcome: str,
+    oom_ctx: dict[tuple[str, str], int],
+    max_working_ctx: dict[tuple[str, str], int],
+    concurrency_gate: set[tuple[str, str, int]],
+) -> None:
+    key = (case.model_id, case.backend_id)
+    if outcome == "oom":
+        if key not in oom_ctx or case.context_size < oom_ctx[key]:
+            oom_ctx[key] = case.context_size
+    elif outcome == "ok":
+        if key not in max_working_ctx or case.context_size > max_working_ctx[key]:
+            max_working_ctx[key] = case.context_size
+        if case.concurrency == 1:
+            concurrency_gate.add((case.model_id, case.backend_id, case.context_size))
+
+
+def _make_skipped_run(run_id: str, case: BenchCase, outcome: str) -> BenchRun:
+    return BenchRun(
+        run_id=run_id,
+        case_id=_case_id(case),
+        repeat_index=case.repeat_index,
+        tier=case.tier,
+        context_size=case.context_size,
+        concurrency=case.concurrency,
+        backend_id=case.backend_id,
+        model_id=case.model_id,
+        outcome=outcome,
+    )
+
+
 def run(
     config_path: str,
     db_path: Path,
@@ -106,10 +159,19 @@ def run(
     # Tracks which models have had at least one prefill_shared run (for cache_state)
     prefill_shared_seen: set[str] = set()
 
+    # Adaptive scheduling state — per-session in-memory only, not persisted across runs
+    oom_ctx: dict[tuple[str, str], int] = {}
+    max_working_ctx: dict[tuple[str, str], int] = {}
+    concurrency_gate: set[tuple[str, str, int]] = set()
+
     for case in cases:
         row_run_id = _row_run_id(sweep_id, case)
 
-        if resume and store.get_by_run_id(row_run_id):
+        if resume and (existing := store.get_by_run_id(row_run_id)):
+            for row in existing:
+                _update_adaptive_state(
+                    case, row.outcome or "", oom_ctx, max_working_ctx, concurrency_gate
+                )
             print(
                 f"[SKIP] {case.model_id}/{case.tier}"
                 f"/ctx={case.context_size}/c={case.concurrency}/r={case.repeat_index}"
@@ -121,6 +183,28 @@ def run(
             print(
                 f"[WARN] Unknown backend {case.backend_id!r}, skipping",
                 file=sys.stderr,
+            )
+            continue
+
+        if _should_skip_oom(case, oom_ctx, config.matrix.skip_oom_larger_ctx):
+            store.record(_make_skipped_run(row_run_id, case, "skipped_oom"))
+            print(
+                f"[SKIP_OOM  ] {case.model_id} / {case.tier}"
+                f" / ctx={case.context_size} / c={case.concurrency}"
+                f" / r={case.repeat_index}"
+            )
+            continue
+
+        if _should_skip_concurrency_gate(
+            case, concurrency_gate, config.matrix.require_single_concurrency_first
+        ):
+            store.record(
+                _make_skipped_run(row_run_id, case, "skipped_concurrency_gate")
+            )
+            print(
+                f"[SKIP_GATE ] {case.model_id} / {case.tier}"
+                f" / ctx={case.context_size} / c={case.concurrency}"
+                f" / r={case.repeat_index}"
             )
             continue
 
@@ -293,6 +377,9 @@ def run(
 
         # Write before moving to next case (resume safety invariant)
         store.record(bench_run)
+        _update_adaptive_state(
+            case, outcome, oom_ctx, max_working_ctx, concurrency_gate
+        )
 
         ttft_str = f" ttft={result.ttft_s:.2f}s" if result.ttft_s else ""
         tok_str = f" tok/s={throughput_tok_s:.0f}" if throughput_tok_s else ""
@@ -304,6 +391,11 @@ def run(
         )
 
     print("\nRun complete.")
+
+    if max_working_ctx:
+        print("Max working context per (model, backend):")
+        for (model_id, backend_id), ctx in sorted(max_working_ctx.items()):
+            print(f"  {model_id} / {backend_id}: {ctx}")
 
     from scripts.bench import reporter
 
