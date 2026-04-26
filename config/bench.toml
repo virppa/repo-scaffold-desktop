@@ -64,14 +64,7 @@ base_url = "http://localhost:8000"
 
 # ── Ollama models (enabled) ────────────────────────────────────────────────────
 # Model IDs must exactly match Ollama's name format — verify with: ollama list
-# All 5 are confirmed present on this machine (ollama list, 2026-04-26).
-
-[[models]]
-# 9.3 GB | Dense 14B — lightweight baseline and fastest model.
-# quant override: set when Ollama /api/show does not return quantization_level cleanly.
-# Example: quant = "Q4_K_M"
-id = "qwen3:14b"
-backend_id = "local_qwen"
+# Models confirmed present on this machine (ollama list, 2026-04-26; expanded 2026-04-26).
 
 [[models]]
 # 23 GB | MoE 35B total / ~3B active — low KV pressure despite large param count.
@@ -85,7 +78,8 @@ id = "qwen3.6:27b"
 backend_id = "local_qwen"
 
 [[models]]
-# 18 GB | Dense 30B coder — current production model (spike WOR-76 baseline).
+# 19 GB | MoE 30B coder / 3.3B active — current production model (spike WOR-76 baseline).
+# 256K native context; same MoE efficiency profile as qwen3.6:35b-a3b.
 id = "qwen3-coder:30b"
 backend_id = "local_qwen"
 
@@ -93,6 +87,31 @@ backend_id = "local_qwen"
 # 19 GB | Dense 32B coder Q4_K_M — previous spike candidate, ruled "too tight" at 65K
 # but worth re-benchmarking at lower context sizes for coding quality comparison.
 id = "qwen2.5-coder:32b-instruct-q4_K_M"
+backend_id = "local_qwen"
+
+[[models]]
+# 17 GB | Dense 27B — Gemma 3 cross-vendor comparison at same size tier as qwen3.6:27b.
+id = "gemma3:27b"
+backend_id = "local_qwen"
+
+[[models]]
+# 6.6 GB | Dense 9B Q4_K_M — floor model; 256K context, multimodal. Fast cheap worker baseline.
+id = "qwen3.5:9b-q4_K_M"
+backend_id = "local_qwen"
+
+[[models]]
+# 11 GB | Dense 9B Q8_0 — higher quality quant; compare vs qwen3.5:9b-q4_K_M for quality/speed tradeoff.
+id = "qwen3.5:9b-q8_0"
+backend_id = "local_qwen"
+
+[[models]]
+# 14 GB | MoE 24B coding agent — Mistral Devstral, purpose-built for agentic coding, 128K context.
+id = "devstral:24b"
+backend_id = "local_qwen"
+
+[[models]]
+# 20 GB | Dense 32B reasoning — DeepSeek-R1 distill; reasoning/debug reviewer use case, 128K context.
+id = "deepseek-r1:32b"
 backend_id = "local_qwen"
 
 # ── vLLM models (disabled via local_vllm backend) ─────────────────────────────
