@@ -59,6 +59,8 @@ CREATE TABLE IF NOT EXISTS bench_run (
     cache_state             TEXT,
     ollama_model_loaded     INTEGER,
     ollama_num_ctx          INTEGER,
+    model_quant             TEXT,
+    model_family            TEXT,
     quality_task_success    INTEGER,
     quality_pytest_passed   INTEGER,
     quality_ruff_passed     INTEGER,
@@ -88,7 +90,7 @@ INSERT INTO bench_run (
     avg_gpu_util_pct, avg_gpu_mem_util_pct, avg_power_w,
     peak_temp_c, avg_sm_clock_mhz, avg_mem_clock_mhz,
     peak_ram_gb, cpu_offload_detected,
-    cache_state, ollama_model_loaded, ollama_num_ctx,
+    cache_state, ollama_model_loaded, ollama_num_ctx, model_quant, model_family,
     quality_task_success, quality_pytest_passed,
     quality_ruff_passed, quality_mypy_passed,
     outcome, error_message
@@ -104,7 +106,7 @@ INSERT INTO bench_run (
     :avg_gpu_util_pct, :avg_gpu_mem_util_pct, :avg_power_w,
     :peak_temp_c, :avg_sm_clock_mhz, :avg_mem_clock_mhz,
     :peak_ram_gb, :cpu_offload_detected,
-    :cache_state, :ollama_model_loaded, :ollama_num_ctx,
+    :cache_state, :ollama_model_loaded, :ollama_num_ctx, :model_quant, :model_family,
     :quality_task_success, :quality_pytest_passed,
     :quality_ruff_passed, :quality_mypy_passed,
     :outcome, :error_message
@@ -189,6 +191,10 @@ class BenchRun(BaseModel):
     ollama_model_loaded: bool | None = None
     ollama_num_ctx: int | None = None
 
+    # model metadata (from /api/show)
+    model_quant: str | None = None
+    model_family: str | None = None
+
     # quality
     quality_task_success: bool | None = None
     quality_pytest_passed: bool | None = None
@@ -248,6 +254,10 @@ class BenchStore:
             conn.execute("ALTER TABLE bench_run ADD COLUMN cache_state TEXT")
         if "total_vram_gb" not in existing:
             conn.execute("ALTER TABLE bench_run ADD COLUMN total_vram_gb REAL")
+        if "model_quant" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN model_quant TEXT")
+        if "model_family" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN model_family TEXT")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:

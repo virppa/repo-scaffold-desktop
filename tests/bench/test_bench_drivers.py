@@ -171,6 +171,61 @@ def test_ollama_generate_payload_omits_seed_when_none():
     assert "seed" not in payload["options"]
 
 
+_OLLAMA_SHOW_BODY = json.dumps(
+    {
+        "modelfile": "FROM ...",
+        "details": {
+            "format": "gguf",
+            "family": "qwen2",
+            "parameter_size": "30.5B",
+            "quantization_level": "Q4_K_M",
+        },
+    }
+).encode()
+
+
+def test_fetch_model_info_returns_quant_and_family():
+    with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_SHOW_BODY)):
+        driver = OllamaDriver()
+        info = driver.fetch_model_info("qwen3-coder:30b")
+
+    assert info["model_quant"] == "Q4_K_M"
+    assert info["model_family"] == "30.5B"
+
+
+def test_fetch_model_info_returns_none_on_network_error():
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.URLError("connection refused"),
+    ):
+        driver = OllamaDriver()
+        info = driver.fetch_model_info("some-model:7b")
+
+    assert info["model_quant"] is None
+    assert info["model_family"] is None
+
+
+def test_fetch_model_info_returns_none_when_details_missing():
+    body = json.dumps({"modelfile": "FROM ..."}).encode()
+    with patch("urllib.request.urlopen", _mock_urlopen(body)):
+        driver = OllamaDriver()
+        info = driver.fetch_model_info("some-model:7b")
+
+    assert info["model_quant"] is None
+    assert info["model_family"] is None
+
+
+def test_fetch_model_info_quantization_level_none_when_empty_string():
+    body = json.dumps(
+        {"details": {"quantization_level": "", "parameter_size": "7B"}}
+    ).encode()
+    with patch("urllib.request.urlopen", _mock_urlopen(body)):
+        info = OllamaDriver().fetch_model_info("some-model:7b")
+
+    assert info["model_quant"] is None
+    assert info["model_family"] == "7B"
+
+
 def test_ollama_is_available_returns_false_when_unreachable():
     with patch(
         "urllib.request.urlopen",

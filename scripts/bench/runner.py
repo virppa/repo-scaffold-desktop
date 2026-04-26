@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.bench_store import BenchRun, BenchStore
-from scripts.bench.config import BenchCase, BenchConfig
+from scripts.bench.config import BenchCase, BenchConfig, ModelConfig
 from scripts.bench.drivers.ollama import OllamaDriver
 from scripts.bench.drivers.vllm import VllmDriver
 from scripts.bench.env_snapshot import EnvSnapshot
@@ -97,6 +97,9 @@ def run(
     store = BenchStore(db_path)
 
     backends = {b.id: b for b in config.backends if b.enabled}
+    model_cfgs: dict[str, ModelConfig] = {m.id: m for m in config.models}
+    # Cache /api/show result per (backend_id, model_id) — called once per model.
+    model_info_cache: dict[tuple[str, str], dict[str, str | None]] = {}
 
     prev_model_id: str | None = None
     prev_backend_id: str | None = None
@@ -122,6 +125,18 @@ def run(
             continue
 
         driver = _make_driver(case.backend_id, backend_cfg.base_url)
+
+        info_key = (case.backend_id, case.model_id)
+        if info_key not in model_info_cache:
+            if isinstance(driver, OllamaDriver):
+                info = driver.fetch_model_info(case.model_id)
+            else:
+                info = {"model_quant": None, "model_family": None}
+            m_cfg = model_cfgs.get(case.model_id)
+            if m_cfg is not None and m_cfg.quant is not None:
+                info = {**info, "model_quant": m_cfg.quant}
+            model_info_cache[info_key] = info
+        model_info = model_info_cache[info_key]
 
         manager: OllamaManager | None = None
         if "vllm" not in case.backend_id.lower():
@@ -266,6 +281,8 @@ def run(
             cache_state=cache_state,
             ollama_model_loaded=ollama_model_loaded,
             ollama_num_ctx=case.context_size,
+            model_quant=model_info["model_quant"],
+            model_family=model_info["model_family"],
             quality_task_success=quality_task_success,
             quality_pytest_passed=quality_pytest_passed,
             quality_ruff_passed=quality_ruff_passed,
