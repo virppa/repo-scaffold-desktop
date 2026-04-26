@@ -18,8 +18,7 @@ def make_prefill_shared_prompt(suffix_index: int = 0) -> BenchPrompt:
     if not FIXTURE_PATH.exists():
         raise FileNotFoundError(
             f"Fixture file not found: {FIXTURE_PATH}. "
-            "Generate it first: python scripts/bench/generate_fixtures.py"
-            " --generate-fixtures"
+            "Generate it first: python scripts/bench/run_bench.py --generate-fixtures"
         )
     doc = FIXTURE_PATH.read_text(encoding="utf-8")
     suffix = _SUFFIX_TEMPLATE.format(index=suffix_index)
