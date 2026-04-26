@@ -50,12 +50,20 @@ def _browse(db_path: Path) -> None:
 # ── Compare ───────────────────────────────────────────────────────────────────
 
 
-def _compare(id1: str, id2: str, db_path: Path) -> None:
+def _compare(
+    id1: str, id2: str, db_path: Path, *, regression_threshold_pct: float
+) -> bool:
     from scripts.bench import reporter
 
     rows1 = reporter.load_sweep(db_path, id1)
     rows2 = reporter.load_sweep(db_path, id2)
-    reporter.print_compare_table(rows1, rows2, id1, id2)
+    return reporter.print_compare_table(
+        rows1,
+        rows2,
+        id1,
+        id2,
+        regression_threshold_pct=regression_threshold_pct,
+    )
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -112,6 +120,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Open bench.db in datasette browser",
     )
     parser.add_argument(
+        "--regression-threshold",
+        type=float,
+        default=10.0,
+        metavar="PCT",
+        help="Regression threshold %% for --compare (default: 10)",
+    )
+    parser.add_argument(
         "--db-path",
         default=None,
         help="Override default bench.db path",
@@ -146,8 +161,13 @@ def main() -> int:
         return 0
 
     if args.compare:
-        _compare(args.compare[0], args.compare[1], db_path)
-        return 0
+        regression = _compare(
+            args.compare[0],
+            args.compare[1],
+            db_path,
+            regression_threshold_pct=args.regression_threshold,
+        )
+        return 1 if regression else 0
 
     run(
         args.config,
