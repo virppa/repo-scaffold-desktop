@@ -108,6 +108,9 @@ class OllamaDriver:
         _THINK_TAG = "</think>"
         _TAIL_LEN = len(_THINK_TAG) - 1
         thinking_phase: bool = True
+        # True once Ollama's native "thinking" field has been seen; switches the
+        # end-of-thinking detector from </think> tag search to first-content-frame.
+        has_seen_ollama_thinking: bool = False
         tail_buf: str = ""
 
         while True:
@@ -124,23 +127,40 @@ class OllamaDriver:
 
             if not frame.get("done", False):
                 content: str = frame.get("message", {}).get("content", "")
-                if content and ttft_s is None:
+                ollama_thinking: str = frame.get("message", {}).get("thinking", "")
+
+                if ollama_thinking:
+                    has_seen_ollama_thinking = True
+
+                # TTFT from first token of any kind (thinking or content)
+                if (content or ollama_thinking) and ttft_s is None:
                     ttft_s = time.monotonic() - t_start
-                if thinking_phase and content:
-                    check = tail_buf + content
-                    idx = check.find(_THINK_TAG)
-                    if idx >= 0:
-                        thinking_phase = False
-                        after = check[idx + len(_THINK_TAG) :]
-                        if after:
-                            ttfut_s = time.monotonic() - t_start
-                        tail_buf = ""
-                    else:
-                        tail_buf = (
-                            check[-_TAIL_LEN:] if len(check) > _TAIL_LEN else check
-                        )
-                elif not thinking_phase and content and ttfut_s is None:
+
+                if thinking_phase:
+                    if has_seen_ollama_thinking:
+                        # Ollama native: thinking field present → still thinking;
+                        # first non-empty content frame → thinking done.
+                        if content and not ollama_thinking:
+                            thinking_phase = False
+                            if ttfut_s is None:
+                                ttfut_s = time.monotonic() - t_start
+                    elif content:
+                        # Embedded </think> tag approach (non-Ollama or older format)
+                        check = tail_buf + content
+                        idx = check.find(_THINK_TAG)
+                        if idx >= 0:
+                            thinking_phase = False
+                            after = check[idx + len(_THINK_TAG) :]
+                            if after and ttfut_s is None:
+                                ttfut_s = time.monotonic() - t_start
+                            tail_buf = ""
+                        else:
+                            tail_buf = (
+                                check[-_TAIL_LEN:] if len(check) > _TAIL_LEN else check
+                            )
+                elif content and ttfut_s is None:
                     ttfut_s = time.monotonic() - t_start
+
                 text_parts.append(content)
             else:
                 final_frame = frame

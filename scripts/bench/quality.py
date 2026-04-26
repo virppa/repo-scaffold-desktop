@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess  # nosec B404
 import sys
@@ -29,11 +30,17 @@ def _apply_patch(patch: dict[str, str], dest: Path) -> None:
     target.write_text(patch["content"], encoding="utf-8")
 
 
+def _extract_response(text: str) -> str:
+    """Strip <think>...</think> blocks; return remaining text (or original if empty)."""
+    stripped = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    return stripped if stripped else text
+
+
 def evaluate_coding_output(model_output: str, repo_path: Path) -> QualityResult:
     """Parse model_output as tool-call JSON, apply to a temp repo copy, run checks."""
     temp_dir = tempfile.mkdtemp()
     try:
-        patch = json.loads(model_output)
+        patch = json.loads(_extract_response(model_output))
         if not isinstance(patch, dict) or "path" not in patch or "content" not in patch:
             return QualityResult(
                 task_success=False,
