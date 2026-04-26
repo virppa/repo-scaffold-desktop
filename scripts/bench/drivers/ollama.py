@@ -30,6 +30,29 @@ class OllamaDriver:
     def __init__(self, base_url: str = "http://localhost:11434") -> None:
         self._base_url = _validated_base_url(base_url)
 
+    def fetch_model_info(self, model_id: str) -> dict[str, str | None]:
+        """Fetch quantization_level and parameter_size from Ollama /api/show.
+
+        Returns None values for both fields on any error — non-fatal by design.
+        """
+        payload = json.dumps({"name": model_id}).encode()
+        req = urllib.request.Request(
+            f"{self._base_url}/api/show",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data: dict[str, Any] = json.loads(resp.read().decode())
+            details: dict[str, Any] = data.get("details") or {}
+            return {
+                "model_quant": details.get("quantization_level") or None,
+                "model_family": details.get("parameter_size") or None,
+            }
+        except Exception as exc:
+            logger.warning("fetch_model_info failed for %s: %s", model_id, exc)
+            return {"model_quant": None, "model_family": None}
+
     def is_available(self) -> bool:
         try:
             req = urllib.request.Request(f"{self._base_url}/api/tags")

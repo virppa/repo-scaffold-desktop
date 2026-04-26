@@ -58,6 +58,7 @@ class ModelConfig(BaseModel):
 
     id: str
     backend_id: str
+    quant: str | None = None
 
 
 class TierConfig(BaseModel):
