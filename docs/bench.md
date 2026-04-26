@@ -33,7 +33,7 @@ Options:
                       | prefill_unshared | boundary
   --resume SWEEP_ID   Resume an interrupted run — skips already-recorded cases
   --compare ID1 ID2   Side-by-side TTFT comparison of two sweep IDs
-  --generate-fixtures Write scripts/bench/fixtures/project_summary_50k.txt
+  --generate-fixtures Write scripts/bench/fixtures/prefill_50k.txt
   --export-json PATH  Export sweep results to JSON
   --export-csv PATH   Export sweep results to CSV
   --browse            Open bench.db in Datasette browser UI

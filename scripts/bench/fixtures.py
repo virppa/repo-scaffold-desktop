@@ -76,9 +76,9 @@ local worker sessions in isolated git worktrees.
 
 
 def generate_fixtures() -> None:
-    """Create scripts/bench/fixtures/project_summary_50k.txt (~50k tokens)."""
+    """Create scripts/bench/fixtures/prefill_50k.txt (~50k tokens)."""
     _FIXTURES_DIR.mkdir(parents=True, exist_ok=True)
-    target = _FIXTURES_DIR / "project_summary_50k.txt"
+    target = _FIXTURES_DIR / "prefill_50k.txt"
     # Target: ~50k tokens ≈ 200k chars at 4 chars/token
     target_chars = 200_000
     base = _PROJECT_SUMMARY_TEMPLATE
