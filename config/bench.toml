@@ -84,8 +84,9 @@ id = "qwen3-coder:30b"
 backend_id = "local_qwen"
 
 [[models]]
-# 19 GB | Dense 32B coder Q4_K_M — previous spike candidate, ruled "too tight" at 65K
-# but worth re-benchmarking at lower context sizes for coding quality comparison.
+# 19 GB | Dense 32B coder Q4_K_M — REFERENCE ONLY: previous-generation baseline.
+# Severe throughput cliff at 32K+ context (VRAM pressure); not a production candidate.
+# Kept to quantify Qwen3.6 MoE improvement over prior dense 32B generation.
 id = "qwen2.5-coder:32b-instruct-q4_K_M"
 backend_id = "local_qwen"
 
@@ -109,10 +110,6 @@ backend_id = "local_qwen"
 id = "devstral:24b"
 backend_id = "local_qwen"
 
-[[models]]
-# 20 GB | Dense 32B reasoning — DeepSeek-R1 distill; reasoning/debug reviewer use case, 128K context.
-id = "deepseek-r1:32b"
-backend_id = "local_qwen"
 
 # ── vLLM models (disabled via local_vllm backend) ─────────────────────────────
 # vLLM model ids are HuggingFace repo ids. The model arg must match --model used
