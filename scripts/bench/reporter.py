@@ -158,6 +158,60 @@ def print_summary_table(rows: list[dict[str, Any]]) -> None:
     print(f"{'=' * len(sep)}\n")
 
 
+# ── Concurrency efficiency ────────────────────────────────────────────────────
+
+
+def compute_concurrency_efficiency(
+    rows: list[dict[str, Any]],
+) -> dict[tuple[str, str, Any, Any], float | None]:
+    """Compute concurrency efficiency per (backend_id, model_id, ctx, concurrency).
+
+    efficiency = median(toks/s @ N) / (N * median(toks/s @ 1))
+
+    A value near 1.0 means near-linear scaling; >1.0 is super-linear (valid).
+    Only repeat_index >= 1 rows are used. Returns an empty dict when no
+    concurrency>1 data is present. Guards against zero and None baselines.
+    """
+    tok_map: dict[tuple[str, str, Any, Any], list[float]] = {}
+    for row in rows:
+        if row.get("repeat_index", 0) < 1:
+            continue
+        tok = row.get("throughput_tok_s")
+        if tok is None:
+            continue
+        key: tuple[str, str, Any, Any] = (
+            str(row.get("backend_id") or ""),
+            str(row.get("model_id") or ""),
+            row.get("context_size"),
+            row.get("concurrency"),
+        )
+        tok_map.setdefault(key, []).append(float(tok))
+
+    baselines: dict[tuple[str, str, Any], float | None] = {}
+    for (backend, model, ctx, conc), vals in tok_map.items():
+        if conc == 1:
+            baselines[(backend, model, ctx)] = _median(vals)
+
+    result: dict[tuple[str, str, Any, Any], float | None] = {}
+    for (backend, model, ctx, conc), vals in tok_map.items():
+        if conc is None or conc <= 1:
+            continue
+        baseline = baselines.get((backend, model, ctx))
+        if baseline is None:
+            result[(backend, model, ctx, conc)] = None
+            continue
+        if baseline == 0.0:
+            result[(backend, model, ctx, conc)] = None
+            continue
+        median_tok = _median(vals)
+        if median_tok is None:
+            result[(backend, model, ctx, conc)] = None
+        else:
+            result[(backend, model, ctx, conc)] = median_tok / (float(conc) * baseline)
+
+    return result
+
+
 # ── Quality-gated ranking ─────────────────────────────────────────────────────
 
 
@@ -242,6 +296,8 @@ def print_ranking(
     if not rows:
         return
 
+    efficiency_map = compute_concurrency_efficiency(rows)
+
     # Group by (backend_id, model_id, context_size, concurrency) — one row per config
     by_config: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -286,6 +342,16 @@ def print_ranking(
         if ttft_cv is not None:
             unstable = ttft_cv > cv_threshold
 
+        first = real_runs[0] if real_runs else config_rows[0]
+        conc_eff = efficiency_map.get(
+            (
+                str(first.get("backend_id") or ""),
+                str(first.get("model_id") or ""),
+                first.get("context_size"),
+                first.get("concurrency"),
+            )
+        )
+
         eligible.append(
             {
                 "config_key": config_key,
@@ -295,6 +361,7 @@ def print_ranking(
                 "unstable": unstable,
                 "tok_p50": _median(tok_values),
                 "task_pct": task_pct,
+                "conc_eff": conc_eff,
             }
         )
 
@@ -316,14 +383,14 @@ def print_ranking(
         )
     )
 
-    _W = 108
+    _W = 119
     print("=" * _W)
     print("QUALITY-ELIGIBLE RANKING  (oom=No, offload=No, err≤5%, task≥70%)")
     print("=" * _W)
     header = (
         f"{'Rank':>4}  {'Config (backend/model/ctx/c)':<44}  "
         f"{'TTFT p50(s)':>10}  {'TTFT p95(s)':>10}  {'CV':>6}  "
-        f"{'Tok/s p50':>9}  {'Task%':>5}  {'Stable':>6}"
+        f"{'Tok/s p50':>9}  {'Task%':>5}  {'Stable':>6}  {'Conc.Eff':>9}"
     )
     print(header)
     print("-" * _W)
@@ -340,10 +407,11 @@ def print_ranking(
             stable_str = "[!]"
         else:
             stable_str = "OK"
+        eff_str = f"{entry['conc_eff']:.3f}" if entry["conc_eff"] is not None else "N/A"
         row_str = (
             f"{rank:>4}  {entry['config_key']:<44}  "
             f"{ttft_p50_str:>10}  {ttft_p95_str:>10}  {cv_str:>6}  "
-            f"{tok_str:>9}  {task_str:>5}  {stable_str:>6}"
+            f"{tok_str:>9}  {task_str:>5}  {stable_str:>6}  {eff_str:>9}"
         )
         print(row_str)
 

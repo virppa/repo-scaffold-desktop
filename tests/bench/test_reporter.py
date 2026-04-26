@@ -13,6 +13,7 @@ from scripts.bench.reporter import (
     _is_eligible,
     _percentile,
     compute_apc_speedup,
+    compute_concurrency_efficiency,
     print_apc_section,
     print_ranking,
 )
@@ -669,3 +670,181 @@ class TestPrintApcSection:
         ]
         output = _capture(rows)
         assert "APC EFFECTIVENESS" in output
+
+
+# ── compute_concurrency_efficiency() unit tests ───────────────────────────────
+
+
+def _eff_row(
+    *,
+    backend_id: str = "b",
+    model_id: str = "m",
+    context_size: int = 4096,
+    concurrency: int = 1,
+    repeat_index: int = 1,
+    throughput_tok_s: float | None = 100.0,
+) -> dict[str, Any]:
+    return {
+        "backend_id": backend_id,
+        "model_id": model_id,
+        "context_size": context_size,
+        "concurrency": concurrency,
+        "repeat_index": repeat_index,
+        "throughput_tok_s": throughput_tok_s,
+    }
+
+
+class TestComputeConcurrencyEfficiency:
+    def test_near_linear_scaling(self) -> None:
+        rows = [
+            _eff_row(concurrency=1, throughput_tok_s=100.0),
+            _eff_row(concurrency=2, throughput_tok_s=190.0),
+        ]
+        result = compute_concurrency_efficiency(rows)
+        assert result[("b", "m", 4096, 2)] == pytest.approx(0.95)
+
+    def test_no_baseline_returns_none(self) -> None:
+        rows = [_eff_row(concurrency=2, throughput_tok_s=200.0)]
+        result = compute_concurrency_efficiency(rows)
+        assert result[("b", "m", 4096, 2)] is None
+
+    def test_zero_baseline_returns_none(self) -> None:
+        rows = [
+            _eff_row(concurrency=1, throughput_tok_s=0.0),
+            _eff_row(concurrency=2, throughput_tok_s=100.0),
+        ]
+        result = compute_concurrency_efficiency(rows)
+        assert result[("b", "m", 4096, 2)] is None
+
+    def test_none_throughput_baseline_returns_none(self) -> None:
+        # concurrency=1 row has None throughput → no baseline built
+        rows = [
+            _eff_row(concurrency=1, throughput_tok_s=None),
+            _eff_row(concurrency=2, throughput_tok_s=100.0),
+        ]
+        result = compute_concurrency_efficiency(rows)
+        assert result[("b", "m", 4096, 2)] is None
+
+    def test_concurrency_1_not_in_result(self) -> None:
+        rows = [_eff_row(concurrency=1, throughput_tok_s=100.0)]
+        result = compute_concurrency_efficiency(rows)
+        assert ("b", "m", 4096, 1) not in result
+
+    def test_super_linear_not_clamped(self) -> None:
+        rows = [
+            _eff_row(concurrency=1, throughput_tok_s=50.0),
+            _eff_row(concurrency=2, throughput_tok_s=150.0),
+        ]
+        result = compute_concurrency_efficiency(rows)
+        eff = result[("b", "m", 4096, 2)]
+        assert eff is not None
+        assert eff == pytest.approx(1.5)
+
+    def test_warmup_runs_excluded(self) -> None:
+        # Only warmup (repeat_index=0) run for c=1 → no baseline
+        rows = [
+            _eff_row(concurrency=1, repeat_index=0, throughput_tok_s=100.0),
+            _eff_row(concurrency=2, repeat_index=1, throughput_tok_s=200.0),
+        ]
+        result = compute_concurrency_efficiency(rows)
+        assert result[("b", "m", 4096, 2)] is None
+
+    def test_median_used_for_multiple_repeats(self) -> None:
+        rows = [
+            _eff_row(concurrency=1, repeat_index=1, throughput_tok_s=80.0),
+            _eff_row(concurrency=1, repeat_index=2, throughput_tok_s=120.0),
+            _eff_row(concurrency=2, repeat_index=1, throughput_tok_s=180.0),
+        ]
+        result = compute_concurrency_efficiency(rows)
+        # median c=1 = 100.0; eff = 180.0 / (2 * 100.0) = 0.90
+        assert result[("b", "m", 4096, 2)] == pytest.approx(0.90)
+
+    def test_empty_rows_returns_empty_dict(self) -> None:
+        assert compute_concurrency_efficiency([]) == {}
+
+    def test_multiple_models_grouped_separately(self) -> None:
+        rows = [
+            _eff_row(model_id="A", concurrency=1, throughput_tok_s=100.0),
+            _eff_row(model_id="A", concurrency=2, throughput_tok_s=160.0),
+            _eff_row(model_id="B", concurrency=1, throughput_tok_s=200.0),
+            _eff_row(model_id="B", concurrency=2, throughput_tok_s=300.0),
+        ]
+        result = compute_concurrency_efficiency(rows)
+        assert result[("b", "A", 4096, 2)] == pytest.approx(0.80)
+        assert result[("b", "B", 4096, 2)] == pytest.approx(0.75)
+
+    def test_different_backends_use_own_baseline(self) -> None:
+        rows = [
+            _eff_row(backend_id="x", concurrency=1, throughput_tok_s=100.0),
+            _eff_row(backend_id="x", concurrency=2, throughput_tok_s=160.0),
+            _eff_row(backend_id="y", concurrency=1, throughput_tok_s=50.0),
+            _eff_row(backend_id="y", concurrency=2, throughput_tok_s=60.0),
+        ]
+        result = compute_concurrency_efficiency(rows)
+        assert result[("x", "m", 4096, 2)] == pytest.approx(0.80)
+        assert result[("y", "m", 4096, 2)] == pytest.approx(0.60)
+
+
+# ── print_ranking() concurrency efficiency column tests ───────────────────────
+
+
+class TestPrintRankingConcurrencyEfficiency:
+    def _make_row(
+        self,
+        *,
+        model_id: str = "m",
+        backend_id: str = "b",
+        context_size: int = 4096,
+        concurrency: int = 1,
+        repeat_index: int = 1,
+        ttft_s: float = 0.3,
+        throughput_tok_s: float = 100.0,
+        outcome: str = "ok",
+        cpu_offload_detected: bool = False,
+    ) -> dict[str, Any]:
+        return {
+            "model_id": model_id,
+            "backend_id": backend_id,
+            "context_size": context_size,
+            "concurrency": concurrency,
+            "repeat_index": repeat_index,
+            "ttft_s": ttft_s,
+            "throughput_tok_s": throughput_tok_s,
+            "outcome": outcome,
+            "cpu_offload_detected": cpu_offload_detected,
+            "tier": "speed",
+            "quality_task_success": None,
+        }
+
+    def test_header_contains_conc_eff(self) -> None:
+        rows = [self._make_row()]
+        output = _capture(rows)
+        assert "Conc.Eff" in output
+
+    def test_concurrency_1_shows_na(self) -> None:
+        rows = [self._make_row(concurrency=1)]
+        output = _capture(rows)
+        assert "N/A" in output
+
+    def test_concurrency_gt1_with_baseline_shows_ratio(self) -> None:
+        rows = [
+            self._make_row(concurrency=1, throughput_tok_s=100.0, ttft_s=0.3),
+            self._make_row(concurrency=2, throughput_tok_s=150.0, ttft_s=0.4),
+        ]
+        output = _capture(rows)
+        # efficiency = 150 / (2 * 100) = 0.750
+        assert "0.750" in output
+
+    def test_concurrency_gt1_without_baseline_shows_na(self) -> None:
+        rows = [self._make_row(concurrency=2, throughput_tok_s=150.0)]
+        output = _capture(rows)
+        assert "N/A" in output
+
+    def test_super_linear_efficiency_displayed(self) -> None:
+        rows = [
+            self._make_row(concurrency=1, throughput_tok_s=50.0, ttft_s=0.3),
+            self._make_row(concurrency=2, throughput_tok_s=150.0, ttft_s=0.4),
+        ]
+        output = _capture(rows)
+        # efficiency = 150 / (2 * 50) = 1.500
+        assert "1.500" in output
