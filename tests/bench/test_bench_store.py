@@ -16,7 +16,7 @@ from app.core.bench_store import (
     hash_settings,
     hash_text,
 )
-from scripts.bench.reporter import print_ranking
+from scripts.bench.reporter import print_ranking, print_summary_table
 
 
 def _store(tmp_path: Path) -> BenchStore:
@@ -496,3 +496,58 @@ class TestPrintRanking:
         output = self._capture_ranking(rows)
         assert "RECOMMENDED" in output
         assert "local/qwen3:30b" in output
+
+
+class TestTtfutColumn:
+    """Tests for ttfut_s added in WOR-202."""
+
+    def test_ttfut_s_defaults_to_none(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run())
+        result = store.get_by_run_id("run-001")[0]
+        assert result.ttfut_s is None
+
+    def test_ttfut_s_round_trips(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run(ttfut_s=1.234))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.ttfut_s == pytest.approx(1.234)
+
+    def test_migration_adds_ttfut_s_column(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        db_path = tmp_path / "old_schema.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE bench_run (
+                run_id TEXT NOT NULL, case_id TEXT NOT NULL,
+                repeat_index INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (run_id, case_id, repeat_index)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bench_run(run_id, case_id, repeat_index) VALUES ('r1','c1',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        store = BenchStore(db_path=db_path)
+        result = store.get_by_run_id("r1")[0]
+        assert result.ttfut_s is None
+
+    def test_summary_table_shows_ttfut_column_when_present(self) -> None:
+        rows = [{"model_id": "qwen3:30b", "ttfut_s": 1.5, "ttft_s": 0.2}]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "TTFUT" in buf.getvalue()
+
+    def test_summary_table_hides_ttfut_column_when_all_none(self) -> None:
+        rows = [{"model_id": "mistral", "ttfut_s": None, "ttft_s": 0.2}]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "TTFUT" not in buf.getvalue()

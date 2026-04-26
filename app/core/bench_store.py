@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS bench_run (
     python_version          TEXT,
     os_version              TEXT,
     ttft_s                  REAL,
+    ttfut_s                 REAL,
     wall_time_s             REAL,
     throughput_tok_s        REAL,
     prompt_eval_duration_s  REAL,
@@ -83,7 +84,7 @@ INSERT INTO bench_run (
     tier, context_size, concurrency, backend_id, model_id,
     settings_hash, prompt_hash,
     backend_base_url, gpu_driver_version, cuda_version, python_version, os_version,
-    ttft_s, wall_time_s, throughput_tok_s,
+    ttft_s, ttfut_s, wall_time_s, throughput_tok_s,
     prompt_eval_duration_s, load_duration_s, decode_time_s,
     prompt_tokens, completion_tokens, total_tokens,
     peak_vram_gb, total_vram_gb,
@@ -99,7 +100,7 @@ INSERT INTO bench_run (
     :tier, :context_size, :concurrency, :backend_id, :model_id,
     :settings_hash, :prompt_hash,
     :backend_base_url, :gpu_driver_version, :cuda_version, :python_version, :os_version,
-    :ttft_s, :wall_time_s, :throughput_tok_s,
+    :ttft_s, :ttfut_s, :wall_time_s, :throughput_tok_s,
     :prompt_eval_duration_s, :load_duration_s, :decode_time_s,
     :prompt_tokens, :completion_tokens, :total_tokens,
     :peak_vram_gb, :total_vram_gb,
@@ -154,6 +155,10 @@ class BenchRun(BaseModel):
     # timing
     ttft_s: float | None = Field(
         default=None, description="Time to first token in seconds"
+    )
+    ttfut_s: float | None = Field(
+        default=None,
+        description="Time to first user-visible token in seconds (post-</think>)",
     )
     wall_time_s: float | None = Field(
         default=None, description="Total wall time in seconds"
@@ -258,6 +263,8 @@ class BenchStore:
             conn.execute("ALTER TABLE bench_run ADD COLUMN model_quant TEXT")
         if "model_family" not in existing:
             conn.execute("ALTER TABLE bench_run ADD COLUMN model_family TEXT")
+        if "ttfut_s" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN ttfut_s REAL")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:

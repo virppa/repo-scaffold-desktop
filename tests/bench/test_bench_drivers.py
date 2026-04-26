@@ -302,6 +302,162 @@ def test_ollama_generate_cache_state_captured_from_response():
     assert result.cache_state == "loaded"
 
 
+def test_ollama_non_thinking_model_ttfut_is_none():
+    """Non-thinking models never emit </think>, so ttfut_s must remain None."""
+    with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_COLD_BODY)):
+        result = OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+
+    assert result.ttfut_s is None
+
+
+_OLLAMA_THINKING_SAME_CHUNK = _ndjson(
+    {
+        "model": "q",
+        "message": {"role": "assistant", "content": "</think>Answer"},
+        "done": False,
+    },
+    {
+        "model": "q",
+        "done": True,
+        "done_reason": "stop",
+        "load_duration": 0,
+        "prompt_eval_count": 5,
+        "prompt_eval_duration": 50_000_000,
+        "eval_count": 10,
+        "eval_duration": 200_000_000,
+    },
+)
+
+
+def test_ollama_thinking_model_ttfut_set_when_answer_in_same_chunk():
+    """ttfut_s is set when </think> and the first answer token are in the same chunk."""
+    with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_THINKING_SAME_CHUNK)):
+        result = OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+
+    assert result.ttfut_s is not None and result.ttfut_s >= 0.0
+    assert result.ttft_s is not None
+
+
+_OLLAMA_THINKING_SEPARATE_CHUNKS = _ndjson(
+    {
+        "model": "q",
+        "message": {"role": "assistant", "content": "<think>reasoning"},
+        "done": False,
+    },
+    {
+        "model": "q",
+        "message": {"role": "assistant", "content": "</think>"},
+        "done": False,
+    },
+    {
+        "model": "q",
+        "message": {"role": "assistant", "content": "The answer"},
+        "done": False,
+    },
+    {
+        "model": "q",
+        "done": True,
+        "done_reason": "stop",
+        "load_duration": 0,
+        "prompt_eval_count": 5,
+        "prompt_eval_duration": 50_000_000,
+        "eval_count": 10,
+        "eval_duration": 200_000_000,
+    },
+)
+
+
+def test_ollama_thinking_model_ttfut_set_after_think_tag_separate_chunk():
+    """ttfut_s is set on the first content chunk that follows </think>."""
+    with patch(
+        "urllib.request.urlopen", _mock_urlopen(_OLLAMA_THINKING_SEPARATE_CHUNKS)
+    ):
+        result = OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+
+    assert result.ttfut_s is not None and result.ttfut_s >= 0.0
+
+
+_OLLAMA_THINKING_SPLIT_TAG = _ndjson(
+    {
+        "model": "q",
+        "message": {"role": "assistant", "content": "<think>reasoning</thi"},
+        "done": False,
+    },
+    {
+        "model": "q",
+        "message": {"role": "assistant", "content": "nk>"},
+        "done": False,
+    },
+    {
+        "model": "q",
+        "message": {"role": "assistant", "content": "The answer"},
+        "done": False,
+    },
+    {
+        "model": "q",
+        "done": True,
+        "done_reason": "stop",
+        "load_duration": 0,
+        "prompt_eval_count": 5,
+        "prompt_eval_duration": 50_000_000,
+        "eval_count": 10,
+        "eval_duration": 200_000_000,
+    },
+)
+
+
+def test_ollama_thinking_model_ttfut_detects_split_think_tag():
+    """</think> split across two chunk boundaries is still detected correctly."""
+    with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_THINKING_SPLIT_TAG)):
+        result = OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+
+    assert result.ttfut_s is not None and result.ttfut_s >= 0.0
+
+
+_OLLAMA_THINKING_EMPTY_CONTENT = _ndjson(
+    {"model": "q", "message": {"role": "assistant", "content": ""}, "done": False},
+    {"model": "q", "message": {"role": "assistant", "content": ""}, "done": False},
+    {
+        "model": "q",
+        "message": {"role": "assistant", "content": "</think>"},
+        "done": False,
+    },
+    {
+        "model": "q",
+        "message": {"role": "assistant", "content": "Hello"},
+        "done": False,
+    },
+    {
+        "model": "q",
+        "done": True,
+        "done_reason": "stop",
+        "load_duration": 0,
+        "prompt_eval_count": 5,
+        "prompt_eval_duration": 50_000_000,
+        "eval_count": 10,
+        "eval_duration": 200_000_000,
+    },
+)
+
+
+def test_ollama_thinking_model_empty_content_during_thinking_then_ttfut():
+    """Empty content chunks during thinking phase; ttfut_s set after </think>."""
+    with patch("urllib.request.urlopen", _mock_urlopen(_OLLAMA_THINKING_EMPTY_CONTENT)):
+        result = OllamaDriver().generate(
+            "q", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+
+    assert result.ttfut_s is not None and result.ttfut_s >= 0.0
+
+
 # ---------------------------------------------------------------------------
 # VllmDriver
 # ---------------------------------------------------------------------------

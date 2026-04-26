@@ -116,8 +116,14 @@ def print_summary_table(rows: list[dict[str, Any]]) -> None:
         print("\n(no results for this sweep)")
         return
 
-    header = "  ".join(name.ljust(w) for name, w in _SUMMARY_COLS)
-    sep = "  ".join("-" * w for _, w in _SUMMARY_COLS)
+    show_ttfut = any(r.get("ttfut_s") is not None for r in rows)
+    cols = list(_SUMMARY_COLS)
+    if show_ttfut:
+        ttft_idx = next(i for i, (name, _) in enumerate(cols) if name == "TTFT(s)")
+        cols.insert(ttft_idx + 1, ("TTFUT(s)", 8))
+
+    header = "  ".join(name.ljust(w) for name, w in cols)
+    sep = "  ".join("-" * w for _, w in cols)
     print(f"\n{'=' * len(sep)}")
     print("SWEEP SUMMARY")
     print(f"{'=' * len(sep)}")
@@ -134,6 +140,10 @@ def print_summary_table(rows: list[dict[str, Any]]) -> None:
             _fmt(r.get("concurrency")),
             _fmt(r.get("repeat_index")),
             _fmt(r.get("ttft_s"), ".2f"),
+        ]
+        if show_ttfut:
+            vals.append(_fmt(r.get("ttfut_s"), ".2f"))
+        vals += [
             _fmt(r.get("wall_time_s"), ".2f"),
             _fmt(r.get("throughput_tok_s"), ".0f"),
             _fmt(r.get("peak_vram_gb"), ".1f"),
@@ -142,7 +152,7 @@ def print_summary_table(rows: list[dict[str, Any]]) -> None:
             "Yes" if offload else "No",
             str(r.get("outcome") or "--")[:7],
         ]
-        line = "  ".join(v.ljust(w) for v, (_, w) in zip(vals, _SUMMARY_COLS))
+        line = "  ".join(v.ljust(w) for v, (_, w) in zip(vals, cols))
         print(line)
 
     print(f"{'=' * len(sep)}\n")
