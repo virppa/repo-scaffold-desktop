@@ -498,6 +498,61 @@ class TestPrintRanking:
         assert "local/qwen3:30b" in output
 
 
+class TestThermalThrottleColumns:
+    """Tests for min_sm_clock_mhz and thermal_throttle_detected added in WOR-205."""
+
+    def test_new_columns_default_to_none(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run())
+        result = store.get_by_run_id("run-001")[0]
+        assert result.min_sm_clock_mhz is None
+        assert result.thermal_throttle_detected is None
+
+    def test_min_sm_clock_mhz_round_trips(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run(min_sm_clock_mhz=1200.0))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.min_sm_clock_mhz == pytest.approx(1200.0)
+
+    def test_thermal_throttle_detected_true_round_trips(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run(thermal_throttle_detected=True))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.thermal_throttle_detected is True
+
+    def test_thermal_throttle_detected_false_round_trips(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run(thermal_throttle_detected=False))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.thermal_throttle_detected is False
+
+    def test_migration_adds_thermal_throttle_columns(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        db_path = tmp_path / "old_schema.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE bench_run (
+                run_id TEXT NOT NULL, case_id TEXT NOT NULL,
+                repeat_index INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (run_id, case_id, repeat_index)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bench_run(run_id, case_id, repeat_index) VALUES ('r1','c1',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        store = BenchStore(db_path=db_path)
+        result = store.get_by_run_id("r1")[0]
+        assert result.min_sm_clock_mhz is None
+        assert result.thermal_throttle_detected is None
+
+
 class TestTtfutColumn:
     """Tests for ttfut_s added in WOR-202."""
 
@@ -551,3 +606,34 @@ class TestTtfutColumn:
         with redirect_stdout(buf):
             print_summary_table(rows)
         assert "TTFUT" not in buf.getvalue()
+
+
+class TestThrottleColumn:
+    """Tests for the conditional Throttle column in print_summary_table (WOR-205)."""
+
+    def test_throttle_column_shown_when_any_row_throttled(self) -> None:
+        rows = [
+            {"model_id": "m", "thermal_throttle_detected": True},
+            {"model_id": "m2", "thermal_throttle_detected": False},
+        ]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "Throttle" in buf.getvalue()
+
+    def test_throttle_column_hidden_when_no_row_throttled(self) -> None:
+        rows = [
+            {"model_id": "m", "thermal_throttle_detected": False},
+            {"model_id": "m2", "thermal_throttle_detected": None},
+        ]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "Throttle" not in buf.getvalue()
+
+    def test_throttle_column_hidden_when_all_none(self) -> None:
+        rows = [{"model_id": "m", "thermal_throttle_detected": None}]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "Throttle" not in buf.getvalue()

@@ -119,10 +119,13 @@ def print_summary_table(rows: list[dict[str, Any]]) -> None:
         return
 
     show_ttfut = any(r.get("ttfut_s") is not None for r in rows)
+    show_throttle = any(r.get("thermal_throttle_detected") is True for r in rows)
     cols = list(_SUMMARY_COLS)
     if show_ttfut:
         ttft_idx = next(i for i, (name, _) in enumerate(cols) if name == "TTFT(s)")
         cols.insert(ttft_idx + 1, ("TTFUT(s)", 8))
+    if show_throttle:
+        cols.append(("Throttle", 8))
 
     header = "  ".join(name.ljust(w) for name, w in cols)
     sep = "  ".join("-" * w for _, w in cols)
@@ -154,6 +157,8 @@ def print_summary_table(rows: list[dict[str, Any]]) -> None:
             "Yes" if offload else "No",
             str(r.get("outcome") or "--")[:7],
         ]
+        if show_throttle:
+            vals.append(_bool_col(r.get("thermal_throttle_detected")))
         line = "  ".join(v.ljust(w) for v, (_, w) in zip(vals, cols))
         print(line)
 

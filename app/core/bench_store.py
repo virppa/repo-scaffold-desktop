@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS bench_run (
     avg_power_w             REAL,
     peak_temp_c             REAL,
     avg_sm_clock_mhz        REAL,
+    min_sm_clock_mhz        REAL,
+    thermal_throttle_detected INTEGER,
     avg_mem_clock_mhz       REAL,
     peak_ram_gb             REAL,
     cpu_offload_detected    INTEGER,
@@ -89,7 +91,8 @@ INSERT INTO bench_run (
     prompt_tokens, completion_tokens, total_tokens,
     peak_vram_gb, total_vram_gb,
     avg_gpu_util_pct, avg_gpu_mem_util_pct, avg_power_w,
-    peak_temp_c, avg_sm_clock_mhz, avg_mem_clock_mhz,
+    peak_temp_c, avg_sm_clock_mhz, min_sm_clock_mhz,
+    thermal_throttle_detected, avg_mem_clock_mhz,
     peak_ram_gb, cpu_offload_detected,
     cache_state, ollama_model_loaded, ollama_num_ctx, model_quant, model_family,
     quality_task_success, quality_pytest_passed,
@@ -105,7 +108,8 @@ INSERT INTO bench_run (
     :prompt_tokens, :completion_tokens, :total_tokens,
     :peak_vram_gb, :total_vram_gb,
     :avg_gpu_util_pct, :avg_gpu_mem_util_pct, :avg_power_w,
-    :peak_temp_c, :avg_sm_clock_mhz, :avg_mem_clock_mhz,
+    :peak_temp_c, :avg_sm_clock_mhz, :min_sm_clock_mhz,
+    :thermal_throttle_detected, :avg_mem_clock_mhz,
     :peak_ram_gb, :cpu_offload_detected,
     :cache_state, :ollama_model_loaded, :ollama_num_ctx, :model_quant, :model_family,
     :quality_task_success, :quality_pytest_passed,
@@ -118,6 +122,7 @@ _BOOL_COLUMNS = frozenset(
     {
         "cpu_offload_detected",
         "ollama_model_loaded",
+        "thermal_throttle_detected",
         "quality_task_success",
         "quality_pytest_passed",
         "quality_ruff_passed",
@@ -183,6 +188,8 @@ class BenchRun(BaseModel):
     avg_power_w: float | None = None
     peak_temp_c: float | None = None
     avg_sm_clock_mhz: float | None = None
+    min_sm_clock_mhz: float | None = None
+    thermal_throttle_detected: bool | None = None
     avg_mem_clock_mhz: float | None = None
 
     # CPU/RAM
@@ -265,6 +272,12 @@ class BenchStore:
             conn.execute("ALTER TABLE bench_run ADD COLUMN model_family TEXT")
         if "ttfut_s" not in existing:
             conn.execute("ALTER TABLE bench_run ADD COLUMN ttfut_s REAL")
+        if "min_sm_clock_mhz" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN min_sm_clock_mhz REAL")
+        if "thermal_throttle_detected" not in existing:
+            conn.execute(
+                "ALTER TABLE bench_run ADD COLUMN thermal_throttle_detected INTEGER"
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
