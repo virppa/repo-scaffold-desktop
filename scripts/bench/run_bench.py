@@ -112,7 +112,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--generate-fixtures",
         action="store_true",
-        help="Create scripts/bench/fixtures/prefill_50k.txt",
+        help=(
+            "Create scripts/bench/fixtures/prefill_base.txt"
+            " (~100k tokens; sliced per context_size at runtime)"
+        ),
     )
     parser.add_argument(
         "--browse",

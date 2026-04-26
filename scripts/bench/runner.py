@@ -51,15 +51,17 @@ def _is_oom(error: str) -> bool:
     )
 
 
-def _make_prompt(tier: str, repeat_index: int) -> BenchPrompt:
+def _make_prompt(tier: str, repeat_index: int, context_size: int) -> BenchPrompt:
     if tier == "speed":
         return make_speed_prompt()
     if tier == "coding":
         return make_coding_prompt()
     if tier == "prefill_shared":
-        return make_prefill_shared_prompt(suffix_index=repeat_index)
+        return make_prefill_shared_prompt(
+            suffix_index=repeat_index, context_size=context_size
+        )
     if tier == "prefill_unshared":
-        return make_prefill_unshared_prompt()
+        return make_prefill_unshared_prompt(context_size=context_size)
     if tier == "boundary":
         return make_boundary_prompt()
     raise ValueError(f"Unknown tier: {tier!r}")
@@ -269,7 +271,7 @@ def run(
             else:
                 cache_state = "prefix_warm"
 
-        prompt = _make_prompt(case.tier, case.repeat_index)
+        prompt = _make_prompt(case.tier, case.repeat_index, case.context_size)
 
         gpu_mon = GpuMonitor()
         sys_mon = SysMonitor()

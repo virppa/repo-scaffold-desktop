@@ -67,6 +67,7 @@ class TierConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     name: str
+    context_sizes: list[int] | None = None
 
 
 class BenchConfig(BaseModel):
@@ -107,11 +108,12 @@ class BenchConfig(BaseModel):
 
         for model in enabled_models:
             for tier in self.tiers:
-                ctx_sizes = (
-                    self.matrix.boundary_context_sizes
-                    if tier.name == "boundary"
-                    else self.matrix.context_sizes
-                )
+                if tier.name == "boundary":
+                    ctx_sizes = self.matrix.boundary_context_sizes
+                elif tier.context_sizes is not None:
+                    ctx_sizes = tier.context_sizes
+                else:
+                    ctx_sizes = self.matrix.context_sizes
 
                 for ctx_size in ctx_sizes:
                     cases.append(

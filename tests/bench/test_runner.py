@@ -79,26 +79,26 @@ def test_make_driver_returns_ollama_as_default() -> None:
 
 
 def test_make_prompt_speed() -> None:
-    prompt = _make_prompt("speed", 0)
+    prompt = _make_prompt("speed", 0, 65536)
     assert isinstance(prompt, BenchPrompt)
     assert prompt.task_type == "speed"
 
 
 def test_make_prompt_coding() -> None:
-    prompt = _make_prompt("coding", 0)
+    prompt = _make_prompt("coding", 0, 65536)
     assert isinstance(prompt, BenchPrompt)
     assert prompt.task_type == "coding"
 
 
 def test_make_prompt_boundary() -> None:
-    prompt = _make_prompt("boundary", 0)
+    prompt = _make_prompt("boundary", 0, 65536)
     assert isinstance(prompt, BenchPrompt)
     assert prompt.task_type == "boundary"
 
 
 def test_make_prompt_raises_for_unknown_tier() -> None:
     with pytest.raises(ValueError, match="Unknown tier"):
-        _make_prompt("nonexistent", 0)
+        _make_prompt("nonexistent", 0, 65536)
 
 
 # ---------------------------------------------------------------------------

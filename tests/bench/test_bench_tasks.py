@@ -44,31 +44,30 @@ def test_prefill_shared_different_suffix_produces_different_hash(
 
 
 def test_prefill_unshared_token_count_within_5pct() -> None:
-    target = 50000
-    prompt = make_prefill_unshared_prompt(target=target, seed=42)
+    context_size = 65536
+    expected_tokens = int(context_size * 0.75)
+    prompt = make_prefill_unshared_prompt(context_size=context_size, seed=42)
     assert prompt.token_count_estimate is not None
-    tolerance = target * 0.05
-    assert abs(prompt.token_count_estimate - target) <= tolerance
+    tolerance = expected_tokens * 0.05
+    assert abs(prompt.token_count_estimate - expected_tokens) <= tolerance
 
 
 def test_prefill_unshared_llm_seed_is_none() -> None:
-    prompt = make_prefill_unshared_prompt(target=100, seed=42)
-    # seed=42 above is the RNG seed for text generation
-    # BenchPrompt.seed (None) is the LLM generation seed — a separate concept
+    prompt = make_prefill_unshared_prompt(context_size=1024, seed=42)
     assert prompt.seed is None
     assert prompt.max_tokens == 128
 
 
 def test_prefill_unshared_deterministic() -> None:
-    p1 = make_prefill_unshared_prompt(target=1000, seed=42)
-    p2 = make_prefill_unshared_prompt(target=1000, seed=42)
+    p1 = make_prefill_unshared_prompt(context_size=4096, seed=42)
+    p2 = make_prefill_unshared_prompt(context_size=4096, seed=42)
     assert p1.text == p2.text
     assert p1.prompt_hash == p2.prompt_hash
 
 
 def test_prefill_unshared_different_seeds_differ() -> None:
-    p1 = make_prefill_unshared_prompt(target=1000, seed=42)
-    p2 = make_prefill_unshared_prompt(target=1000, seed=99)
+    p1 = make_prefill_unshared_prompt(context_size=4096, seed=42)
+    p2 = make_prefill_unshared_prompt(context_size=4096, seed=99)
     assert p1.text != p2.text
 
 

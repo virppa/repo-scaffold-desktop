@@ -18,18 +18,27 @@
 
 [matrix]
 # Non-boundary context windows (all tiers except boundary).
-#   4096  = speed/coding warm-up; fits in any KV budget
-#   16384 = realistic coding context
-#   32768 = 32K — common production window
-#   65536 = 64K — confirmed safe on RTX 5090 + qwen3-coder:30b (spike WOR-76)
-context_sizes = [4096, 16384, 32768, 65536]
-# Boundary tier only — OOM cliff probe per WOR-180 (96K / 128K / 160K).
-#   qwen2.5-coder:32b and qwen3-coder:30b will OOM here — that's expected and recorded.
-#   MoE models (35b-a3b, 27b) tolerate larger contexts due to sparse activation.
-boundary_context_sizes = [98304, 131072, 163840]
-# Concurrent requests per probe point.
-# Single Ollama GPU serialises beyond 2; 2 exposes queue-depth effects.
-concurrency_levels = [1, 2]
+#   16384  = realistic coding context; new floor (4K dropped — watcher sessions never start below 10K)
+#   32768  = 32K — common production window
+#   65536  = 64K — confirmed safe on RTX 5090 + qwen3-coder:30b (spike WOR-76)
+#   98304  = 96K — calibration point between 64K and 128K; characterises devstral cliff + qwen3.6:35b-a3b VRAM squeeze
+#   131072 = 128K — all models nominally support; larger models likely OOM-skip beyond here
+#   196608 = 192K — floor models (qwen3.5:9b) have headroom; larger models skipped_oom
+#   262144 = 256K — native limit of qwen3.5:9b; only floor models expected to reach this
+# NOTE: prefill_shared/unshared tiers use a 50K-token fixture regardless of context_size.
+# At 196K+ the fixture fills only ~20% of the allocated KV buffer — prefill numbers at those
+# sizes reflect VRAM pressure on an undersized fixture, not genuine long-context prefill.
+# Per-tier context_sizes override is a future improvement; interpret prefill results at 196K+
+# with this in mind.
+context_sizes = [16384, 32768, 65536, 98304, 131072, 196608, 262144]
+# Boundary tier — sole OOM cliff probe beyond the standard tier ceiling.
+# 96K/128K dropped: now covered by standard tier with OOM-skip safety net.
+# 320K: only qwen3.5:9b-q4_K_M has any realistic chance (~31 GB est.); all others skipped_oom.
+boundary_context_sizes = [327680]
+# Single concurrency only. Speed-tier data showed 98-105% efficiency at concurrency=2
+# across all 7 models — Ollama serialises requests on a single GPU as expected.
+# No differential signal; removing concurrency=2 halves the matrix with no data loss.
+concurrency_levels = [1]
 # Real (non-warmup) runs per probe point. 3 gives statistical confidence.
 repeats = 3
 
@@ -154,13 +163,19 @@ name = "speed"
 name = "coding"
 
 [[tiers]]
-# TTFT with shared 50k-token repo prefix. Measures vLLM APC reuse vs Ollama.
+# TTFT with shared repo-prefix fixture. Measures vLLM APC reuse vs Ollama.
 # First request per model = cache warm; subsequent = prefix_warm.
+# context_sizes capped at 131072: fixture fills ~75% of context at each size.
+# Above 131072 the fixture becomes an increasingly small fraction of KV buffer,
+# making TTFT numbers reflect VRAM pressure rather than prefill performance.
 name = "prefill_shared"
+context_sizes = [16384, 32768, 65536, 98304, 131072]
 
 [[tiers]]
-# TTFT with randomized same-length content. APC null baseline (cold prefill every run).
+# TTFT with same-length randomised content. APC null baseline (cold prefill every run).
+# Same context_sizes cap as prefill_shared — content scales to 75% fill at each size.
 name = "prefill_unshared"
+context_sizes = [16384, 32768, 65536, 98304, 131072]
 
 [[tiers]]
 # Long-context OOM cliff probe at boundary_context_sizes. OOM is recorded, not fatal.
