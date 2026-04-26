@@ -24,7 +24,10 @@ from scripts.bench.tasks.prefill_shared import make_prefill_shared_prompt
 from scripts.bench.tasks.prefill_unshared import make_prefill_unshared_prompt
 from scripts.bench.tasks.speed import make_speed_prompt
 
-THROTTLE_THRESHOLD = 0.10
+# RTX 5090 begins thermal throttling around 83-85°C.
+# Previous SM-clock-variance approach produced false positives because min_sm_clock
+# always captured the GPU idle/base clock (~456 MHz) at run start, not a real drop.
+THROTTLE_TEMP_C = 83
 
 
 def _case_id(case: BenchCase) -> str:
@@ -288,12 +291,11 @@ def run(
         gpu_sample = gpu_mon.stop()
         sys_result = sys_mon.stop()
 
-        avg_sm = gpu_sample.avg_sm_clock_mhz
-        min_sm = gpu_sample.min_sm_clock_mhz
-        if avg_sm is None or avg_sm == 0.0 or min_sm is None:
+        peak_temp = gpu_sample.peak_temp_c
+        if peak_temp is None:
             thermal_throttle_detected: bool | None = None
         else:
-            thermal_throttle_detected = (avg_sm - min_sm) / avg_sm > THROTTLE_THRESHOLD
+            thermal_throttle_detected = peak_temp >= THROTTLE_TEMP_C
 
         oom = False
         outcome = "ok"
