@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from scripts.bench.reporter import (
+    VRAM_HEADROOM_WARN_GB,
     _cv,
     _is_eligible,
     _percentile,
@@ -783,6 +784,90 @@ class TestComputeConcurrencyEfficiency:
         result = compute_concurrency_efficiency(rows)
         assert result[("x", "m", 4096, 2)] == pytest.approx(0.80)
         assert result[("y", "m", 4096, 2)] == pytest.approx(0.60)
+
+
+# ── print_ranking() VRAM headroom column tests ────────────────────────────────
+
+
+class TestPrintRankingVramHeadroom:
+    def _make_row(
+        self,
+        *,
+        model_id: str = "m",
+        backend_id: str = "b",
+        context_size: int = 4096,
+        concurrency: int = 1,
+        repeat_index: int = 1,
+        ttft_s: float = 0.3,
+        throughput_tok_s: float = 80.0,
+        outcome: str = "ok",
+        cpu_offload_detected: bool = False,
+        peak_vram_gb: float | None = 20.0,
+        total_vram_gb: float | None = 24.0,
+    ) -> dict[str, Any]:
+        return {
+            "model_id": model_id,
+            "backend_id": backend_id,
+            "context_size": context_size,
+            "concurrency": concurrency,
+            "repeat_index": repeat_index,
+            "ttft_s": ttft_s,
+            "throughput_tok_s": throughput_tok_s,
+            "outcome": outcome,
+            "cpu_offload_detected": cpu_offload_detected,
+            "tier": "speed",
+            "quality_task_success": None,
+            "peak_vram_gb": peak_vram_gb,
+            "total_vram_gb": total_vram_gb,
+        }
+
+    def test_header_includes_vram_headroom_column(self) -> None:
+        rows = [self._make_row()]
+        output = _capture(rows)
+        assert "VRAM Hdrm" in output
+
+    def test_headroom_value_computed_and_shown(self) -> None:
+        # total=24.0, peak=20.0 → headroom=4.0
+        rows = [self._make_row(total_vram_gb=24.0, peak_vram_gb=20.0)]
+        output = _capture(rows)
+        assert "4.0" in output
+
+    def test_low_headroom_shows_warning_indicator(self) -> None:
+        # headroom = 24.0 - 22.5 = 1.5 < VRAM_HEADROOM_WARN_GB
+        rows = [self._make_row(total_vram_gb=24.0, peak_vram_gb=22.5)]
+        output = _capture(rows)
+        assert "1.5[!]" in output
+
+    def test_headroom_at_warn_threshold_no_warning(self) -> None:
+        # headroom exactly at threshold — no warning
+        rows = [
+            self._make_row(
+                total_vram_gb=24.0,
+                peak_vram_gb=24.0 - VRAM_HEADROOM_WARN_GB,
+            )
+        ]
+        output = _capture(rows)
+        assert f"{VRAM_HEADROOM_WARN_GB:.1f}" in output
+        assert "[!]" not in output
+
+    def test_none_peak_vram_shows_na(self) -> None:
+        rows = [self._make_row(peak_vram_gb=None, total_vram_gb=24.0)]
+        output = _capture(rows)
+        assert "N/A" in output
+
+    def test_none_total_vram_shows_na(self) -> None:
+        rows = [self._make_row(peak_vram_gb=20.0, total_vram_gb=None)]
+        output = _capture(rows)
+        assert "N/A" in output
+
+    def test_both_none_shows_na(self) -> None:
+        rows = [self._make_row(peak_vram_gb=None, total_vram_gb=None)]
+        output = _capture(rows)
+        assert "N/A" in output
+
+    def test_vram_headroom_warn_gb_constant_is_float(self) -> None:
+        assert isinstance(VRAM_HEADROOM_WARN_GB, float)
+        assert VRAM_HEADROOM_WARN_GB == 2.0
 
 
 # ── print_ranking() concurrency efficiency column tests ───────────────────────

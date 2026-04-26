@@ -9,6 +9,8 @@ import statistics
 from pathlib import Path
 from typing import Any
 
+VRAM_HEADROOM_WARN_GB: float = 2.0
+
 # ── DB loader ─────────────────────────────────────────────────────────────────
 
 
@@ -352,6 +354,24 @@ def print_ranking(
             )
         )
 
+        peak_vram_values: list[float] = [
+            float(r["peak_vram_gb"])
+            for r in real_runs
+            if r.get("peak_vram_gb") is not None
+        ]
+        peak_vram_p50 = _median(peak_vram_values)
+        total_vram: float | None = next(
+            (
+                float(r["total_vram_gb"])
+                for r in real_runs
+                if r.get("total_vram_gb") is not None
+            ),
+            None,
+        )
+        vram_headroom_gb: float | None = None
+        if peak_vram_p50 is not None and total_vram is not None:
+            vram_headroom_gb = total_vram - peak_vram_p50
+
         eligible.append(
             {
                 "config_key": config_key,
@@ -362,6 +382,7 @@ def print_ranking(
                 "tok_p50": _median(tok_values),
                 "task_pct": task_pct,
                 "conc_eff": conc_eff,
+                "vram_headroom_gb": vram_headroom_gb,
             }
         )
 
@@ -383,14 +404,15 @@ def print_ranking(
         )
     )
 
-    _W = 119
+    _W = 130
     print("=" * _W)
     print("QUALITY-ELIGIBLE RANKING  (oom=No, offload=No, err≤5%, task≥70%)")
     print("=" * _W)
     header = (
         f"{'Rank':>4}  {'Config (backend/model/ctx/c)':<44}  "
         f"{'TTFT p50(s)':>10}  {'TTFT p95(s)':>10}  {'CV':>6}  "
-        f"{'Tok/s p50':>9}  {'Task%':>5}  {'Stable':>6}  {'Conc.Eff':>9}"
+        f"{'Tok/s p50':>9}  {'Task%':>5}  {'Stable':>6}  "
+        f"{'VRAM Hdrm':>9}  {'Conc.Eff':>9}"
     )
     print(header)
     print("-" * _W)
@@ -407,11 +429,19 @@ def print_ranking(
             stable_str = "[!]"
         else:
             stable_str = "OK"
+        headroom = entry["vram_headroom_gb"]
+        if headroom is None:
+            headroom_str = "N/A"
+        elif headroom < VRAM_HEADROOM_WARN_GB:
+            headroom_str = f"{headroom:.1f}[!]"
+        else:
+            headroom_str = f"{headroom:.1f}"
         eff_str = f"{entry['conc_eff']:.3f}" if entry["conc_eff"] is not None else "N/A"
         row_str = (
             f"{rank:>4}  {entry['config_key']:<44}  "
             f"{ttft_p50_str:>10}  {ttft_p95_str:>10}  {cv_str:>6}  "
-            f"{tok_str:>9}  {task_str:>5}  {stable_str:>6}  {eff_str:>9}"
+            f"{tok_str:>9}  {task_str:>5}  {stable_str:>6}  "
+            f"{headroom_str:>9}  {eff_str:>9}"
         )
         print(row_str)
 
