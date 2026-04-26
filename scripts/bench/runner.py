@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.bench_store import BenchRun, BenchStore
-from scripts.bench.config import BenchCase, BenchConfig
+from scripts.bench.config import BenchCase, BenchConfig, ModelConfig
 from scripts.bench.drivers.ollama import OllamaDriver
 from scripts.bench.drivers.vllm import VllmDriver
 from scripts.bench.env_snapshot import EnvSnapshot
@@ -23,6 +23,8 @@ from scripts.bench.tasks.coding import make_coding_prompt
 from scripts.bench.tasks.prefill_shared import make_prefill_shared_prompt
 from scripts.bench.tasks.prefill_unshared import make_prefill_unshared_prompt
 from scripts.bench.tasks.speed import make_speed_prompt
+
+THROTTLE_THRESHOLD = 0.10
 
 
 def _case_id(case: BenchCase) -> str:
@@ -66,6 +68,59 @@ def _make_driver(backend_id: str, base_url: str) -> OllamaDriver | VllmDriver:
     return OllamaDriver(base_url=base_url)
 
 
+def _should_skip_oom(
+    case: BenchCase,
+    oom_ctx: dict[tuple[str, str], int],
+    skip_oom_larger_ctx: bool,
+) -> bool:
+    if not skip_oom_larger_ctx:
+        return False
+    threshold = oom_ctx.get((case.model_id, case.backend_id))
+    return threshold is not None and case.context_size > threshold
+
+
+def _should_skip_concurrency_gate(
+    case: BenchCase,
+    concurrency_gate: set[tuple[str, str, int]],
+    require_single_concurrency_first: bool,
+) -> bool:
+    if not require_single_concurrency_first or case.concurrency <= 1:
+        return False
+    return (case.model_id, case.backend_id, case.context_size) not in concurrency_gate
+
+
+def _update_adaptive_state(
+    case: BenchCase,
+    outcome: str,
+    oom_ctx: dict[tuple[str, str], int],
+    max_working_ctx: dict[tuple[str, str], int],
+    concurrency_gate: set[tuple[str, str, int]],
+) -> None:
+    key = (case.model_id, case.backend_id)
+    if outcome == "oom":
+        if key not in oom_ctx or case.context_size < oom_ctx[key]:
+            oom_ctx[key] = case.context_size
+    elif outcome == "ok":
+        if key not in max_working_ctx or case.context_size > max_working_ctx[key]:
+            max_working_ctx[key] = case.context_size
+        if case.concurrency == 1:
+            concurrency_gate.add((case.model_id, case.backend_id, case.context_size))
+
+
+def _make_skipped_run(run_id: str, case: BenchCase, outcome: str) -> BenchRun:
+    return BenchRun(
+        run_id=run_id,
+        case_id=_case_id(case),
+        repeat_index=case.repeat_index,
+        tier=case.tier,
+        context_size=case.context_size,
+        concurrency=case.concurrency,
+        backend_id=case.backend_id,
+        model_id=case.model_id,
+        outcome=outcome,
+    )
+
+
 def run(
     config_path: str,
     db_path: Path,
@@ -97,16 +152,28 @@ def run(
     store = BenchStore(db_path)
 
     backends = {b.id: b for b in config.backends if b.enabled}
+    model_cfgs: dict[str, ModelConfig] = {m.id: m for m in config.models}
+    # Cache /api/show result per (backend_id, model_id) — called once per model.
+    model_info_cache: dict[tuple[str, str], dict[str, str | None]] = {}
 
     prev_model_id: str | None = None
     prev_backend_id: str | None = None
     # Tracks which models have had at least one prefill_shared run (for cache_state)
     prefill_shared_seen: set[str] = set()
 
+    # Adaptive scheduling state — per-session in-memory only, not persisted across runs
+    oom_ctx: dict[tuple[str, str], int] = {}
+    max_working_ctx: dict[tuple[str, str], int] = {}
+    concurrency_gate: set[tuple[str, str, int]] = set()
+
     for case in cases:
         row_run_id = _row_run_id(sweep_id, case)
 
-        if resume and store.get_by_run_id(row_run_id):
+        if resume and (existing := store.get_by_run_id(row_run_id)):
+            for row in existing:
+                _update_adaptive_state(
+                    case, row.outcome or "", oom_ctx, max_working_ctx, concurrency_gate
+                )
             print(
                 f"[SKIP] {case.model_id}/{case.tier}"
                 f"/ctx={case.context_size}/c={case.concurrency}/r={case.repeat_index}"
@@ -121,7 +188,45 @@ def run(
             )
             continue
 
+        if _should_skip_oom(case, oom_ctx, config.matrix.skip_oom_larger_ctx):
+            store.record(_make_skipped_run(row_run_id, case, "skipped_oom"))
+            print(
+                f"[SKIP_OOM  ] {case.model_id} / {case.tier}"
+                f" / ctx={case.context_size} / c={case.concurrency}"
+                f" / r={case.repeat_index}"
+            )
+            continue
+
+        if _should_skip_concurrency_gate(
+            case, concurrency_gate, config.matrix.require_single_concurrency_first
+        ):
+            store.record(
+                _make_skipped_run(row_run_id, case, "skipped_concurrency_gate")
+            )
+            print(
+                f"[SKIP_GATE ] {case.model_id} / {case.tier}"
+                f" / ctx={case.context_size} / c={case.concurrency}"
+                f" / r={case.repeat_index}"
+            )
+            continue
+
         driver = _make_driver(case.backend_id, backend_cfg.base_url)
+
+        info_key = (case.backend_id, case.model_id)
+        if info_key not in model_info_cache:
+            if isinstance(driver, OllamaDriver):
+                info = driver.fetch_model_info(case.model_id)
+            else:
+                info = {
+                    "model_quant": None,
+                    "model_family": None,
+                    "model_param_count": None,
+                }
+            m_cfg = model_cfgs.get(case.model_id)
+            if m_cfg is not None and m_cfg.quant is not None:
+                info = {**info, "model_quant": m_cfg.quant}
+            model_info_cache[info_key] = info
+        model_info = model_info_cache[info_key]
 
         manager: OllamaManager | None = None
         if "vllm" not in case.backend_id.lower():
@@ -182,6 +287,13 @@ def run(
 
         gpu_sample = gpu_mon.stop()
         sys_result = sys_mon.stop()
+
+        avg_sm = gpu_sample.avg_sm_clock_mhz
+        min_sm = gpu_sample.min_sm_clock_mhz
+        if avg_sm is None or avg_sm == 0.0 or min_sm is None:
+            thermal_throttle_detected: bool | None = None
+        else:
+            thermal_throttle_detected = (avg_sm - min_sm) / avg_sm > THROTTLE_THRESHOLD
 
         oom = False
         outcome = "ok"
@@ -245,22 +357,33 @@ def run(
             python_version=env.python_version,
             os_version=env.os_version,
             ttft_s=result.ttft_s if not oom else None,
+            ttfut_s=result.ttfut_s if not oom else None,
             wall_time_s=wall_time_s if not oom else None,
             throughput_tok_s=throughput_tok_s,
+            prompt_eval_duration_s=result.prompt_eval_duration_s,
+            load_duration_s=result.load_duration_s,
+            decode_time_s=result.decode_time_s,
             prompt_tokens=result.input_tokens,
             completion_tokens=result.output_tokens,
             total_tokens=total_tokens,
             peak_vram_gb=gpu_sample.peak_vram_gb,
+            total_vram_gb=env.total_vram_gb,
             avg_gpu_util_pct=gpu_sample.avg_gpu_util_pct,
             avg_gpu_mem_util_pct=gpu_sample.avg_gpu_mem_util_pct,
             avg_power_w=gpu_sample.avg_power_w,
             peak_temp_c=gpu_sample.peak_temp_c,
             avg_sm_clock_mhz=gpu_sample.avg_sm_clock_mhz,
+            min_sm_clock_mhz=gpu_sample.min_sm_clock_mhz,
+            thermal_throttle_detected=thermal_throttle_detected,
             avg_mem_clock_mhz=gpu_sample.avg_mem_clock_mhz,
             peak_ram_gb=sys_result.peak_ram_gb,
             cpu_offload_detected=sys_result.cpu_offload_detected,
+            cache_state=cache_state,
             ollama_model_loaded=ollama_model_loaded,
             ollama_num_ctx=case.context_size,
+            model_quant=model_info["model_quant"],
+            model_family=model_info["model_family"],
+            model_param_count=model_info["model_param_count"],
             quality_task_success=quality_task_success,
             quality_pytest_passed=quality_pytest_passed,
             quality_ruff_passed=quality_ruff_passed,
@@ -271,6 +394,9 @@ def run(
 
         # Write before moving to next case (resume safety invariant)
         store.record(bench_run)
+        _update_adaptive_state(
+            case, outcome, oom_ctx, max_working_ctx, concurrency_gate
+        )
 
         ttft_str = f" ttft={result.ttft_s:.2f}s" if result.ttft_s else ""
         tok_str = f" tok/s={throughput_tok_s:.0f}" if throughput_tok_s else ""
@@ -282,6 +408,11 @@ def run(
         )
 
     print("\nRun complete.")
+
+    if max_working_ctx:
+        print("Max working context per (model, backend):")
+        for (model_id, backend_id), ctx in sorted(max_working_ctx.items()):
+            print(f"  {model_id} / {backend_id}: {ctx}")
 
     from scripts.bench import reporter
 

@@ -30,6 +30,34 @@ class OllamaDriver:
     def __init__(self, base_url: str = "http://localhost:11434") -> None:
         self._base_url = _validated_base_url(base_url)
 
+    def fetch_model_info(self, model_id: str) -> dict[str, str | None]:
+        """Fetch quantization_level and parameter_size from Ollama /api/show.
+
+        Returns None values for both fields on any error — non-fatal by design.
+        """
+        payload = json.dumps({"name": model_id}).encode()
+        req = urllib.request.Request(
+            f"{self._base_url}/api/show",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data: dict[str, Any] = json.loads(resp.read().decode())
+            details: dict[str, Any] = data.get("details") or {}
+            return {
+                "model_quant": details.get("quantization_level") or None,
+                "model_family": details.get("family") or None,
+                "model_param_count": details.get("parameter_size") or None,
+            }
+        except Exception as exc:
+            logger.warning("fetch_model_info failed for %s: %s", model_id, exc)
+            return {
+                "model_quant": None,
+                "model_family": None,
+                "model_param_count": None,
+            }
+
     def is_available(self) -> bool:
         try:
             req = urllib.request.Request(f"{self._base_url}/api/tags")
@@ -73,8 +101,14 @@ class OllamaDriver:
 
     def _parse_streaming(self, resp: Any, t_start: float) -> GenerationResult:
         ttft_s: float | None = None
+        ttfut_s: float | None = None
         text_parts: list[str] = []
         final_frame: dict[str, Any] = {}
+
+        _THINK_TAG = "</think>"
+        _TAIL_LEN = len(_THINK_TAG) - 1
+        thinking_phase: bool = True
+        tail_buf: str = ""
 
         while True:
             raw = resp.readline()
@@ -92,6 +126,21 @@ class OllamaDriver:
                 content: str = frame.get("message", {}).get("content", "")
                 if content and ttft_s is None:
                     ttft_s = time.monotonic() - t_start
+                if thinking_phase and content:
+                    check = tail_buf + content
+                    idx = check.find(_THINK_TAG)
+                    if idx >= 0:
+                        thinking_phase = False
+                        after = check[idx + len(_THINK_TAG) :]
+                        if after:
+                            ttfut_s = time.monotonic() - t_start
+                        tail_buf = ""
+                    else:
+                        tail_buf = (
+                            check[-_TAIL_LEN:] if len(check) > _TAIL_LEN else check
+                        )
+                elif not thinking_phase and content and ttfut_s is None:
+                    ttfut_s = time.monotonic() - t_start
                 text_parts.append(content)
             else:
                 final_frame = frame
@@ -104,16 +153,34 @@ class OllamaDriver:
             raw_eval_duration_ns / 1e9 if raw_eval_duration_ns is not None else None
         )
 
+        raw_prompt_eval_duration_ns: int | None = final_frame.get(
+            "prompt_eval_duration"
+        )
+        prompt_eval_duration_s: float | None = (
+            raw_prompt_eval_duration_ns / 1e9
+            if raw_prompt_eval_duration_ns is not None
+            else None
+        )
+        load_duration_s: float | None = (
+            raw_load_duration_ns / 1e9 if raw_load_duration_ns is not None else None
+        )
+
         # Fall back to Ollama-reported prompt_eval_duration when client-side TTFT
         # was not captured (e.g. thinking models stream empty content chunks first).
-        if ttft_s is None and final_frame.get("prompt_eval_duration"):
-            ttft_s = final_frame["prompt_eval_duration"] / 1e9
+        if ttft_s is None and prompt_eval_duration_s is not None:
+            ttft_s = prompt_eval_duration_s
+
+        cache_state: str | None = final_frame.get("cache_state") or None
 
         return GenerationResult(
             text="".join(text_parts),
             ttft_s=ttft_s,
+            ttfut_s=ttfut_s,
             decode_time_s=decode_time_s,
-            raw_prompt_eval_duration_ns=final_frame.get("prompt_eval_duration"),
+            prompt_eval_duration_s=prompt_eval_duration_s,
+            load_duration_s=load_duration_s,
+            cache_state=cache_state,
+            raw_prompt_eval_duration_ns=raw_prompt_eval_duration_ns,
             raw_eval_duration_ns=raw_eval_duration_ns,
             raw_load_duration_ns=raw_load_duration_ns,
             input_tokens=final_frame.get("prompt_eval_count"),

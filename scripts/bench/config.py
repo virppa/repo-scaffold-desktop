@@ -28,6 +28,8 @@ class MatrixConfig(BaseModel):
     boundary_context_sizes: list[int]
     concurrency_levels: list[int]
     repeats: int = 1
+    skip_oom_larger_ctx: bool = True
+    require_single_concurrency_first: bool = True
 
     @field_validator("context_sizes", "boundary_context_sizes", "concurrency_levels")
     @classmethod
@@ -58,6 +60,7 @@ class ModelConfig(BaseModel):
 
     id: str
     backend_id: str
+    quant: str | None = None
 
 
 class TierConfig(BaseModel):

@@ -169,3 +169,127 @@ def test_no_model_on_disabled_backend_in_expanded_cases(tmp_path: Path) -> None:
     cases = cfg.expand_matrix()
     backend_ids = {c.backend_id for c in cases}
     assert "cloud_b" not in backend_ids
+
+
+def test_model_quant_field_defaults_to_none(tmp_path: Path) -> None:
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, _STANDARD_TOML))
+    for m in cfg.models:
+        assert m.quant is None
+
+
+def test_model_quant_field_parsed_from_toml(tmp_path: Path) -> None:
+    toml = """
+[matrix]
+context_sizes = [1024]
+boundary_context_sizes = [8192]
+concurrency_levels = [1]
+repeats = 1
+
+[[backends]]
+id = "local_a"
+enabled = true
+base_url = "http://localhost:1/"
+api_key = "x"
+
+[[models]]
+id = "some-model:7b"
+backend_id = "local_a"
+quant = "Q4_K_M"
+
+[[tiers]]
+name = "speed"
+"""
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, toml))
+    assert len(cfg.models) == 1
+    assert cfg.models[0].quant == "Q4_K_M"
+
+
+def test_model_quant_field_is_optional(tmp_path: Path) -> None:
+    toml = """
+[matrix]
+context_sizes = [1024]
+boundary_context_sizes = [8192]
+concurrency_levels = [1]
+repeats = 1
+
+[[backends]]
+id = "local_a"
+enabled = true
+base_url = "http://localhost:1/"
+api_key = "x"
+
+[[models]]
+id = "some-model:7b"
+backend_id = "local_a"
+
+[[tiers]]
+name = "speed"
+"""
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, toml))
+    assert cfg.models[0].quant is None
+
+
+def test_matrix_skip_oom_larger_ctx_defaults_to_true(tmp_path: Path) -> None:
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, _STANDARD_TOML))
+    assert cfg.matrix.skip_oom_larger_ctx is True
+
+
+def test_matrix_require_single_concurrency_first_defaults_to_true(
+    tmp_path: Path,
+) -> None:
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, _STANDARD_TOML))
+    assert cfg.matrix.require_single_concurrency_first is True
+
+
+def test_matrix_skip_oom_larger_ctx_can_be_disabled(tmp_path: Path) -> None:
+    toml = """
+[matrix]
+context_sizes = [1024]
+boundary_context_sizes = [8192]
+concurrency_levels = [1]
+repeats = 1
+skip_oom_larger_ctx = false
+
+[[backends]]
+id = "local_a"
+enabled = true
+base_url = "http://localhost:1/"
+api_key = "x"
+
+[[models]]
+id = "m"
+backend_id = "local_a"
+
+[[tiers]]
+name = "speed"
+"""
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, toml))
+    assert cfg.matrix.skip_oom_larger_ctx is False
+
+
+def test_matrix_require_single_concurrency_first_can_be_disabled(
+    tmp_path: Path,
+) -> None:
+    toml = """
+[matrix]
+context_sizes = [1024]
+boundary_context_sizes = [8192]
+concurrency_levels = [1]
+repeats = 1
+require_single_concurrency_first = false
+
+[[backends]]
+id = "local_a"
+enabled = true
+base_url = "http://localhost:1/"
+api_key = "x"
+
+[[models]]
+id = "m"
+backend_id = "local_a"
+
+[[tiers]]
+name = "speed"
+"""
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, toml))
+    assert cfg.matrix.require_single_concurrency_first is False

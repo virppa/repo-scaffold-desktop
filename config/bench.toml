@@ -68,6 +68,8 @@ base_url = "http://localhost:8000"
 
 [[models]]
 # 9.3 GB | Dense 14B — lightweight baseline and fastest model.
+# quant override: set when Ollama /api/show does not return quantization_level cleanly.
+# Example: quant = "Q4_K_M"
 id = "qwen3:14b"
 backend_id = "local_qwen"
 

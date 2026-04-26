@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import platform
+import sqlite3
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import pytest
@@ -13,6 +16,7 @@ from app.core.bench_store import (
     hash_settings,
     hash_text,
 )
+from scripts.bench.reporter import print_ranking, print_summary_table
 
 
 def _store(tmp_path: Path) -> BenchStore:
@@ -299,3 +303,382 @@ class TestHashFunctions:
 
     def test_hash_text_different_inputs_differ(self) -> None:
         assert hash_text("foo") != hash_text("bar")
+
+
+class TestNewColumns:
+    """Tests for the 5 new BenchRun columns added in WOR-197."""
+
+    def test_new_columns_default_to_none(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        run = _run()
+        store.record(run)
+        result = store.get_by_run_id("run-001")[0]
+        assert result.prompt_eval_duration_s is None
+        assert result.load_duration_s is None
+        assert result.decode_time_s is None
+        assert result.cache_state is None
+        assert result.total_vram_gb is None
+
+    def test_new_columns_round_trip_with_values(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        run = _run(
+            prompt_eval_duration_s=0.1,
+            load_duration_s=2.5,
+            decode_time_s=0.5,
+            cache_state="warm",
+            total_vram_gb=24.0,
+        )
+        store.record(run)
+        result = store.get_by_run_id("run-001")[0]
+        assert result.prompt_eval_duration_s == pytest.approx(0.1)
+        assert result.load_duration_s == pytest.approx(2.5)
+        assert result.decode_time_s == pytest.approx(0.5)
+        assert result.cache_state == "warm"
+        assert result.total_vram_gb == pytest.approx(24.0)
+
+    def test_migration_adds_columns_to_existing_db(self, tmp_path: Path) -> None:
+        """An existing bench.db without new columns opens cleanly after migration."""
+        db_path = tmp_path / "old.db"
+        # Build an old-schema DB without the new columns
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE bench_run (
+                run_id TEXT NOT NULL, case_id TEXT NOT NULL,
+                repeat_index INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (run_id, case_id, repeat_index)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bench_run(run_id, case_id, repeat_index) VALUES ('r1','c1',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        # Opening with BenchStore should migrate silently
+        store = BenchStore(db_path=db_path)
+        results = store.get_by_run_id("r1")
+        assert len(results) == 1
+        assert results[0].cache_state is None
+        assert results[0].total_vram_gb is None
+
+    def test_cache_state_prefix_warm_round_trips(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run(run_id="r1", cache_state="prefix_warm"))
+        result = store.get_by_run_id("r1")[0]
+        assert result.cache_state == "prefix_warm"
+
+
+class TestModelMetadataColumns:
+    """Tests for model_quant and model_family added in WOR-207."""
+
+    def test_model_quant_and_family_default_to_none(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run())
+        result = store.get_by_run_id("run-001")[0]
+        assert result.model_quant is None
+        assert result.model_family is None
+
+    def test_model_quant_and_family_round_trip(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run(model_quant="Q4_K_M", model_family="30.5B"))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.model_quant == "Q4_K_M"
+        assert result.model_family == "30.5B"
+
+    def test_migration_adds_model_quant_and_family_columns(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        db_path = tmp_path / "old_schema.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE bench_run (
+                run_id TEXT NOT NULL, case_id TEXT NOT NULL,
+                repeat_index INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (run_id, case_id, repeat_index)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bench_run(run_id, case_id, repeat_index) VALUES ('r1','c1',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        store = BenchStore(db_path=db_path)
+        result = store.get_by_run_id("r1")[0]
+        assert result.model_quant is None
+        assert result.model_family is None
+
+
+class TestModelParamCountColumn:
+    """Tests for model_param_count TEXT column added in WOR-207."""
+
+    def test_model_param_count_defaults_to_none(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run())
+        result = store.get_by_run_id("run-001")[0]
+        assert result.model_param_count is None
+
+    def test_model_param_count_round_trips(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run(model_param_count="30.5B"))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.model_param_count == "30.5B"
+
+    def test_migration_adds_model_param_count_column(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "old_schema.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE bench_run (
+                run_id TEXT NOT NULL, case_id TEXT NOT NULL,
+                repeat_index INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (run_id, case_id, repeat_index)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bench_run(run_id, case_id, repeat_index) VALUES ('r1','c1',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        store = BenchStore(db_path=db_path)
+        result = store.get_by_run_id("r1")[0]
+        assert result.model_param_count is None
+
+    def test_bench_run_field_is_str_or_none(self) -> None:
+        run = _run(model_param_count="7B")
+        assert run.model_param_count == "7B"
+        run2 = _run()
+        assert run2.model_param_count is None
+
+
+class TestPrintRanking:
+    """Tests for per-config grouping in print_ranking()."""
+
+    def _make_row(
+        self,
+        backend_id: str,
+        model_id: str,
+        context_size: int,
+        concurrency: int,
+        repeat_index: int = 1,
+        ttft_s: float = 0.3,
+        throughput_tok_s: float = 80.0,
+        outcome: str = "ok",
+        cpu_offload_detected: bool = False,
+    ) -> dict:
+        return {
+            "backend_id": backend_id,
+            "model_id": model_id,
+            "context_size": context_size,
+            "concurrency": concurrency,
+            "repeat_index": repeat_index,
+            "ttft_s": ttft_s,
+            "throughput_tok_s": throughput_tok_s,
+            "outcome": outcome,
+            "cpu_offload_detected": cpu_offload_detected,
+            "tier": "speed",
+            "quality_task_success": None,
+        }
+
+    def _capture_ranking(self, rows: list[dict]) -> str:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_ranking(rows)
+        return buf.getvalue()
+
+    def test_same_model_different_ctx_produces_two_rows(self) -> None:
+        rows = [
+            self._make_row("b", "m", 4096, 1, ttft_s=0.2),
+            self._make_row("b", "m", 8192, 1, ttft_s=0.4),
+        ]
+        output = self._capture_ranking(rows)
+        assert "ctx=4096" in output
+        assert "ctx=8192" in output
+        # Both configs should appear as separate ranked entries
+        assert output.count("   1") >= 1
+        assert output.count("   2") >= 1
+
+    def test_same_model_different_concurrency_produces_two_rows(self) -> None:
+        rows = [
+            self._make_row("b", "m", 4096, 1, ttft_s=0.2),
+            self._make_row("b", "m", 4096, 4, ttft_s=0.5),
+        ]
+        output = self._capture_ranking(rows)
+        assert "c=1" in output
+        assert "c=4" in output
+
+    def test_best_ttft_ranks_first(self) -> None:
+        rows = [
+            self._make_row("b", "m", 4096, 1, ttft_s=0.5),
+            self._make_row("b", "m", 8192, 1, ttft_s=0.2),
+        ]
+        output = self._capture_ranking(rows)
+        idx_4096 = output.find("ctx=4096")
+        idx_8192 = output.find("ctx=8192")
+        # ctx=8192 has lower TTFT so it should appear first (higher up in output)
+        assert idx_8192 < idx_4096
+
+    def test_no_eligible_rows_prints_message(self) -> None:
+        rows = [
+            self._make_row("b", "m", 4096, 1, outcome="oom"),
+        ]
+        output = self._capture_ranking(rows)
+        assert "No quality-eligible" in output
+
+    def test_recommended_banner_shows_config_key(self) -> None:
+        rows = [self._make_row("local", "qwen3:30b", 4096, 2)]
+        output = self._capture_ranking(rows)
+        assert "RECOMMENDED" in output
+        assert "local/qwen3:30b" in output
+
+
+class TestThermalThrottleColumns:
+    """Tests for min_sm_clock_mhz and thermal_throttle_detected added in WOR-205."""
+
+    def test_new_columns_default_to_none(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run())
+        result = store.get_by_run_id("run-001")[0]
+        assert result.min_sm_clock_mhz is None
+        assert result.thermal_throttle_detected is None
+
+    def test_min_sm_clock_mhz_round_trips(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run(min_sm_clock_mhz=1200.0))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.min_sm_clock_mhz == pytest.approx(1200.0)
+
+    def test_thermal_throttle_detected_true_round_trips(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run(thermal_throttle_detected=True))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.thermal_throttle_detected is True
+
+    def test_thermal_throttle_detected_false_round_trips(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run(thermal_throttle_detected=False))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.thermal_throttle_detected is False
+
+    def test_migration_adds_thermal_throttle_columns(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        db_path = tmp_path / "old_schema.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE bench_run (
+                run_id TEXT NOT NULL, case_id TEXT NOT NULL,
+                repeat_index INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (run_id, case_id, repeat_index)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bench_run(run_id, case_id, repeat_index) VALUES ('r1','c1',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        store = BenchStore(db_path=db_path)
+        result = store.get_by_run_id("r1")[0]
+        assert result.min_sm_clock_mhz is None
+        assert result.thermal_throttle_detected is None
+
+
+class TestTtfutColumn:
+    """Tests for ttfut_s added in WOR-202."""
+
+    def test_ttfut_s_defaults_to_none(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run())
+        result = store.get_by_run_id("run-001")[0]
+        assert result.ttfut_s is None
+
+    def test_ttfut_s_round_trips(self, tmp_path: Path) -> None:
+        store = BenchStore(db_path=tmp_path / "bench.db")
+        store.record(_run(ttfut_s=1.234))
+        result = store.get_by_run_id("run-001")[0]
+        assert result.ttfut_s == pytest.approx(1.234)
+
+    def test_migration_adds_ttfut_s_column(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        db_path = tmp_path / "old_schema.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE bench_run (
+                run_id TEXT NOT NULL, case_id TEXT NOT NULL,
+                repeat_index INTEGER NOT NULL,
+                recorded_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (run_id, case_id, repeat_index)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO bench_run(run_id, case_id, repeat_index) VALUES ('r1','c1',0)"
+        )
+        conn.commit()
+        conn.close()
+
+        store = BenchStore(db_path=db_path)
+        result = store.get_by_run_id("r1")[0]
+        assert result.ttfut_s is None
+
+    def test_summary_table_shows_ttfut_column_when_present(self) -> None:
+        rows = [{"model_id": "qwen3:30b", "ttfut_s": 1.5, "ttft_s": 0.2}]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "TTFUT" in buf.getvalue()
+
+    def test_summary_table_hides_ttfut_column_when_all_none(self) -> None:
+        rows = [{"model_id": "mistral", "ttfut_s": None, "ttft_s": 0.2}]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "TTFUT" not in buf.getvalue()
+
+
+class TestThrottleColumn:
+    """Tests for the conditional Throttle column in print_summary_table (WOR-205)."""
+
+    def test_throttle_column_shown_when_any_row_throttled(self) -> None:
+        rows = [
+            {"model_id": "m", "thermal_throttle_detected": True},
+            {"model_id": "m2", "thermal_throttle_detected": False},
+        ]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "Throttle" in buf.getvalue()
+
+    def test_throttle_column_hidden_when_no_row_throttled(self) -> None:
+        rows = [
+            {"model_id": "m", "thermal_throttle_detected": False},
+            {"model_id": "m2", "thermal_throttle_detected": None},
+        ]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "Throttle" not in buf.getvalue()
+
+    def test_throttle_column_hidden_when_all_none(self) -> None:
+        rows = [{"model_id": "m", "thermal_throttle_detected": None}]
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            print_summary_table(rows)
+        assert "Throttle" not in buf.getvalue()

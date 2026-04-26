@@ -38,22 +38,33 @@ CREATE TABLE IF NOT EXISTS bench_run (
     python_version          TEXT,
     os_version              TEXT,
     ttft_s                  REAL,
+    ttfut_s                 REAL,
     wall_time_s             REAL,
     throughput_tok_s        REAL,
+    prompt_eval_duration_s  REAL,
+    load_duration_s         REAL,
+    decode_time_s           REAL,
     prompt_tokens           INTEGER,
     completion_tokens       INTEGER,
     total_tokens            INTEGER,
     peak_vram_gb            REAL,
+    total_vram_gb           REAL,
     avg_gpu_util_pct        REAL,
     avg_gpu_mem_util_pct    REAL,
     avg_power_w             REAL,
     peak_temp_c             REAL,
     avg_sm_clock_mhz        REAL,
+    min_sm_clock_mhz        REAL,
+    thermal_throttle_detected INTEGER,
     avg_mem_clock_mhz       REAL,
     peak_ram_gb             REAL,
     cpu_offload_detected    INTEGER,
+    cache_state             TEXT,
     ollama_model_loaded     INTEGER,
     ollama_num_ctx          INTEGER,
+    model_quant             TEXT,
+    model_family            TEXT,
+    model_param_count       TEXT,
     quality_task_success    INTEGER,
     quality_pytest_passed   INTEGER,
     quality_ruff_passed     INTEGER,
@@ -76,12 +87,16 @@ INSERT INTO bench_run (
     tier, context_size, concurrency, backend_id, model_id,
     settings_hash, prompt_hash,
     backend_base_url, gpu_driver_version, cuda_version, python_version, os_version,
-    ttft_s, wall_time_s, throughput_tok_s,
+    ttft_s, ttfut_s, wall_time_s, throughput_tok_s,
+    prompt_eval_duration_s, load_duration_s, decode_time_s,
     prompt_tokens, completion_tokens, total_tokens,
-    peak_vram_gb, avg_gpu_util_pct, avg_gpu_mem_util_pct, avg_power_w,
-    peak_temp_c, avg_sm_clock_mhz, avg_mem_clock_mhz,
+    peak_vram_gb, total_vram_gb,
+    avg_gpu_util_pct, avg_gpu_mem_util_pct, avg_power_w,
+    peak_temp_c, avg_sm_clock_mhz, min_sm_clock_mhz,
+    thermal_throttle_detected, avg_mem_clock_mhz,
     peak_ram_gb, cpu_offload_detected,
-    ollama_model_loaded, ollama_num_ctx,
+    cache_state, ollama_model_loaded, ollama_num_ctx, model_quant, model_family,
+    model_param_count,
     quality_task_success, quality_pytest_passed,
     quality_ruff_passed, quality_mypy_passed,
     outcome, error_message
@@ -90,12 +105,16 @@ INSERT INTO bench_run (
     :tier, :context_size, :concurrency, :backend_id, :model_id,
     :settings_hash, :prompt_hash,
     :backend_base_url, :gpu_driver_version, :cuda_version, :python_version, :os_version,
-    :ttft_s, :wall_time_s, :throughput_tok_s,
+    :ttft_s, :ttfut_s, :wall_time_s, :throughput_tok_s,
+    :prompt_eval_duration_s, :load_duration_s, :decode_time_s,
     :prompt_tokens, :completion_tokens, :total_tokens,
-    :peak_vram_gb, :avg_gpu_util_pct, :avg_gpu_mem_util_pct, :avg_power_w,
-    :peak_temp_c, :avg_sm_clock_mhz, :avg_mem_clock_mhz,
+    :peak_vram_gb, :total_vram_gb,
+    :avg_gpu_util_pct, :avg_gpu_mem_util_pct, :avg_power_w,
+    :peak_temp_c, :avg_sm_clock_mhz, :min_sm_clock_mhz,
+    :thermal_throttle_detected, :avg_mem_clock_mhz,
     :peak_ram_gb, :cpu_offload_detected,
-    :ollama_model_loaded, :ollama_num_ctx,
+    :cache_state, :ollama_model_loaded, :ollama_num_ctx, :model_quant, :model_family,
+    :model_param_count,
     :quality_task_success, :quality_pytest_passed,
     :quality_ruff_passed, :quality_mypy_passed,
     :outcome, :error_message
@@ -106,6 +125,7 @@ _BOOL_COLUMNS = frozenset(
     {
         "cpu_offload_detected",
         "ollama_model_loaded",
+        "thermal_throttle_detected",
         "quality_task_success",
         "quality_pytest_passed",
         "quality_ruff_passed",
@@ -144,12 +164,19 @@ class BenchRun(BaseModel):
     ttft_s: float | None = Field(
         default=None, description="Time to first token in seconds"
     )
+    ttfut_s: float | None = Field(
+        default=None,
+        description="Time to first user-visible token in seconds (post-</think>)",
+    )
     wall_time_s: float | None = Field(
         default=None, description="Total wall time in seconds"
     )
     throughput_tok_s: float | None = Field(
         default=None, description="Tokens per second"
     )
+    prompt_eval_duration_s: float | None = None
+    load_duration_s: float | None = None
+    decode_time_s: float | None = None
 
     # tokens
     prompt_tokens: int | None = None
@@ -158,20 +185,31 @@ class BenchRun(BaseModel):
 
     # GPU
     peak_vram_gb: float | None = None
+    total_vram_gb: float | None = None
     avg_gpu_util_pct: float | None = None
     avg_gpu_mem_util_pct: float | None = None
     avg_power_w: float | None = None
     peak_temp_c: float | None = None
     avg_sm_clock_mhz: float | None = None
+    min_sm_clock_mhz: float | None = None
+    thermal_throttle_detected: bool | None = None
     avg_mem_clock_mhz: float | None = None
 
     # CPU/RAM
     peak_ram_gb: float | None = None
     cpu_offload_detected: bool | None = None
 
+    # cache state from backend
+    cache_state: str | None = None
+
     # Ollama status
     ollama_model_loaded: bool | None = None
     ollama_num_ctx: int | None = None
+
+    # model metadata (from /api/show)
+    model_quant: str | None = None
+    model_family: str | None = None
+    model_param_count: str | None = None
 
     # quality
     quality_task_success: bool | None = None
@@ -216,6 +254,36 @@ class BenchStore:
         with self._connect() as conn:
             conn.execute(_CREATE_TABLE)
             conn.execute(_CREATE_INDEX)
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        existing = {
+            row[1] for row in conn.execute("PRAGMA table_info(bench_run)").fetchall()
+        }
+        if "prompt_eval_duration_s" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN prompt_eval_duration_s REAL")
+        if "load_duration_s" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN load_duration_s REAL")
+        if "decode_time_s" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN decode_time_s REAL")
+        if "cache_state" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN cache_state TEXT")
+        if "total_vram_gb" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN total_vram_gb REAL")
+        if "model_quant" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN model_quant TEXT")
+        if "model_family" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN model_family TEXT")
+        if "ttfut_s" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN ttfut_s REAL")
+        if "min_sm_clock_mhz" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN min_sm_clock_mhz REAL")
+        if "thermal_throttle_detected" not in existing:
+            conn.execute(
+                "ALTER TABLE bench_run ADD COLUMN thermal_throttle_detected INTEGER"
+            )
+        if "model_param_count" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN model_param_count TEXT")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -259,6 +327,7 @@ def _row_to_bench_run(row: sqlite3.Row) -> BenchRun:
     d = dict(row)
     d.pop("recorded_at", None)
     for col in _BOOL_COLUMNS:
-        if d[col] is not None:
-            d[col] = bool(d[col])
+        val = d.get(col)
+        if val is not None:
+            d[col] = bool(val)
     return BenchRun.model_validate(d)
