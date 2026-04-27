@@ -88,14 +88,9 @@ id = "qwen3-coder:30b"
 backend_id = "local_qwen"
 
 [[models]]
-# 19 GB | Dense 32B coder Q4_K_M — REFERENCE ONLY: previous-generation baseline.
-# Severe throughput cliff at 32K+ context (VRAM pressure); not a production candidate.
-# Kept to quantify Qwen3.6 MoE improvement over prior dense 32B generation.
-id = "qwen2.5-coder:32b-instruct-q4_K_M"
-backend_id = "local_qwen"
-
-[[models]]
 # 17 GB | Dense 27B — Gemma 3 cross-vendor comparison at the 27B size tier.
+# Flat 79-81 tok/s from 16K-320K. Does not follow JSON output format — coding quality 0%.
+# Keep for throughput characterisation; investigate JSON compliance separately.
 id = "gemma3:27b"
 backend_id = "local_qwen"
 
@@ -109,10 +104,6 @@ backend_id = "local_qwen"
 id = "qwen3.5:9b-q8_0"
 backend_id = "local_qwen"
 
-[[models]]
-# 14 GB | MoE 24B coding agent — Mistral Devstral, purpose-built for agentic coding, 128K context.
-id = "devstral:24b"
-backend_id = "local_qwen"
 
 
 # ── vLLM models (disabled via local_vllm backend) ─────────────────────────────
@@ -135,10 +126,6 @@ backend_id = "local_vllm"
 id = "Qwen/Qwen3-Coder-30B-Instruct"
 backend_id = "local_vllm"
 
-[[models]]
-# HF: Qwen/Qwen2.5-Coder-32B-Instruct (use unquantized; apply --quantization awq if needed)
-id = "Qwen/Qwen2.5-Coder-32B-Instruct"
-backend_id = "local_vllm"
 
 # ── Tiers ─────────────────────────────────────────────────────────────────────
 # All five tiers. Use --tier <name> for a single-tier run.
