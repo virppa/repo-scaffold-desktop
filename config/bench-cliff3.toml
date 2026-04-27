@@ -1,0 +1,44 @@
+# Cliff characterisation run 3 — probing the 208K–256K range.
+# Run 2 (bench-cliff2.toml) revealed:
+#   - Secondary plateau extends further than expected: 184K still shows 76 tok/s
+#   - Step at ~185K–192K: drops to ~62 tok/s
+#   - 208K: still ~62 tok/s — mini-plateau between 192K and ~215K?
+#   - 224K: drops to ~55 tok/s
+#   - 256K (from baseline): 48 tok/s
+#
+# Open questions this run answers:
+#   - Is the 208K→224K drop a clean step or gradual decline?
+#   - Does 240K land at ~55 tok/s (another flat zone) or already approach 48?
+#   - Is the staircase model complete at 4 tiers, or is there more structure?
+#
+# Context sizes:
+#   216K (221184)  — probes the gap between the ~62 mini-plateau and the 224K drop
+#   240K (245760)  — between 224K (~55) and 256K (48), confirms the approach to floor
+
+[matrix]
+context_sizes = [221184, 245760]
+concurrency_levels = [1]
+repeats = 3
+
+[[backends]]
+id = "local_qwen"
+enabled = true
+base_url = "http://localhost:11434"
+
+[[models]]
+# 30b-coder excluded — continuous linear decline above 128K, pattern fully characterised.
+id = "qwen3.6:35b-a3b"
+backend_id = "local_qwen"
+
+[[tiers]]
+name = "speed"
+
+[[tiers]]
+name = "coding"
+
+[[tiers]]
+# Prefill fixture ~117K tokens; at 216K–240K fills 49–54% of KV buffer.
+name = "prefill_shared"
+
+[[tiers]]
+name = "prefill_unshared"

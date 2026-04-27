@@ -25,9 +25,9 @@
 #   131072 = 128K — all models nominally support; larger models likely OOM-skip beyond here
 #   196608 = 192K — floor models (qwen3.5:9b) have headroom; larger models skipped_oom
 #   262144 = 256K — native limit of qwen3.5:9b; only floor models expected to reach this
-# NOTE: prefill_shared/unshared tiers use a 50K-token fixture regardless of context_size.
-# At 196K+ the fixture fills only ~20% of the allocated KV buffer — prefill numbers at those
-# sizes reflect VRAM pressure on an undersized fixture, not genuine long-context prefill.
+# NOTE: prefill_shared/unshared tiers use a ~117K-token fixture regardless of context_size.
+# At 131K the fixture fills ~75% of the KV buffer (good signal). At 196K+ it fills ~45–60%,
+# so TTFT at those sizes reflects a partially filled buffer, not peak long-context prefill.
 # Per-tier context_sizes override is a future improvement; interpret prefill results at 196K+
 # with this in mind.
 context_sizes = [16384, 32768, 65536, 98304, 131072, 196608, 262144]
@@ -88,20 +88,8 @@ id = "qwen3-coder:30b"
 backend_id = "local_qwen"
 
 [[models]]
-# 17 GB | Dense 27B — Gemma 3 cross-vendor comparison at the 27B size tier.
-# Flat 79-81 tok/s from 16K-320K. Does not follow JSON output format — coding quality 0%.
-# Keep for throughput characterisation; investigate JSON compliance separately.
-id = "gemma3:27b"
-backend_id = "local_qwen"
-
-[[models]]
 # 6.6 GB | Dense 9B Q4_K_M — floor model; 256K context, multimodal. Fast cheap worker baseline.
 id = "qwen3.5:9b-q4_K_M"
-backend_id = "local_qwen"
-
-[[models]]
-# 11 GB | Dense 9B Q8_0 — higher quality quant; compare vs qwen3.5:9b-q4_K_M for quality/speed tradeoff.
-id = "qwen3.5:9b-q8_0"
 backend_id = "local_qwen"
 
 
@@ -142,15 +130,14 @@ name = "coding"
 [[tiers]]
 # TTFT with shared repo-prefix fixture. Measures vLLM APC reuse vs Ollama.
 # First request per model = cache warm; subsequent = prefix_warm.
-# context_sizes capped at 131072: fixture fills ~75% of context at each size.
-# Above 131072 the fixture becomes an increasingly small fraction of KV buffer,
-# making TTFT numbers reflect VRAM pressure rather than prefill performance.
+# context_sizes capped at 131072: fixture (~117K tokens) fills ~75% of KV buffer at 131K.
+# Above 131072 fill drops to ~45-60%, so TTFT reflects partial-fill prefill performance.
 name = "prefill_shared"
 context_sizes = [16384, 32768, 65536, 98304, 131072]
 
 [[tiers]]
 # TTFT with same-length randomised content. APC null baseline (cold prefill every run).
-# Same context_sizes cap as prefill_shared — content scales to 75% fill at each size.
+# Same context_sizes cap as prefill_shared — fixture fills ~75% of KV buffer at 131K.
 name = "prefill_unshared"
 context_sizes = [16384, 32768, 65536, 98304, 131072]
 
