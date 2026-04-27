@@ -60,3 +60,9 @@ litellm-local.yaml
 
 # Benchmark fixtures (generated locally, not committed)
 scripts/bench/fixtures/
+
+# Benchmark results DB (local data, not committed)
+bench_results.db
+
+# Benchmark config backups
+config/*.toml.bak

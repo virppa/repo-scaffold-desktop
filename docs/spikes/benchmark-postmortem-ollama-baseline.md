@@ -25,7 +25,7 @@ Characterise every viable local model on this hardware across five dimensions: r
 
 **devstral** produces working code — pytest passes on every single run — but fails ruff on every single run. It writes functional but unclean Python: no type annotations, deprecated patterns, or style violations. Task success requires all three checks; it never clears ruff. This is a meaningful distinction: capable coder, not a quality coder.
 
-**gemma3** ignores the JSON output format entirely and writes prose. 79 tokens of natural language, `JSONDecodeError` every time. This is a prompt-compliance failure, not a reasoning failure. Whether it can be fixed with a system prompt or different output format is an open question.
+**gemma3** ignores the JSON output format entirely and writes prose. 79 tokens of natural language, `JSONDecodeError` every time. This is a prompt-compliance failure, not a reasoning failure. Not worth custom prompt engineering — dropped.
 
 **9b-q4** achieves 100% quality but uses 80–100x more tokens than 30b-coder for the same task. The model is capable but inefficient — it ruminates extensively before arriving at an answer that a more capable model reaches immediately. This verbosity is a quality signal: smaller models produce less-directed reasoning chains.
 
@@ -58,9 +58,44 @@ Three throughput archetypes:
 
 **Flat-through-all-contexts:** Both 9b models maintain identical speed from 16K to 320K. No cliff, no VRAM pressure, no degradation. Gemma3:27b does the same at 79–81 tok/s — a dense 27B model with this property is architecturally unusual, likely extreme GQA with few KV heads.
 
-**FA-extended flat with cliff:** 35b-a3b is flat at 161–166 from 16K through 128K (Flash Attention eliminated the cliff at 96K→128K, +105% at 131K), then drops hard at 192K to 62 tok/s. **OLLAMA_FLASH_ATTENTION=1 is not optional for this model** — without it, 128K was already a cliff. The 128K→192K cliff remains and its exact boundary is uncharacterised (see Open items).
+**FA-extended flat with staircase:** 35b-a3b is flat at 161–166 from 16K through 128K (Flash Attention eliminated the cliff at 96K→128K, +105% at 131K), then descends in three clean steps. **OLLAMA_FLASH_ATTENTION=1 is not optional for this model** — without it, 128K was already a cliff. See the staircase characterisation below for the full picture above 128K.
 
 **Standard dense cliff:** 30b-coder maintains speed to 64K then halves at 128K. Devstral falls off at 96K (128K native context limit). qwen2.5-coder:32b cliffs at 32K.
+
+### 35b-a3b staircase above 128K (cliff.toml + cliff2 + cliff3)
+
+Four targeted runs pinned the exact plateau boundaries. 30b-coder profiled to 176K then excluded — no plateau structure, continuous decline only.
+
+| Context | 35b-a3b | 30b-coder | Notes |
+|---|---|---|---|
+| 128K | **165** | 71 | FA-flat ends |
+| 144K | **75.8** | 63.2 | Step down; secondary plateau starts |
+| 160K | **74.6** | 61.2 | Plateau |
+| 176K | **74.4** | 59.7 | Plateau; 30b continuous decline |
+| 184K | **76.1** | — | Secondary plateau extends to 184K |
+| 192K | 62 | 56 | Step down; plateau ends 184K→192K |
+| 208K | **62** | — | Third plateau |
+| 216K | **62** | — | Third plateau confirmed to 216K |
+| 224K | **55** | — | Step down; 62→55 in 216K→224K window |
+| 240K | **49** | — | Already at floor |
+| 256K | 48 | 48 | Converge |
+| 320K | 34 | 34.5 | Floor |
+
+**Three clean steps then floor:**
+1. **165 tok/s** — ≤131K (FA-flat)
+2. **~75 tok/s** — 132K–184K
+3. **~62 tok/s** — 185K–216K
+4. **~48 tok/s** — >216K (at floor by 240K — no useful plateau above 216K)
+
+**30b-coder prefill collapse above 131K** (measured on shared 117K-token prefix):
+
+| Context | 35b-a3b | 30b-coder | Gap |
+|---|---|---|---|
+| 144K | 68.4 tok/s | 12.4 tok/s | 5.5× |
+| 160K | 66.4 tok/s | 9.1 tok/s | 7.3× |
+| 176K | 67.4 tok/s | **7.3 tok/s** | **9.2×** |
+
+At 176K, loading a 117K-token prefix into 30b-coder takes 21+ seconds. 35b-a3b handles the same in under 14 seconds, essentially unaffected by context growth. For watcher sessions where context accumulates turn-by-turn, this is a decisive advantage for 35b-a3b above 131K — for every context reload, not just generation.
 
 ---
 
@@ -87,60 +122,13 @@ Task type                    Model                   Reason
 ──────────────────────────────────────────────────────────────────────────
 Complex coding, ctx ≤128K    qwen3.6:35b-a3b         FA-flat 161-165 tok/s + 100% quality
 Complex coding, ctx ≤96K     qwen3-coder:30b         5-12% faster, coding-specialist
-Complex coding, ctx >128K    neither — reconsider    both drop to 35-48 tok/s
+Complex coding, 131K–216K    qwen3.6:35b-a3b         Third plateau: 62-76 tok/s, still viable
+Complex coding, ctx >216K    reconsider              drops to 48-55 tok/s; at floor by 240K
 Simple/mechanical tasks      qwen3.5:9b-q4_K_M       179 tok/s flat, 100% quality
 Floor / parallel workers     qwen3.5:9b-q4_K_M       10.3 GB at 16K, co-loadable
-Cross-vendor throughput ref  gemma3:27b              flat curve, not for tool use
 ```
 
 **On 35–48 tok/s at 256K:** This is still viable for watcher background work. A 1000-token coding response takes ~25 seconds locally vs ~12 seconds via cloud Claude — but the watcher turn also includes pytest, ruff, mypy, and Linear API calls (typically 20–40s overhead), so generation is not the bottleneck. The practical pain threshold is ~15 tok/s, where a 1000-token response exceeds a minute. 35–48 tok/s at extreme context is free, private, and rate-limit-free — meaningfully better than cloud for sustained watcher sessions. The 128K boundary matters for *speed parity* with cloud, not for raw viability.
-
----
-
-## Cliff characterisation — full staircase (bench-cliff.toml + bench-cliff2.toml runs)
-
-Three targeted runs across 144K–224K for qwen3.6:35b-a3b; 30b-coder profiled to 176K then excluded (pattern complete).
-
-### Speed (generation tok/s) — 35b-a3b staircase
-
-| Context | 35b-a3b | 30b-coder | Notes |
-|---|---|---|---|
-| 128K | **165** | 71 | FA-flat zone ends here |
-| 144K | **75.8** | 63.2 | Sharp step for 35b-a3b; secondary plateau starts |
-| 160K | **74.6** | 61.2 | Plateau holding |
-| 176K | **74.4** | 59.7 | Plateau still; 30b continuous decline |
-| 184K | **76.1** | — | **Secondary plateau extends to 184K** (cliff2) |
-| 192K | 62 | 56 | Step down — plateau ends between 184K and 192K |
-| 208K | **62** | — | Mini-plateau at 192K–208K (cliff2) |
-| 224K | **55** | — | Another step down (cliff2) |
-| 256K | 48 | 48 | Converge at baseline floor |
-| 320K | 34 | 34.5 | Tied |
-
-**35b-a3b staircase structure confirmed across 4 tiers:**
-1. **165 tok/s** — ≤131K (FA-flat)
-2. **~75 tok/s** — 132K–184K (secondary plateau, wider than the 128K→192K gap suggested)
-3. **~62 tok/s** — ~185K–208K (mini-plateau)
-4. **~55 tok/s** — 209K–~230K (declining zone)
-5. **48 tok/s** — ~230K–256K (approaching floor)
-6. **34 tok/s** — 320K (floor)
-
-30b-coder has **no plateau structure** — continuous erosion from 71 tok/s at 128K down through 256K where both models converge. Excluded from cliff2/cliff3 runs: characterisation complete.
-
-### Prefill collapse on 30b-coder (most important finding from cliff.toml)
-
-Prefill throughput (tok/s while processing the shared 117K-token context prefix):
-
-| Context | 35b-a3b | 30b-coder | Gap |
-|---|---|---|---|
-| 144K | 68.4 tok/s | 12.4 tok/s | 5.5× |
-| 160K | 66.4 tok/s | 9.1 tok/s | 7.3× |
-| 176K | 67.4 tok/s | **7.3 tok/s** | **9.2×** |
-
-At 176K, loading a 117K-token context prefix into 30b-coder takes 21+ seconds. 35b-a3b handles the same prefix in under 14 seconds and is essentially unaffected by context growth. For watcher sessions where context accumulates turn-by-turn, this is a decisive architectural advantage for 35b-a3b above 131K — not just for generation speed but for every context reload.
-
-### Open range: 208K–256K
-
-The step from 208K (~62) to 224K (~55) to 256K (48) is not fully characterised. Does 216K land at ~62 or already at ~55? Does 240K confirm a flat zone before the 256K floor? Follow-up run `bench-cliff3.toml` probes 216K (221,184) and 240K (245,760).
 
 ---
 
@@ -176,8 +164,10 @@ vLLM APC on `prefill_shared` tier should halve warm-request TTFT. These numbers 
 | Model | Reason |
 |---|---|
 | qwen3.6:27b | Weak throughput (85 tok/s at 16K), no quality data, MoE advantage not meaningful at 27B active params |
-| qwen2.5-coder:32b-instruct-q4_K_M | Prior-gen reference: 32K throughput cliff confirmed (75→30 tok/s), 100% quality confirmed; characterization complete |
-| devstral:24b | Hard 96K cliff, 0% ruff/quality score, 128K native limit makes it non-viable above 64K |
+| qwen2.5-coder:32b-instruct-q4_K_M | Prior-gen reference: 32K throughput cliff confirmed (75→30 tok/s), 100% quality confirmed; characterisation complete |
+| devstral:24b | Hard 96K cliff, 0% ruff/quality score, 128K native limit; capable coder but not a quality coder |
+| gemma3:27b | Ignores JSON output format — prompt compliance failure every run; not worth custom prompt engineering |
+| qwen3.5:9b-q8_0 | Verbosity paradox: more capable than q4 but thinks longer, hits token ceiling more often, worse benchmark score; floor model role doesn't justify the tradeoff |
 
 ---
 
@@ -185,9 +175,10 @@ vLLM APC on `prefill_shared` tier should halve warm-request TTFT. These numbers 
 
 ### WOR-199 — Watcher optimizer
 
-- Concurrency data (WOR-203) is all at concurrency=1 — Ollama serializes, no differential signal at concurrency=2. Auto-sizing sub-goal is gated on vLLM data from WOR-210.
-- Quality thresholds for `_is_eligible()` are now data-driven: devstral and gemma3 are disqualified at current prompt format.
-- Three test gaps must close before watcher reads bench.db for routing decisions: ranking table column assertions, threshold configurability parametrization, CLI exit-code integration test.
+- Concurrency data (WOR-203) is all at concurrency=1 — Ollama serialises, no differential signal at concurrency=2. Auto-sizing sub-goal is gated on vLLM data from WOR-210.
+- Quality thresholds for `_is_eligible()` are now data-driven: devstral and gemma3 are disqualified at current prompt format and excluded from the active matrix.
+- Routing calibration (context size vs task complexity) will come from live watcher data, not synthetic benchmarks. Instrumentation required: `local_input_tokens`, `local_output_tokens`, `estimated_context_tokens` — see WOR-199 comments for schema spec.
+- Three test gaps must close before watcher reads bench.db for routing decisions: ranking table column assertions, threshold configurability parametrisation, CLI exit-code integration test.
 
 ### WOR-118 — vLLM spike
 
@@ -206,11 +197,8 @@ vLLM APC on `prefill_shared` tier should halve warm-request TTFT. These numbers 
 
 ## Open items
 
-- [x] qwen3.5:9b-q8_0 coding results — 85.7% (24/28); 3 NULLs hit 16384 ceiling. Benchmark artefact — q8 needs larger budget than q4. Not worth pursuing further given floor model role.
-- [x] Characterise the 35b-a3b cliff between 128K and 192K — cliff.toml: sharp drop to ~75 tok/s at 131K, secondary plateau confirmed flat through 176K
-- [x] Characterise 176K–224K range for 35b-a3b — cliff2.toml: secondary plateau extends to 184K; step at ~185K to 62 tok/s; 208K still 62; 224K drops to 55. 4-tier staircase confirmed.
-- [ ] Characterise 208K–256K range — bench-cliff3.toml probes 216K and 240K. Does 216K land on the 62 mini-plateau or already at 55? Confirms exact step boundary.
-- [ ] Add varied coding tasks at multiple difficulty levels — current benchmark uses a single fixed task (flatten nested list). This is insufficient to differentiate thinking vs direct models on hard tasks. A thinking model's 20s response only pays off if it avoids rework on harder problems; this cannot be measured with one easy task. Suggested approach: 3–5 tasks at easy/medium/hard tiers, each with its own pytest fixture (similar to HumanEval style). Would directly inform the 35b-a3b vs 30b-coder routing decision above 131K context.
-- [ ] Task complexity as a watcher routing signal — WOR-199 routing logic should consider estimated task complexity, not just context size. Simple mechanical tasks → 30b-coder (faster response, no thinking overhead). Complex multi-step tasks → 35b-a3b (thinking pays off in fewer rework cycles). Requires the varied task benchmark data above to calibrate.
+- [x] 35b-a3b staircase above 128K — fully characterised across cliff/cliff2/cliff3 runs; 3 clean plateaus, floor at >216K
+- [x] q8_0 coding results — benchmark artefact (verbosity paradox); not worth pursuing further
 - [ ] vLLM compatibility check (WOR-118) — gates everything in WOR-210
 - [ ] Close WOR-199 test gaps before watcher reads bench.db for routing decisions
+- [ ] Task complexity routing calibration — deferred to live watcher data; instrumentation spec in WOR-199 comments
