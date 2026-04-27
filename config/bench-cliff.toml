@@ -1,0 +1,57 @@
+# Targeted cliff-characterisation run for qwen3.6:35b-a3b and qwen3-coder:30b.
+# Fills the 128K–256K gap where 35b-a3b drops from 165 tok/s to 62 tok/s.
+# Run with: python scripts/bench/run_bench.py --config config/bench-cliff.toml
+#
+# Context sizes chosen to pin the exact cliff boundary:
+#   144K (147456)  — first step above the FA-flat zone
+#   160K (163840)  — midpoint between 128K and 192K
+#   176K (180224)  — one step below the known 192K cliff
+# These complement the main matrix which already has 128K and 192K data.
+#
+# All four production tiers included — full picture at each gap context:
+#   speed          — throughput cliff characterisation (primary goal)
+#   coding         — quality + throughput at these intermediate contexts
+#   prefill_shared — extends TTFT curve beyond the 131K cap in the main matrix
+#   prefill_unshared — APC null baseline extension to match prefill_shared
+# Note: prefill fixture is ~117K tokens; at 144K–176K it fills 66–81% of KV buffer —
+# comparable to the 75% fill at 131K in the main matrix. Prefill numbers are meaningful here.
+# boundary tier: 320K probe for 35b-a3b and 30b-coder — coding + prefill at 320K is new data
+# (main matrix only had speed at 320K for these two models).
+
+[matrix]
+context_sizes = [147456, 163840, 180224]
+boundary_context_sizes = [327680]
+concurrency_levels = [1]
+repeats = 3
+
+[[backends]]
+id = "local_qwen"
+enabled = true
+base_url = "http://localhost:11434"
+
+[[models]]
+# MoE 35B — FA-flat through 128K, cliff at 192K. Characterise where exactly it drops.
+id = "qwen3.6:35b-a3b"
+backend_id = "local_qwen"
+
+[[models]]
+# Dense 30B — cliffs at 128K. Check if there's any recovery or further degradation.
+id = "qwen3-coder:30b"
+backend_id = "local_qwen"
+
+[[tiers]]
+name = "speed"
+
+[[tiers]]
+name = "coding"
+
+[[tiers]]
+name = "prefill_shared"
+
+[[tiers]]
+name = "prefill_unshared"
+
+[[tiers]]
+# OOM probe at 320K for 35b-a3b and 30b-coder. Main matrix had speed-only at 320K;
+# this adds coding quality and prefill TTFT data at that boundary.
+name = "boundary"

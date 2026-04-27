@@ -1,0 +1,45 @@
+# Cliff characterisation run 2 — probing the 176K–256K range.
+# Run 1 (bench-cliff.toml) confirmed:
+#   - 35b-a3b secondary plateau: flat at ~75 tok/s from 144K through 176K
+#   - 30b-coder continuous decline above 128K: 63→61→60 (no plateau)
+#   - 30b-coder prefill collapse: 12.4→9.1→7.3 tok/s at 144K→160K→176K (9× slower than 35b-a3b)
+#
+# Open questions this run answers:
+#   - Is the 35b-a3b 176K→192K drop (74→62 tok/s) a sharp step or gradual?
+#   - Does 35b-a3b have a third plateau between 192K and 256K (62→48)?
+#   - Does 30b-coder prefill collapse continue below 7 tok/s above 176K?
+#
+# Context sizes:
+#   184K (188416)  — probes the 176K→192K step for 35b-a3b
+#   208K (212992)  — first point in the 192K→256K range
+#   224K (229376)  — midpoint of 192K→256K
+
+[matrix]
+context_sizes = [188416, 212992, 229376]
+concurrency_levels = [1]
+repeats = 3
+
+[[backends]]
+id = "local_qwen"
+enabled = true
+base_url = "http://localhost:11434"
+
+[[models]]
+# 30b-coder excluded — continuous linear decline above 128K, no structure to discover.
+# Pattern fully characterised in bench-cliff.toml run.
+id = "qwen3.6:35b-a3b"
+backend_id = "local_qwen"
+
+[[tiers]]
+name = "speed"
+
+[[tiers]]
+name = "coding"
+
+[[tiers]]
+# Prefill fixture ~117K tokens; at 184K–224K fills 52–62% of KV buffer.
+# Still useful for comparing relative prefill throughput between models.
+name = "prefill_shared"
+
+[[tiers]]
+name = "prefill_unshared"
