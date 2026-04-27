@@ -76,7 +76,7 @@ def test_coding_prompt_returns_bench_prompt() -> None:
     assert prompt.task_type == "coding"
     assert len(prompt.text) > 0
     assert len(prompt.prompt_hash) == 64
-    assert prompt.max_tokens == 10240
+    assert prompt.max_tokens == 16384
     assert prompt.temperature == pytest.approx(0.0)
     assert prompt.seed == 42
 

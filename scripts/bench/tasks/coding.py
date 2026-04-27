@@ -25,7 +25,7 @@ def make_coding_prompt() -> BenchPrompt:
         text=_TEXT,
         prompt_hash=prompt_hash,
         task_type="coding",
-        max_tokens=10240,
+        max_tokens=16384,
         temperature=0.0,
         seed=42,
     )
