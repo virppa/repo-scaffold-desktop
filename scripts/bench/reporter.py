@@ -97,6 +97,7 @@ _SUMMARY_COLS = [
     ("TTFT(s)", 8),
     ("Wall(s)", 8),
     ("Tok/s", 7),
+    ("Agg.tok/s", 9),
     ("VRAM(GB)", 9),
     ("GPU%", 5),
     ("OOM", 5),
@@ -141,9 +142,13 @@ def print_summary_table(rows: list[dict[str, Any]]) -> None:
         ]
         if show_ttfut:
             vals.append(_fmt(r.get("ttfut_s"), ".2f"))
+        conc = r.get("concurrency") or 1
+        tok_s = r.get("throughput_tok_s")
+        agg_tok_s = (conc * tok_s) if tok_s is not None else None
         vals += [
             _fmt(r.get("wall_time_s"), ".2f"),
-            _fmt(r.get("throughput_tok_s"), ".0f"),
+            _fmt(tok_s, ".0f"),
+            _fmt(agg_tok_s, ".0f"),
             _fmt(r.get("peak_vram_gb"), ".1f"),
             _pct(r.get("avg_gpu_util_pct")),
             "Yes" if oom else "No",

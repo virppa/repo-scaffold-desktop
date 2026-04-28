@@ -1,0 +1,45 @@
+# vLLM NVFP4 — no-thinking mode. Mirrors bench-vllm-nvfp4.toml exactly but
+# passes chat_template_kwargs: {enable_thinking: false} on every request.
+#
+# Purpose: apples-to-apples tok/s comparison against Ollama baseline, which
+# runs without thinking by default. The thinking-enabled run (bench-vllm-nvfp4.toml)
+# measures real-world throughput including reasoning overhead.
+#
+# Same server, no restart needed — thinking is controlled per-request.
+
+[matrix]
+context_sizes = [16384, 32768, 65536, 98304, 131072]
+boundary_context_sizes = [327680]
+concurrency_levels = [1]
+repeats = 3
+
+[[backends]]
+id = "local_vllm"
+enabled = true
+base_url = "http://localhost:8000"
+enable_thinking = false
+
+[[backends]]
+id = "local_qwen"
+enabled = true
+base_url = "http://localhost:11434"
+
+[[models]]
+id = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "local_vllm"
+
+[[models]]
+id = "qwen3.6:35b-a3b"
+backend_id = "local_qwen"
+
+[[tiers]]
+name = "speed"
+
+[[tiers]]
+name = "coding"
+
+[[tiers]]
+name = "prefill_shared"
+
+[[tiers]]
+name = "prefill_unshared"

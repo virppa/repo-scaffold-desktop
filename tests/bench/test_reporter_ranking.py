@@ -330,7 +330,7 @@ class TestPrintRankingConcurrencyEfficiency:
     def test_header_contains_conc_eff(self) -> None:
         rows = [self._make_row()]
         output = _capture(rows)
-        assert "Conc.Eff" in output
+        assert "Speedup" in output
 
     def test_concurrency_1_shows_na(self) -> None:
         rows = [self._make_row(concurrency=1)]
@@ -343,8 +343,8 @@ class TestPrintRankingConcurrencyEfficiency:
             self._make_row(concurrency=2, throughput_tok_s=150.0, ttft_s=0.4),
         ]
         output = _capture(rows)
-        # efficiency = 150 / (2 * 100) = 0.750
-        assert "0.750" in output
+        # aggregate speedup = (2 * 150) / 100 = 3.00x
+        assert "3.00x" in output
 
     def test_concurrency_gt1_without_baseline_shows_na(self) -> None:
         rows = [self._make_row(concurrency=2, throughput_tok_s=150.0)]
@@ -354,7 +354,7 @@ class TestPrintRankingConcurrencyEfficiency:
     def test_conc_eff_header_present(self) -> None:
         rows = [self._make_row()]
         output = _capture(rows)
-        assert "Conc.Eff" in output
+        assert "Speedup" in output
 
     def test_super_linear_efficiency_displayed(self) -> None:
         rows = [
@@ -362,8 +362,8 @@ class TestPrintRankingConcurrencyEfficiency:
             self._make_row(concurrency=2, throughput_tok_s=150.0, ttft_s=0.4),
         ]
         output = _capture(rows)
-        # efficiency = 150 / (2 * 50) = 1.500
-        assert "1.500" in output
+        # aggregate speedup = (2 * 150) / 50 = 6.00x
+        assert "6.00x" in output
 
 
 # ── composite quality-tier ranking tests ──────────────────────────────────────

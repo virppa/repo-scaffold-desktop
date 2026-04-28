@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.bench_store import BenchRun, BenchStore
 from scripts.bench.config import BenchCase, BenchConfig, ModelConfig
+from scripts.bench.drivers.base import GenerationResult
 from scripts.bench.drivers.ollama import OllamaDriver
 from scripts.bench.drivers.vllm import VllmDriver
 from scripts.bench.env_snapshot import EnvSnapshot
@@ -63,14 +65,70 @@ def _make_prompt(tier: str, repeat_index: int, context_size: int) -> BenchPrompt
     if tier == "prefill_unshared":
         return make_prefill_unshared_prompt(context_size=context_size)
     if tier == "boundary":
-        return make_boundary_prompt()
+        return make_boundary_prompt(context_size=context_size)
     raise ValueError(f"Unknown tier: {tier!r}")
 
 
-def _make_driver(backend_id: str, base_url: str) -> OllamaDriver | VllmDriver:
+def _make_driver(
+    backend_id: str, base_url: str, enable_thinking: bool = True
+) -> OllamaDriver | VllmDriver:
     if "vllm" in backend_id.lower():
-        return VllmDriver(base_url=base_url)
+        return VllmDriver(base_url=base_url, enable_thinking=enable_thinking)
     return OllamaDriver(base_url=base_url)
+
+
+def _run_generate(
+    driver: OllamaDriver | VllmDriver,
+    case: BenchCase,
+    messages: list[dict[str, str]],
+    prompt: BenchPrompt,
+) -> tuple[list[GenerationResult], float]:
+    """Fire case.concurrency simultaneous requests; return results and wall time."""
+
+    def _one(_: int) -> GenerationResult:
+        return driver.generate(
+            case.model_id,
+            messages,
+            case.context_size,
+            prompt.max_tokens,
+            prompt.temperature,
+            prompt.seed if case.concurrency <= 1 else None,
+        )
+
+    t0 = time.monotonic()
+    if case.concurrency <= 1:
+        results: list[GenerationResult] = [_one(0)]
+    else:
+        with ThreadPoolExecutor(max_workers=case.concurrency) as pool:
+            futures = [pool.submit(_one, i) for i in range(case.concurrency)]
+            results = [f.result() for f in futures]
+    return results, time.monotonic() - t0
+
+
+def _aggregate(results: list[GenerationResult]) -> GenerationResult:
+    """Average quantitative fields across ok results; qualitative from first ok."""
+    ok = [r for r in results if not r.error]
+    if not ok:
+        return results[0]
+
+    def _fmean(vals: list[float]) -> float | None:
+        return sum(vals) / len(vals) if vals else None
+
+    def _imean(vals: list[int]) -> int | None:
+        return round(sum(vals) / len(vals)) if vals else None
+
+    return GenerationResult(
+        text=ok[0].text,
+        ttft_s=_fmean([r.ttft_s for r in ok if r.ttft_s is not None]),
+        decode_time_s=_fmean(
+            [r.decode_time_s for r in ok if r.decode_time_s is not None]
+        ),
+        input_tokens=_imean([r.input_tokens for r in ok if r.input_tokens is not None]),
+        output_tokens=_imean(
+            [r.output_tokens for r in ok if r.output_tokens is not None]
+        ),
+        finish_reason=ok[0].finish_reason,
+    )
 
 
 def _should_skip_oom(
@@ -215,7 +273,9 @@ def run(
             )
             continue
 
-        driver = _make_driver(case.backend_id, backend_cfg.base_url)
+        driver = _make_driver(
+            case.backend_id, backend_cfg.base_url, backend_cfg.enable_thinking
+        )
 
         info_key = (case.backend_id, case.model_id)
         if info_key not in model_info_cache:
@@ -279,16 +339,8 @@ def run(
         sys_mon.start()
 
         messages: list[dict[str, str]] = [{"role": "user", "content": prompt.text}]
-        t_start = time.monotonic()
-        result = driver.generate(
-            case.model_id,
-            messages,
-            case.context_size,
-            prompt.max_tokens,
-            prompt.temperature,
-            prompt.seed,
-        )
-        wall_time_s = time.monotonic() - t_start
+        raw_results, wall_time_s = _run_generate(driver, case, messages, prompt)
+        result = _aggregate(raw_results)
 
         gpu_sample = gpu_mon.stop()
         sys_result = sys_mon.stop()
@@ -302,13 +354,16 @@ def run(
         oom = False
         outcome = "ok"
         error_message: str | None = None
-        if result.error:
+        any_oom = any(_is_oom(r.error) for r in raw_results if r.error)
+        if any_oom:
+            oom = True
+            outcome = "oom"
+            error_message = next(
+                r.error for r in raw_results if r.error and _is_oom(r.error)
+            )
+        elif result.error:
+            outcome = "error"
             error_message = result.error
-            if _is_oom(result.error):
-                oom = True
-                outcome = "oom"
-            else:
-                outcome = "error"
 
         quality_task_success: bool | None = None
         quality_pytest_passed: bool | None = None
@@ -394,6 +449,12 @@ def run(
             quality_mypy_passed=quality_mypy_passed,
             outcome=outcome,
             error_message=error_message,
+            finish_reason=result.finish_reason,
+            enable_thinking=(
+                backend_cfg.enable_thinking
+                if "vllm" in case.backend_id.lower()
+                else None
+            ),
         )
 
         # Write before moving to next case (resume safety invariant)
@@ -405,10 +466,14 @@ def run(
         ttft_str = f" ttft={result.ttft_s:.2f}s" if result.ttft_s else ""
         tok_str = f" tok/s={throughput_tok_s:.0f}" if throughput_tok_s else ""
         cache_str = f" [{cache_state}]" if cache_state else ""
+        ok_count = sum(1 for r in raw_results if not r.error)
+        conc_str = (
+            f" [{ok_count}/{case.concurrency} ok]" if case.concurrency > 1 else ""
+        )
         print(
             f"[{outcome.upper():5}] {case.model_id} / {case.tier}"
             f" / ctx={case.context_size} / c={case.concurrency} / r={case.repeat_index}"
-            f"{cache_str}{ttft_str}{tok_str}"
+            f"{cache_str}{conc_str}{ttft_str}{tok_str}"
         )
 
     print("\nRun complete.")
