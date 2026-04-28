@@ -254,7 +254,8 @@ class TestComputeConcurrencyEfficiency:
             _eff_row(concurrency=2, throughput_tok_s=190.0),
         ]
         result = compute_concurrency_efficiency(rows)
-        assert result[("b", "m", 4096, 2)] == pytest.approx(0.95)
+        # aggregate speedup = (2 * 190) / 100 = 3.80
+        assert result[("b", "m", 4096, 2)] == pytest.approx(3.80)
 
     def test_no_baseline_returns_none(self) -> None:
         rows = [_eff_row(concurrency=2, throughput_tok_s=200.0)]
@@ -291,7 +292,8 @@ class TestComputeConcurrencyEfficiency:
         result = compute_concurrency_efficiency(rows)
         eff = result[("b", "m", 4096, 2)]
         assert eff is not None
-        assert eff == pytest.approx(1.5)
+        # aggregate speedup = (2 * 150) / 50 = 6.0
+        assert eff == pytest.approx(6.0)
 
     def test_warmup_runs_excluded(self) -> None:
         # Only warmup (repeat_index=0) run for c=1 → no baseline
@@ -309,8 +311,8 @@ class TestComputeConcurrencyEfficiency:
             _eff_row(concurrency=2, repeat_index=1, throughput_tok_s=180.0),
         ]
         result = compute_concurrency_efficiency(rows)
-        # median c=1 = 100.0; eff = 180.0 / (2 * 100.0) = 0.90
-        assert result[("b", "m", 4096, 2)] == pytest.approx(0.90)
+        # median c=1 = 100.0; aggregate speedup = (2 * 180.0) / 100.0 = 3.60
+        assert result[("b", "m", 4096, 2)] == pytest.approx(3.60)
 
     def test_empty_rows_returns_empty_dict(self) -> None:
         assert compute_concurrency_efficiency([]) == {}
@@ -323,8 +325,9 @@ class TestComputeConcurrencyEfficiency:
             _eff_row(model_id="B", concurrency=2, throughput_tok_s=300.0),
         ]
         result = compute_concurrency_efficiency(rows)
-        assert result[("b", "A", 4096, 2)] == pytest.approx(0.80)
-        assert result[("b", "B", 4096, 2)] == pytest.approx(0.75)
+        # A: (2 * 160) / 100 = 3.20; B: (2 * 300) / 200 = 3.00
+        assert result[("b", "A", 4096, 2)] == pytest.approx(3.20)
+        assert result[("b", "B", 4096, 2)] == pytest.approx(3.00)
 
     def test_different_backends_use_own_baseline(self) -> None:
         rows = [
@@ -334,8 +337,9 @@ class TestComputeConcurrencyEfficiency:
             _eff_row(backend_id="y", concurrency=2, throughput_tok_s=60.0),
         ]
         result = compute_concurrency_efficiency(rows)
-        assert result[("x", "m", 4096, 2)] == pytest.approx(0.80)
-        assert result[("y", "m", 4096, 2)] == pytest.approx(0.60)
+        # x: (2 * 160) / 100 = 3.20; y: (2 * 60) / 50 = 2.40
+        assert result[("x", "m", 4096, 2)] == pytest.approx(3.20)
+        assert result[("y", "m", 4096, 2)] == pytest.approx(2.40)
 
 
 # ── print_apc_section() conditional label tests ───────────────────────────────
@@ -409,8 +413,11 @@ class TestPrintConcurrencyScalingSection:
     def test_no_concurrency_gt1_no_output(self) -> None:
         assert self._capture_scaling([_eff_row(concurrency=1)]) == ""
 
-    def test_no_baseline_no_output(self) -> None:
-        assert self._capture_scaling([_eff_row(concurrency=2)]) == ""
+    def test_no_baseline_shows_na_speedup(self) -> None:
+        # c=2 with no c=1 baseline: section is printed but speedup shows N/A
+        output = self._capture_scaling([_eff_row(concurrency=2)])
+        assert "CONCURRENCY SCALING" in output
+        assert "N/A" in output
 
     def test_shows_concurrency_scaling_header(self) -> None:
         rows = [
@@ -419,13 +426,13 @@ class TestPrintConcurrencyScalingSection:
         ]
         assert "CONCURRENCY SCALING" in self._capture_scaling(rows)
 
-    def test_low_efficiency_shows_serialised(self) -> None:
-        # eff = 80 / (2 * 100) = 0.40 < 0.5
+    def test_low_efficiency_shows_overhead(self) -> None:
+        # speedup = (2 * 40) / 100 = 0.80 ≤ 0.9 → "overhead"
         rows = [
             _eff_row(concurrency=1, throughput_tok_s=100.0),
-            _eff_row(concurrency=2, throughput_tok_s=80.0),
+            _eff_row(concurrency=2, throughput_tok_s=40.0),
         ]
-        assert "serialised" in self._capture_scaling(rows)
+        assert "overhead" in self._capture_scaling(rows)
 
     def test_high_efficiency_shows_scales_well(self) -> None:
         # eff = 180 / (2 * 100) = 0.90 > 0.8
@@ -435,22 +442,24 @@ class TestPrintConcurrencyScalingSection:
         ]
         assert "scales well" in self._capture_scaling(rows)
 
-    def test_medium_efficiency_no_label(self) -> None:
-        # eff = 140 / (2 * 100) = 0.70 (between 0.5 and 0.8)
+    def test_medium_efficiency_shows_partial_gain(self) -> None:
+        # speedup = (2 * 65) / 100 = 1.30 — in (1.1, 1.5] range → "partial gain"
         rows = [
             _eff_row(concurrency=1, throughput_tok_s=100.0),
-            _eff_row(concurrency=2, throughput_tok_s=140.0),
+            _eff_row(concurrency=2, throughput_tok_s=65.0),
         ]
         output = self._capture_scaling(rows)
-        assert "serialised" not in output
+        assert "partial gain" in output
+        assert "overhead" not in output
         assert "scales well" not in output
 
     def test_efficiency_value_shown(self) -> None:
+        # speedup = (2 * 150) / 100 = 3.00x
         rows = [
             _eff_row(concurrency=1, throughput_tok_s=100.0),
-            _eff_row(concurrency=2, throughput_tok_s=150.0),  # eff=0.750
+            _eff_row(concurrency=2, throughput_tok_s=150.0),
         ]
-        assert "0.750" in self._capture_scaling(rows)
+        assert "3.00x" in self._capture_scaling(rows)
 
     def test_ranking_includes_scaling_section_when_concurrency_gt1(self) -> None:
         base = {

@@ -23,7 +23,7 @@
 Best single-worker configuration — highest throughput, full quality:
 
 ```bash
-VLLM_MOE_BACKEND=FLASHINFER_TRTLLM vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
   --max-model-len 131072 \
   --max-num-seqs 200 \
   --reasoning-parser qwen3 \
@@ -32,8 +32,10 @@ VLLM_MOE_BACKEND=FLASHINFER_TRTLLM vllm serve /home/antti/models/Qwen3.6-35B-A3B
   --safetensors-load-strategy prefetch
 ```
 
-`VLLM_MOE_BACKEND` is treated as unknown by vLLM but FlashInfer's autotuner benchmarks
-TRTLLM MoE kernels independently — TRTLLM wins and is selected automatically.
+Note: `VLLM_MOE_BACKEND` and `VLLM_NVFP4_MOE_BACKEND` are both logged as "Unknown vLLM
+environment variable" in vLLM 0.20.0 — neither has any effect. The FlashInfer autotuner
+benchmarks TRTLLM vs CUTLASS at startup independently and selects TRTLLM for BF16+NVFP4
+automatically.
 
 ### Performance (run_20260427_190219)
 
@@ -98,7 +100,7 @@ selected across runs even with `seed=42, temperature=0`. Output token count vari
 Server command:
 
 ```bash
-VLLM_MOE_BACKEND=FLASHINFER_TRTLLM vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
   --max-model-len 262144 \
   --kv-cache-dtype fp8 \
   --max-num-seqs 200 \
@@ -109,10 +111,15 @@ VLLM_MOE_BACKEND=FLASHINFER_TRTLLM vllm serve /home/antti/models/Qwen3.6-35B-A3B
   --safetensors-load-strategy prefetch
 ```
 
-Note: `--max-num-batched-tokens 4096` required — Mamba cache align mode sets
-block_size=2096 which must be ≤ max_num_batched_tokens (default 2048 fails).
+`--max-num-batched-tokens 4096`: Mamba cache align mode sets block_size=2096 which must
+be ≤ max_num_batched_tokens (default 2048 fails).
 
-FP8 KV forces FlashInfer attention (not FA2), which costs ~25% throughput.
+Backend: autotuner selects **FLASHINFER_CUTLASS** for NVFP4+FP8 KV — TRTLLM MoE tactics
+are unsupported for this combination in vLLM 0.20.0. CUTLASS gives ~115–122 tok/s, which
+is expected and correct. Both `VLLM_MOE_BACKEND` and `VLLM_NVFP4_MOE_BACKEND` are
+ignored by vLLM 0.20.0; the autotuner selects CUTLASS without them.
+
+FP8 KV forces FlashInfer attention (not FA2), which costs ~25% throughput versus BF16.
 
 ### FP8 quality at known context sizes (run_20260427_205008)
 
@@ -178,6 +185,48 @@ At 147K max_model_len, vLLM's Mamba page alignment changes block_size from 2096 
    picks TRTLLM) + smaller Mamba block boundary crossings → 63–70 tok/s vs 160 tok/s.
 
 The 147K target is a Mamba alignment trap. Avoid.
+
+---
+
+## FP8 concurrency sweep (run_20260428_201813)
+
+Config: `config/bench-vllm-fp8-concurrency.toml` — coding + prefill_unshared + boundary
+tiers × 131K / 196K / 262K × c=1 / c=2, 5 repeats. c=3+ skipped (BF16 sweep already
+confirmed c=3 collapses for coding and heavy-context workloads).
+
+KV cache capacity at startup: 173,968 tokens → max concurrent capacity at 262K = 2.54×
+(i.e., c=2 fits with headroom; c=3 at 262K would exceed the pool without APC).
+
+**Cold-start false alarm (run_20260428_193457):** An earlier FP8 run produced 18–21 tok/s.
+Root cause: server was not fully warmed up (CUDA graphs and JIT compilation still running)
+when the first requests arrived. Deleted from bench.db. Confirmed non-issue by re-running
+with the same flags — full speed (107–130 tok/s) from the first request batch.
+
+### FP8 coding tier
+
+| Context | c=1 tok/s | c=2 per-req | c=2 agg | Notes |
+|---------|----------|-------------|---------|-------|
+| 131K | ~115 | — | — | baseline; CUTLASS autotuned |
+| 196K | ~120 | — | — | slightly faster than 131K (prefill parallelism) |
+| 262K | ~119 | ~90 | **~179** | 27% per-req drop; c=2 viable |
+
+Full results in bench.db run_20260428_201813. BF16 131K c=2 gives ~240 agg tok/s for
+comparison — FP8 at 262K is 75% of that while covering 2× more context.
+
+### FP8 boundary tier at 262K (run_20260428_204415)
+
+95%-fill prompt (~249K tokens), fixed seed=99 — all repeats share KV blocks via APC.
+VRAM flat at **31.19 GB** for both c=1 and c=2 (APC deduplication: both workers use
+the same physical blocks, no additive VRAM).
+
+| c | Per-req tok/s | Agg tok/s | VRAM |
+|---|--------------|-----------|------|
+| 1 | ~106 | 106 | 31.19 GB |
+| 2 | ~90 | **~180** | 31.19 GB (flat) |
+
+No OOM. c=2 at the full 262K context window is safe. VRAM stability confirms APC
+deduplication is fully active — two workers sharing a 262K prompt is no more expensive
+than one.
 
 ---
 
@@ -288,20 +337,22 @@ shared codebase context simultaneously.
 
 | Context fill | c=1 agg | c=2 agg | c=3 agg | c=4 agg | Recommended |
 |-------------|---------|---------|---------|---------|-------------|
-| Short (speed, <30%) | 133 | 220 | 308 | 411 | c=4 |
-| Medium (75% fill, prefill_unshared) | 130 | 190 | 276 | 352 | c=3 or c=4 |
+| Short (speed, <30%) | 133 | 220 | 308 | 411 | c=2 (see note) |
+| Medium (75% fill, prefill_unshared) | 130 | 190 | 276 | 352 | c=2 |
 | Heavy (95% fill, boundary) | 133 | **194** | 69 | 96 | c=2 |
 
-- **c=2**: safe floor for all context levels including 95%-fill heavy sessions.
-  1.5× aggregate over c=1, no throughput cliff at any tested fill level.
-- **c=3**: best balance for typical watcher sessions (30-75% fill). Regresses
-  at 95% fill — avoid if sessions regularly hit the 131K ceiling.
-- **c=4**: marginal gain over c=3 at short/medium context. Not recommended for
-  heavy-context workloads.
+**c=3 collapses for coding workloads** regardless of context size. The concurrency sweep
+showed c=3 dropping to ~20 tok/s per-req for long-output (coding) tasks — not because of
+KV saturation but because the decode batch exceeds HBM bandwidth with thinking-enabled
+responses (800–2000 output tokens). The boundary cliff at c=3 (23 tok/s) has the same
+root cause. c=3 looks viable only for short-output speed-tier tasks, which is not the
+watcher workload.
 
-**Recommended: `--max-local-workers 3`** for typical mixed watcher workloads
-(coding sessions rarely exceed 75% context fill). Drop to `--max-local-workers 2`
-if multiple workers are known to operate with very large shared contexts (≥90% fill).
+**`--max-local-workers 2` is the safe ceiling for all watcher workloads.**
+
+Context-dependent backend recommendation:
+- **≤131K context:** use BF16 (160 tok/s c=1, ~240 agg c=2)
+- **>131K context:** use FP8 + 262K (`--kv-cache-dtype fp8 --max-model-len 262144`), cap at c=2
 
 ---
 
@@ -314,7 +365,7 @@ faster than CUTLASS in the original good run).
 
 | Finding | Detail |
 |---------|--------|
-| `VLLM_MOE_BACKEND=FLASHINFER_TRTLLM` | Logged as "Unknown" by vLLM but hints the FlashInfer autotuner — autotuner benchmarks TRTLLM vs CUTLASS at startup and picks the winner per batch shape. Keep this env var. |
+| `VLLM_MOE_BACKEND=FLASHINFER_TRTLLM` | Logged as "Unknown vLLM environment variable" — completely ignored in vLLM 0.20.0. The autotuner picks TRTLLM for BF16+NVFP4 independently (CUTLASS for FP8 KV). Drop this env var. |
 | `VLLM_FLASHINFER_MOE_BACKEND=latency` | Official env var to force TRTLLM for MoE routing. Gives **118–120 tok/s** — worse than autotuner CUTLASS (143–147). Forces TRTLLM for ALL batch sizes including small ones where it's suboptimal. Do not use. |
 | `VLLM_FLASHINFER_MOE_BACKEND=throughput` | Forces CUTLASS. Explicit alternative to the autotuner. 143–147 tok/s. |
 | `VLLM_NVFP4_GEMM_BACKEND=flashinfer-trtllm` | Controls the **linear** FP4 GEMM kernel (separate from MoE routing). Crashes on SM_120: `mm_fp4 does not support backend 'trtllm' with capability 120`. Dead end. |
@@ -350,8 +401,10 @@ the bench driver only reads `content`. Coding quality for run_20260428_000929 is
 
 | Test | Config | Status |
 |------|--------|--------|
-| Coding quality re-run | bench-vllm-concurrency.toml, server **without** `--enable-auto-tool-choice --tool-call-parser qwen3_coder` | Not started |
-| Boundary re-run | ✅ Done — boundary.py fixed to 95% fill; re-run results in concurrency sweep section above | Complete |
+| BF16 coding quality re-run | bench-vllm-concurrency.toml, server without tool-call-parser | ✅ Done — run_20260428_000929; c=2 ~240 agg tok/s confirmed |
+| Boundary re-run (BF16 131K) | boundary.py fixed to 95% fill | ✅ Done — results in concurrency sweep section above |
+| FP8 concurrency sweep | bench-vllm-fp8-concurrency.toml, 131K/196K/262K, c=1/c=2 | ✅ Done — run_20260428_201813 |
+| FP8 boundary 262K | boundary tier, c=1/c=2 | ✅ Done — run_20260428_204415 |
 
 ---
 

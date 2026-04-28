@@ -1,0 +1,50 @@
+# vLLM FP8 KV cache — concurrency test at extended context sizes.
+# Goal: determine whether c=2 is viable at 196K and 262K with FP8 KV,
+# and whether FP8+c=2 at 262K beats BF16+c=2 at 131K for watcher use.
+#
+# Server must be started with FP8 and 262K context (no tool-call-parser):
+#   vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+#     --max-model-len 262144 --kv-cache-dtype fp8 --max-num-seqs 200 \
+#     --max-num-batched-tokens 4096 --reasoning-parser qwen3 --enable-prefix-caching \
+#     --language-model-only --safetensors-load-strategy prefetch
+#
+# NOTE: VLLM_MOE_BACKEND / VLLM_NVFP4_MOE_BACKEND env vars are not recognised by vLLM 0.20.0.
+# The autotuner picks FLASHINFER_CUTLASS (TRTLLM tactics are unsupported for NVFP4+FP8 KV on
+# this build). That is fine — CUTLASS gives ~115 tok/s at 131K, ~120 tok/s at 196K.
+# Earlier 18 tok/s results (run_20260428_193457) were a cold/unwarmed server, not a backend issue.
+#
+# Run:
+#   python scripts/bench/run_bench.py --config config/bench-vllm-fp8-concurrency.toml
+
+[matrix]
+# 131K: baseline overlap with BF16 sweep for direct comparison
+# 196K: midpoint — first context size BF16 cannot reach
+# 262K: full native context (FP8 required)
+context_sizes = [131072, 196608, 262144]
+boundary_context_sizes = [262144]
+concurrency_levels = [1, 2]
+repeats = 5
+
+# c=3+ skipped: already shown to collapse for coding (long output) and heavy
+# context (HBM bandwidth) in the BF16 concurrency sweep. c=2 is the target.
+
+require_single_concurrency_first = true
+
+[[backends]]
+id = "local_vllm"
+enabled = true
+base_url = "http://localhost:8000"
+enable_thinking = true
+
+[[models]]
+id = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "local_vllm"
+
+[[tiers]]
+name = "coding"
+
+[[tiers]]
+name = "prefill_unshared"
+
+[[tiers]]
+name = "boundary"
