@@ -219,6 +219,28 @@ At 131K c=4, TTFT mean across all 4 workers is 2.83s. The 4th worker in queue se
 use, workers are staggered rather than synchronised, so effective TTFT is closer to the
 c=1 floor with occasional spikes.
 
+### Note on APC EFFECTIVENESS reporter output
+
+The reporter prints an "APC Effectiveness" section comparing `prefill_shared` TTFT
+vs `prefill_unshared` TTFT. For this model and sweep the speedups are all ~0.90–1.06×
+and labelled "no APC benefit" — this is a **measurement artefact**, not an accurate
+characterisation:
+
+1. **Mamba SSM floor dominates.** APC eliminates prefill *compute*, but TTFT for this
+   model is dominated by Mamba SSM initialisation (~2.1–2.3s regardless of context
+   size). Even a full 124K-token APC hit only saves ~7s of prefill compute, which is
+   invisible when both rows show 2.1–2.8s TTFT. The actual APC benefit is real and
+   large — boundary tier r=0 shows **9.53s cold → 2.34s warm** for 124K tokens.
+
+2. **Fixed seed makes "unshared" also cached.** `prefill_unshared` uses `seed=42` for
+   all repeats, so every repeat sends the identical random content. By r=2–3, vLLM has
+   cached those blocks too and the TTFT converges to the Mamba floor. The comparison
+   ends up measuring "two cached tiers at the Mamba floor" not "APC vs no-APC".
+
+The APC benefit for this model is only visible on the very first request to a large
+prompt (cold hit). Subsequent repeats always hit the floor. Disregard the APC
+EFFECTIVENESS section for this sweep.
+
 ### Prefill_unshared — cold prefill throughput under concurrency
 
 Different prompts per request; no APC hits. Closest to real watcher behaviour (each
@@ -328,9 +350,8 @@ the bench driver only reads `content`. Coding quality for run_20260428_000929 is
 
 | Test | Config | Status |
 |------|--------|--------|
-| Coding quality re-run | bench-vllm-concurrency.toml, server without tool-call-parser | Not started |
-| Real 131K boundary stress | New boundary prompt padded to ~130K tokens | Not started |
-| Linear post WOR-118 | — | Not started |
+| Coding quality re-run | bench-vllm-concurrency.toml, server **without** `--enable-auto-tool-choice --tool-call-parser qwen3_coder` | Not started |
+| Boundary re-run | ✅ Done — boundary.py fixed to 95% fill; re-run results in concurrency sweep section above | Complete |
 
 ---
 
