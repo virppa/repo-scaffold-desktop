@@ -237,9 +237,11 @@ stresses the ~92K-token pool and likely triggers some block eviction/reuse.
 
 ### Boundary tier note
 
-The `boundary.py` prompt is "The quick brown fox." × 500 (~2,500 tokens), not a true
-131K-token stress. It behaves identically to the speed tier and does not exercise KV
-pool exhaustion. A real boundary test would require a prompt padded to 131K tokens.
+**Fixed (post-sweep):** `boundary.py` was using a fixed ~2,500-token prompt regardless
+of `context_size`, making it identical to the speed tier. It now generates a word-fill
+prompt sized to 95% of `context_size` (same approach as `prefill_unshared` but at 0.95
+fill ratio vs 0.75). The sweep above used the old prompt — boundary numbers are not
+representative KV ceiling data and should be re-run.
 
 ### Watcher recommendation: --max-local-workers
 

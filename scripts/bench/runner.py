@@ -65,7 +65,7 @@ def _make_prompt(tier: str, repeat_index: int, context_size: int) -> BenchPrompt
     if tier == "prefill_unshared":
         return make_prefill_unshared_prompt(context_size=context_size)
     if tier == "boundary":
-        return make_boundary_prompt()
+        return make_boundary_prompt(context_size=context_size)
     raise ValueError(f"Unknown tier: {tier!r}")
 
 
