@@ -235,26 +235,51 @@ No OOM at any concurrency level. At 131K c=4, aggregate is 352 tok/s — lower t
 speed tier because vLLM must hold 4 × 131K KV blocks concurrently during decode, which
 stresses the ~92K-token pool and likely triggers some block eviction/reuse.
 
-### Boundary tier note
+### Boundary tier — re-run results (95% fill, 131K, fixed seed=99)
 
-**Fixed (post-sweep):** `boundary.py` was using a fixed ~2,500-token prompt regardless
-of `context_size`, making it identical to the speed tier. It now generates a word-fill
-prompt sized to 95% of `context_size` (same approach as `prefill_unshared` but at 0.95
-fill ratio vs 0.75). The sweep above used the old prompt — boundary numbers are not
-representative KV ceiling data and should be re-run.
+`boundary.py` was fixed to generate a ~124K-token prompt (95% of context_size).
+All 5 repeats per concurrency level send the same prompt (fixed seed), so APC
+block deduplication is fully active by r=1+.
+
+| c | Per-req tok/s | Agg tok/s | TTFT | KV pool usage |
+|---|--------------|-----------|------|---------------|
+| 1 | 133 | 133 | 2.31s | ~0% |
+| 2 | 97 | **194** | 2.48s | 24% |
+| 3 | 23 | 69 | 2.63s | 25% |
+| 4 | 24 | 96 | 2.79s | 26% |
+
+Cold prefill (r=0, c=1, no APC): **9.53s TTFT** for 124K tokens. All subsequent
+repeats hit APC at 74% → 87% → 92% → 95%+ hit rate, dropping TTFT back to 2.3s.
+
+**The cliff is at c=3, not OOM.** KV pool usage is only 26% at c=4 — APC
+deduplicates all 4 workers' shared prefix into one physical copy. The collapse
+(133→97→23 per-req tok/s) is **attention memory bandwidth saturation**: each decode
+step reads the full 124K K+V matrices through HBM independently per worker, even
+sharing blocks. At c=3, HBM is saturated. c=4 is marginally better than c=3 per-req
+(24 vs 23 tok/s) but both are far below c=2's 194 agg tok/s.
+
+For 95%-fill 131K contexts: **c=2 is the ceiling**. Beyond that, aggregate throughput
+regresses. This scenario corresponds to multiple workers all referencing a very large
+shared codebase context simultaneously.
 
 ### Watcher recommendation: --max-local-workers
 
-- **c=2**: 1.6× aggregate throughput, 17% per-request penalty, TTFT stable. Safe for
-  all context sizes including 131K.
-- **c=3**: 2.3× aggregate, 24% per-request penalty, TTFT 2.57s at 131K cold prefill.
-  Good balance — the per-request penalty plateau begins here.
-- **c=4**: 3.0× aggregate, ~25% per-request penalty (same as c=3). Essentially free
-  upgrade from c=3 for short/medium context. TTFT approaches 2.83s mean (3.2s worst)
-  at 131K with concurrent cold prefills.
+| Context fill | c=1 agg | c=2 agg | c=3 agg | c=4 agg | Recommended |
+|-------------|---------|---------|---------|---------|-------------|
+| Short (speed, <30%) | 133 | 220 | 308 | 411 | c=4 |
+| Medium (75% fill, prefill_unshared) | 130 | 190 | 276 | 352 | c=3 or c=4 |
+| Heavy (95% fill, boundary) | 133 | **194** | 69 | 96 | c=2 |
 
-**Recommended: `--max-local-workers 3`** for mixed-context workloads. Use
-`--max-local-workers 4` if sessions are predominantly short-context (< 64K).
+- **c=2**: safe floor for all context levels including 95%-fill heavy sessions.
+  1.5× aggregate over c=1, no throughput cliff at any tested fill level.
+- **c=3**: best balance for typical watcher sessions (30-75% fill). Regresses
+  at 95% fill — avoid if sessions regularly hit the 131K ceiling.
+- **c=4**: marginal gain over c=3 at short/medium context. Not recommended for
+  heavy-context workloads.
+
+**Recommended: `--max-local-workers 3`** for typical mixed watcher workloads
+(coding sessions rarely exceed 75% context fill). Drop to `--max-local-workers 2`
+if multiple workers are known to operate with very large shared contexts (≥90% fill).
 
 ---
 
