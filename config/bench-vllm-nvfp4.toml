@@ -1,0 +1,94 @@
+# vLLM NVFP4 vs Ollama GGUF head-to-head for Qwen3.6-35B-A3B.
+#
+# Goal: measure the vLLM / APC advantage over Ollama on the same model and hardware.
+# Primary signal: prefill_shared TTFT (APC reuse) and speed tok/s.
+#
+# Prerequisites:
+#   1. vLLM server running with NVFP4 model:
+#      python -m vllm.entrypoints.openai.api_server \
+#        --model /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --port 8000 \
+#        --max-model-len 131072 --gpu-memory-utilization 0.90 \
+#        --enable-prefix-caching --reasoning-parser qwen3 \
+#        --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+#        --max-num-seqs 200
+#   2. Ollama running (for the baseline model): ollama serve
+#   3. Fixture built: python scripts/bench/run_bench.py --generate-fixtures
+#
+# Run (full matrix, both backends):
+#   python scripts/bench/run_bench.py --config config/bench-vllm-nvfp4.toml
+#
+# Run (vLLM only, APC signal):
+#   python scripts/bench/run_bench.py --config config/bench-vllm-nvfp4.toml \
+#     --backend local_vllm --tier prefill_shared
+#
+# Context sizes capped at 131072 — vLLM server was started with --max-model-len 131072.
+# Boundary tier omitted: requests above max-model-len crash the server rather than
+# returning a recoverable OOM, so there is no useful cliff signal here.
+#
+# Ollama comparison is included for direct apples-to-apples in the same DB session.
+# To run vLLM-only (skip Ollama), pass --backend local_vllm on the CLI.
+
+[matrix]
+# Same breakpoints as bench.toml standard matrix, capped at 131072.
+#   16384  = realistic coding context (watcher floor)
+#   32768  = 32K common production window
+#   65536  = 64K — flat zone, confirmed safe for both backends
+#   98304  = 96K — calibration point between 64K and 128K
+#   131072 = 128K — ceiling for this server config
+context_sizes = [16384, 32768, 65536, 98304, 131072]
+# boundary tier omitted — vLLM server max_model_len=131072; requests above that
+# crash rather than OOM-skip, so there is no useful cliff signal. Value below
+# satisfies the required field validator but is never used (no boundary tier).
+boundary_context_sizes = [327680]
+concurrency_levels = [1]
+repeats = 3
+
+# ── Backends ──────────────────────────────────────────────────────────────────
+
+[[backends]]
+# vLLM — must be started manually (see prerequisites above).
+# Driver selection: id containing "vllm" → VllmDriver (OpenAI-compatible /v1/chat/completions).
+id = "local_vllm"
+enabled = true
+base_url = "http://localhost:8000"
+
+[[backends]]
+# Ollama — baseline for direct comparison. Auto-managed by the bench runner.
+id = "local_qwen"
+enabled = true
+base_url = "http://localhost:11434"
+
+# ── Models ────────────────────────────────────────────────────────────────────
+
+[[models]]
+# vLLM NVFP4: Blackwell-native 4-bit, 23.32 GiB on disk, ~30 GB VRAM loaded.
+# Model id must match the --model path used when starting the server.
+id = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "local_vllm"
+
+[[models]]
+# Ollama GGUF baseline: same model, Q4_K_M quantisation via GGUF.
+# Weight size ~23 GB. Direct comparison: same weights, different inference stack.
+id = "qwen3.6:35b-a3b"
+backend_id = "local_qwen"
+
+# ── Tiers ─────────────────────────────────────────────────────────────────────
+
+[[tiers]]
+# Raw generation speed: short prompt, ~256 tokens out.
+name = "speed"
+
+[[tiers]]
+# Real coding task with pytest/ruff/mypy quality evaluation. Temperature=0.
+name = "coding"
+
+[[tiers]]
+# TTFT with shared repo-prefix fixture. Primary APC signal: vLLM should reuse
+# the prefix cache from the second request onward; Ollama has no equivalent.
+# First request per model = cache_cold; subsequent = prefix_warm.
+name = "prefill_shared"
+
+[[tiers]]
+# TTFT with same-length randomised content — APC null baseline (cold prefill
+# every run). Isolates raw prefill throughput from cache reuse.
+name = "prefill_unshared"

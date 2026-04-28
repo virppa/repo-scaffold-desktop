@@ -1,0 +1,54 @@
+# vLLM concurrency sweep — characterise throughput scaling and quality under load.
+# Purpose: determine optimal --max-local-workers for the watcher with vLLM backend.
+#
+# Server must be started with the daily driver config:
+#   VLLM_MOE_BACKEND=FLASHINFER_TRTLLM vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+#     --max-model-len 131072 --max-num-seqs 200 \
+#     --reasoning-parser qwen3 --enable-prefix-caching \
+#     --language-model-only --safetensors-load-strategy prefetch \
+#     --enable-auto-tool-choice --tool-call-parser qwen3_coder
+#
+# Run:
+#   python scripts/bench/run_bench.py --config config/bench-vllm-concurrency.toml --backend local_vllm
+
+[matrix]
+context_sizes = [16384, 65536, 131072]
+boundary_context_sizes = [131072]
+concurrency_levels = [1, 2, 3, 4]
+# 5 repeats: enough signal per cell, keeps runtime manageable
+repeats = 5
+
+[[backends]]
+id = "local_vllm"
+enabled = true
+base_url = "http://localhost:8000"
+enable_thinking = true
+
+[[models]]
+id = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "local_vllm"
+
+# Speed tier: raw tok/s and TTFT scaling under concurrent load
+[[tiers]]
+name = "speed"
+
+# Coding tier: quality under concurrency (does 91% hold when batched?)
+[[tiers]]
+name = "coding"
+
+# Prefill shared: APC warm-hit TTFT under concurrent load.
+# Core vLLM advantage — workers sharing a system prompt (CLAUDE.md) only pay
+# full prefill cost once; subsequent workers hit cached KV blocks.
+[[tiers]]
+name = "prefill_shared"
+
+# Prefill unshared: cold prefill throughput under concurrency.
+# Baseline for prefill_shared comparison; shows raw prefill scaling.
+[[tiers]]
+name = "prefill_unshared"
+
+# Boundary: concurrency stress at max context (131K).
+# At concurrency=4 each request needs ~131K KV slots; pool only holds ~131K total.
+# Expected to queue/degrade — reveals the actual concurrent long-context ceiling.
+[[tiers]]
+name = "boundary"

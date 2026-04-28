@@ -1,0 +1,34 @@
+# vLLM coding quality deep-dive — thinking disabled.
+# Mirrors bench-vllm-quality.toml exactly but with enable_thinking = false.
+# Purpose: establish pass-rate without thinking to compare against the thinking run.
+#
+# Run:
+#   python scripts/bench/run_bench.py --config config/bench-vllm-quality-nothink.toml --backend local_vllm --tier coding
+
+[matrix]
+context_sizes = [16384, 65536, 131072]
+boundary_context_sizes = [327680]
+concurrency_levels = [1]
+repeats = 10
+
+[[backends]]
+id = "local_vllm"
+enabled = true
+base_url = "http://localhost:8000"
+enable_thinking = false
+
+[[backends]]
+id = "local_qwen"
+enabled = true
+base_url = "http://localhost:11434"
+
+[[models]]
+id = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "local_vllm"
+
+[[models]]
+id = "qwen3.6:35b-a3b"
+backend_id = "local_qwen"
+
+[[tiers]]
+name = "coding"

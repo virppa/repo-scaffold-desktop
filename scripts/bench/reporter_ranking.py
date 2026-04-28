@@ -128,13 +128,13 @@ def _is_eligible(
 def compute_concurrency_efficiency(
     rows: list[dict[str, Any]],
 ) -> dict[tuple[str, str, Any, Any], float | None]:
-    """Compute concurrency efficiency per (backend_id, model_id, ctx, concurrency).
+    """Compute aggregate throughput speedup per (backend, model, ctx, concurrency).
 
-    efficiency = median(toks/s @ N) / (N * median(toks/s @ 1))
+    speedup = (N * median(toks/s @ N)) / median(toks/s @ 1)
 
-    A value near 1.0 means near-linear scaling; >1.0 is super-linear (valid).
-    Only repeat_index >= 1 rows are used. Returns an empty dict when no
-    concurrency>1 data is present. Guards against zero and None baselines.
+    A value of 1.68 means c=N delivers 68% more total tokens/s than c=1.
+    Values >1 mean concurrency is beneficial; near 1 means no gain; <1 means overhead.
+    Only repeat_index >= 1 rows are used. Guards against zero and None baselines.
     """
     tok_map: dict[tuple[str, str, Any, Any], list[float]] = {}
     for row in rows:
@@ -161,58 +161,102 @@ def compute_concurrency_efficiency(
         if conc is None or conc <= 1:
             continue
         baseline = baselines.get((backend, model, ctx))
-        if baseline is None:
-            result[(backend, model, ctx, conc)] = None
-            continue
-        if baseline == 0.0:
+        if baseline is None or baseline == 0.0:
             result[(backend, model, ctx, conc)] = None
             continue
         median_tok = _median(vals)
         if median_tok is None:
             result[(backend, model, ctx, conc)] = None
         else:
-            result[(backend, model, ctx, conc)] = median_tok / (float(conc) * baseline)
+            result[(backend, model, ctx, conc)] = (float(conc) * median_tok) / baseline
 
     return result
 
 
-_CONC_W = 80
+_CONC_W = 90
 
 
 def print_concurrency_scaling_section(rows: list[dict[str, Any]]) -> None:
-    """Print Concurrency Scaling section with per-config efficiency and labels.
+    """Print Concurrency Scaling section grouped by (backend, model, ctx).
 
-    Labels: efficiency < 0.5 → 'serialised', efficiency > 0.8 → 'scales well'.
-    Only configs with a computed (non-None) efficiency are shown.
+    Each group shows a table: C | Per-req tok/s | Agg tok/s | TTFT p50 | Speedup | Label
+    Speedup = (c * tok_at_c) / tok_at_1 — values >1 mean concurrency helps.
     """
-    efficiency_map = compute_concurrency_efficiency(rows)
-    entries = {k: v for k, v in efficiency_map.items() if v is not None}
-    if not entries:
-        return
+    # Collect per-request tok/s and TTFT keyed by (backend, model, ctx, conc)
+    tok_map: dict[tuple[str, str, Any, Any], list[float]] = {}
+    ttft_map: dict[tuple[str, str, Any, Any], list[float]] = {}
+    for row in rows:
+        if row.get("repeat_index", 0) < 1:
+            continue
+        key: tuple[str, str, Any, Any] = (
+            str(row.get("backend_id") or ""),
+            str(row.get("model_id") or ""),
+            row.get("context_size"),
+            row.get("concurrency"),
+        )
+        tok = row.get("throughput_tok_s")
+        if tok is not None:
+            tok_map.setdefault(key, []).append(float(tok))
+        ttft = row.get("ttft_s")
+        if ttft is not None:
+            ttft_map.setdefault(key, []).append(float(ttft))
+
+    # Group by (backend, model, ctx)
+    groups: dict[tuple[str, str, Any], list[Any]] = {}
+    all_concs: set[Any] = set()
+    for backend, model, ctx, conc in tok_map:
+        groups.setdefault((backend, model, ctx), []).append(conc)
+        all_concs.add(conc)
+
+    if not any(c != 1 for c in all_concs):
+        return  # no concurrency data
 
     print("=" * _CONC_W)
-    print("CONCURRENCY SCALING")
+    print("CONCURRENCY SCALING  (Speedup = c×tok/s_c / tok/s_1 — higher is better)")
     print("=" * _CONC_W)
-    header = (
-        f"{'Backend/Model':<35}  {'Ctx':>6}  {'C':>3}  {'Conc.Eff':>9}  {'Label':<14}"
-    )
-    print(header)
-    print("-" * _CONC_W)
 
-    for (backend, model, ctx, conc), eff in sorted(entries.items()):
-        config_str = f"{backend}/{model}"[:35]
-        ctx_str = _fmt(ctx)
-        c_str = _fmt(conc)
-        eff_str = f"{eff:.3f}"
-        if eff < 0.5:
-            label = "serialised"
-        elif eff > 0.8:
-            label = "scales well"
-        else:
-            label = ""
-        print(f"{config_str:<35}  {ctx_str:>6}  {c_str:>3}  {eff_str:>9}  {label:<14}")
+    for (backend, model, ctx), concs in sorted(groups.items()):
+        model_short = model.split("/")[-1][:40]
+        print(f"\n  {backend} / {model_short} / ctx={ctx}")
+        hdr = f"  {'C':>3}  {'Per-req tok/s':>13}  {'Agg tok/s':>9}"
+        hdr += f"  {'TTFT p50':>8}  {'Speedup':>7}  Label"
+        print(hdr)
+        print(f"  {'-' * 3}  {'-' * 13}  {'-' * 9}  {'-' * 8}  {'-' * 7}  -----")
 
-    print("=" * _CONC_W + "\n")
+        baseline_tok: float | None = None
+        baseline_key = (backend, model, ctx, 1)
+        if baseline_key in tok_map:
+            baseline_tok = _median(tok_map[baseline_key])
+
+        for conc in sorted(concs):
+            key = (backend, model, ctx, conc)
+            per_req = _median(tok_map.get(key, []))
+            ttft_p50 = _median(ttft_map.get(key, []))
+            agg = (float(conc) * per_req) if per_req is not None else None
+            if conc == 1 or baseline_tok is None or baseline_tok == 0 or agg is None:
+                speedup_str = "1.00x" if conc == 1 else "N/A"
+                label = "(baseline)" if conc == 1 else ""
+            else:
+                speedup = agg / baseline_tok
+                speedup_str = f"{speedup:.2f}x"
+                if speedup > 1.5:
+                    label = "scales well"
+                elif speedup > 1.1:
+                    label = "partial gain"
+                elif speedup > 0.9:
+                    label = "no gain"
+                else:
+                    label = "overhead"
+            per_req_str = _fmt(per_req, ".0f")
+            agg_str = _fmt(agg, ".0f")
+            ttft_str = _fmt(ttft_p50, ".2f") + "s" if ttft_p50 is not None else "--"
+            row = (
+                f"  {conc:>3}  {per_req_str:>13}  {agg_str:>9}"
+                f"  {ttft_str:>8}  {speedup_str:>7}  {label}"
+            )
+            print(row)
+
+    print("\n" + "=" * _CONC_W + "\n")
 
 
 _W = 130
@@ -286,12 +330,13 @@ def print_ranking(
             unstable = ttft_cv > cv_threshold
 
         first = real_runs[0] if real_runs else config_rows[0]
+        concurrency: int = int(first.get("concurrency") or 1)
         conc_eff = efficiency_map.get(
             (
                 str(first.get("backend_id") or ""),
                 str(first.get("model_id") or ""),
                 first.get("context_size"),
-                first.get("concurrency"),
+                concurrency,
             )
         )
 
@@ -313,14 +358,18 @@ def print_ranking(
         if peak_vram_p50 is not None and total_vram is not None:
             vram_headroom_gb = total_vram - peak_vram_p50
 
+        tok_p50 = _median(tok_values)
+        agg_tok_p50 = (concurrency * tok_p50) if tok_p50 is not None else None
         eligible.append(
             {
                 "config_key": config_key,
+                "concurrency": concurrency,
                 "ttft_p50": _median(ttft_values),
                 "ttft_p95": _percentile(ttft_values, 95),
                 "ttft_cv": ttft_cv,
                 "unstable": unstable,
-                "tok_p50": _median(tok_values),
+                "tok_p50": tok_p50,
+                "agg_tok_p50": agg_tok_p50,
                 "task_pct": task_pct,
                 "conc_eff": conc_eff,
                 "vram_headroom_gb": vram_headroom_gb,
@@ -338,11 +387,11 @@ def print_ranking(
         print_concurrency_scaling_section(rows)
         return
 
-    # Composite sort: quality tier → tok/s descending → TTFT ascending
+    # Composite sort: quality tier → aggregate tok/s descending → TTFT ascending
     eligible.sort(
         key=lambda e: (
             _quality_tier_rank(e["task_pct"], high_quality_pct, medium_quality_pct),
-            -(e["tok_p50"] if e["tok_p50"] is not None else 0.0),
+            -(e["agg_tok_p50"] if e["agg_tok_p50"] is not None else 0.0),
             e["ttft_p50"] if e["ttft_p50"] is not None else float("inf"),
         )
     )
@@ -351,14 +400,14 @@ def print_ranking(
     print(
         f"COMPOSITE RANKING  "
         f"(HIGH≥{high_quality_pct:.0f}% → MED≥{medium_quality_pct:.0f}%"
-        f" → speed-only  |  within tier: tok/s↓ then TTFT↑)"
+        f" → speed-only  |  within tier: agg.tok/s↓ then TTFT↑)"
     )
     print("=" * _W)
     header = (
         f"{'Rank':>4}  {'Config (backend/model/ctx/c)':<44}  "
         f"{'TTFT p50(s)':>10}  {'TTFT p95(s)':>10}  {'CV':>6}  "
-        f"{'Tok/s p50':>9}  {'Q.Tier':>6}  {'Stable':>6}  "
-        f"{'VRAM Hdrm':>9}  {'Conc.Eff':>9}"
+        f"{'Tok/s p50':>9}  {'Agg.tok/s':>9}  {'Q.Tier':>6}  {'Stable':>6}  "
+        f"{'VRAM Hdrm':>9}  {'Speedup':>7}"
     )
     print(header)
     print("-" * _W)
@@ -368,6 +417,7 @@ def print_ranking(
         ttft_p95_str = _fmt(entry["ttft_p95"], ".3f")
         cv_str = _fmt(entry["ttft_cv"], ".3f")
         tok_str = _fmt(entry["tok_p50"], ".0f")
+        agg_str = _fmt(entry["agg_tok_p50"], ".0f")
         tier_str = _quality_tier_label(
             entry["task_pct"], high_quality_pct, medium_quality_pct
         )
@@ -384,12 +434,13 @@ def print_ranking(
             headroom_str = f"{headroom:.1f}[!]"
         else:
             headroom_str = f"{headroom:.1f}"
-        eff_str = f"{entry['conc_eff']:.3f}" if entry["conc_eff"] is not None else "N/A"
+        eff = entry["conc_eff"]
+        eff_str = f"{eff:.2f}x" if eff is not None else "1.00x"
         row_str = (
             f"{rank:>4}  {entry['config_key']:<44}  "
             f"{ttft_p50_str:>10}  {ttft_p95_str:>10}  {cv_str:>6}  "
-            f"{tok_str:>9}  {tier_str:>6}  {stable_str:>6}  "
-            f"{headroom_str:>9}  {eff_str:>9}"
+            f"{tok_str:>9}  {agg_str:>9}  {tier_str:>6}  {stable_str:>6}  "
+            f"{headroom_str:>9}  {eff_str:>7}"
         )
         print(row_str)
 
@@ -408,6 +459,8 @@ def print_ranking(
         parts.append(f"CV={best['ttft_cv']:.3f}")
     if best["tok_p50"] is not None:
         parts.append(f"tok/s p50={best['tok_p50']:.0f}")
+    if best["agg_tok_p50"] is not None and best["concurrency"] > 1:
+        parts.append(f"agg.tok/s={best['agg_tok_p50']:.0f}")
     if best["task_pct"] is not None:
         parts.append(f"task={best['task_pct']:.0f}%")
     if parts:

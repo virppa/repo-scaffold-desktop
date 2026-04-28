@@ -29,8 +29,11 @@ def _validated_base_url(url: str) -> str:
 class VllmDriver:
     """Implements BackendDriver for vLLM's /v1/chat/completions SSE endpoint."""
 
-    def __init__(self, base_url: str = "http://localhost:8000") -> None:
+    def __init__(
+        self, base_url: str = "http://localhost:8000", enable_thinking: bool = True
+    ) -> None:
         self._base_url = _validated_base_url(base_url)
+        self._enable_thinking = enable_thinking
 
     def is_available(self) -> bool:
         try:
@@ -56,6 +59,7 @@ class VllmDriver:
             "stream_options": {"include_usage": True},
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "chat_template_kwargs": {"enable_thinking": self._enable_thinking},
         }
         if seed is not None:
             body["seed"] = seed
@@ -76,9 +80,11 @@ class VllmDriver:
 
     def _parse_streaming(self, resp: Any, t_start: float) -> GenerationResult:
         ttft_s: float | None = None
+        t_first_token: float | None = None
         text_parts: list[str] = []
         input_tokens: int | None = None
         output_tokens: int | None = None
+        finish_reason: str | None = None
 
         while True:
             raw = resp.readline()
@@ -101,15 +107,28 @@ class VllmDriver:
                 output_tokens = usage.get("completion_tokens")
 
             for choice in frame.get("choices", []):
-                content: str = choice.get("delta", {}).get("content") or ""
-                if content:
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta", {})
+                content: str = delta.get("content") or ""
+                reasoning: str = delta.get("reasoning") or ""
+                if content or reasoning:
                     if ttft_s is None:
-                        ttft_s = time.monotonic() - t_start
+                        t_first_token = time.monotonic()
+                        ttft_s = t_first_token - t_start
+                if content:
                     text_parts.append(content)
+
+        t_end = time.monotonic()
+        decode_time_s: float | None = None
+        if t_first_token is not None:
+            decode_time_s = t_end - t_first_token
 
         return GenerationResult(
             text="".join(text_parts),
             ttft_s=ttft_s,
+            decode_time_s=decode_time_s,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            finish_reason=finish_reason,
         )

@@ -53,6 +53,7 @@ class BackendConfig(BaseModel):
     enabled: bool = True
     base_url: str
     api_key: str = ""
+    enable_thinking: bool = True
 
 
 class ModelConfig(BaseModel):

@@ -1,0 +1,41 @@
+# vLLM coding quality deep-dive.
+# Purpose: establish true pass-rate with enough repeats to see through FP4
+# non-determinism. The standard bench uses repeats=3 which is too few to
+# distinguish a 30% pass rate from 0% or 100%.
+#
+# Run (vLLM only, coding only):
+#   python scripts/bench/run_bench.py --config config/bench-vllm-quality.toml --backend local_vllm --tier coding
+#
+# Run (Ollama comparison alongside):
+#   python scripts/bench/run_bench.py --config config/bench-vllm-quality.toml --tier coding
+
+[matrix]
+# 16K (known 3/3), 65K (known 0/3), 131K (known 0/3) — sufficient to
+# characterise the distribution without running the full matrix.
+context_sizes = [16384, 65536, 131072]
+boundary_context_sizes = [327680]
+concurrency_levels = [1]
+# 10 real repeats → reliable pass-rate estimate even at 30–40% true pass rate.
+repeats = 10
+
+[[backends]]
+id = "local_vllm"
+enabled = true
+base_url = "http://localhost:8000"
+enable_thinking = true
+
+[[backends]]
+id = "local_qwen"
+enabled = true
+base_url = "http://localhost:11434"
+
+[[models]]
+id = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "local_vllm"
+
+[[models]]
+id = "qwen3.6:35b-a3b"
+backend_id = "local_qwen"
+
+[[tiers]]
+name = "coding"

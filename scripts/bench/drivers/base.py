@@ -23,6 +23,7 @@ class GenerationResult:
     raw_load_duration_ns: int | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    finish_reason: str | None = None
 
 
 class BackendDriver(Protocol):

@@ -1,0 +1,35 @@
+# vLLM FP8 KV cache — high context throughput and quality test.
+# Purpose: establish tok/s and pass-rate at 196K and 262K context with FP8 KV,
+# comparing against Ollama's 48 tok/s floor at 256K.
+#
+# Server must be started with FP8 and 262K context:
+#   VLLM_MOE_BACKEND=FLASHINFER_TRTLLM vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+#     --max-model-len 262144 --kv-cache-dtype fp8 --max-num-seqs 200 \
+#     --max-num-batched-tokens 4096 --reasoning-parser qwen3 --enable-prefix-caching \
+#     --language-model-only --safetensors-load-strategy prefetch
+#
+# Run:
+#   python scripts/bench/run_bench.py --config config/bench-vllm-fp8-highctx.toml --backend local_vllm --tier coding
+
+[matrix]
+# 128K: overlap with BF16 baseline for direct speed comparison at same context
+# 196K: midpoint — beyond Ollama's secondary plateau, still inside 262K KV budget
+# 262K: full extent of FP8 KV cache
+context_sizes = [131072, 196608, 262144]
+boundary_context_sizes = [262144]
+concurrency_levels = [1]
+# 5 repeats: enough for throughput signal, keeps runtime manageable at very long context
+repeats = 5
+
+[[backends]]
+id = "local_vllm"
+enabled = true
+base_url = "http://localhost:8000"
+enable_thinking = true
+
+[[models]]
+id = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "local_vllm"
+
+[[tiers]]
+name = "coding"
