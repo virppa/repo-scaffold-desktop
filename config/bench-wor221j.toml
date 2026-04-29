@@ -1,0 +1,42 @@
+# WOR-221 step J: BF16 KV cache sweep with optimised seqs=16 config.
+# For workloads that don't need 262K context, BF16 KV avoids the FP8
+# quantisation loss in the KV cache and may support different concurrency
+# trade-offs. Uses max_model_len=131072 (VRAM fits with NVFP4 weights).
+#
+# Context sizes tested:
+#   65536  — mid-range watcher session (~64K)
+#   131072 — upper BF16 limit (same as WOR-118 BF16 baseline)
+#
+# Compare against FP8 seqs=16 data already in bench.db (vllm_seqs_16)
+# to see whether BF16 KV makes any difference for <=131K workloads.
+#
+# Start vLLM in WSL2 (no --kv-cache-dtype flag, no --max-model-len 262144):
+#   python scripts/bench/run_wor221_sweep.py --step J --list
+
+[matrix]
+context_sizes          = [65536, 131072]
+boundary_context_sizes = [131072]
+concurrency_levels     = [1, 2, 3, 4, 5, 6, 7, 8]
+repeats                = 3
+skip_oom_larger_ctx    = false
+require_single_concurrency_first = true
+
+[[backends]]
+id             = "vllm_bf16_seqs16"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_bf16_seqs16"
+quant      = "nvfp4"
+
+[[tiers]]
+name = "speed"
+
+[[tiers]]
+name = "coding"
+
+[[tiers]]
+name = "boundary"

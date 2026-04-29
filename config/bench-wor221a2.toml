@@ -1,0 +1,33 @@
+# WOR-221 step A2: seqs=200 backcheck.
+# Re-runs the original baseline config to verify that step A's ~120 tok/s
+# result was actually caused by max_num_seqs=200 and not by some other
+# difference between the A and G/H server sessions.
+#
+# Expected outcome:
+#   ~120 tok/s  -> step A result confirmed, seqs=200 is the cause
+#   ~187 tok/s  -> something else changed; investigate before drawing conclusions
+#
+# Start vLLM in WSL2:
+#   python scripts/bench/run_wor221_sweep.py --step A2 --list
+
+[matrix]
+context_sizes          = [131072]
+boundary_context_sizes = [262144]
+concurrency_levels     = [1, 2]
+repeats                = 3
+skip_oom_larger_ctx    = false
+require_single_concurrency_first = true
+
+[[backends]]
+id             = "vllm_seqs_200_check"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_seqs_200_check"
+quant      = "nvfp4"
+
+[[tiers]]
+name = "coding"

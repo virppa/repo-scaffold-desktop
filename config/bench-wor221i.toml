@@ -1,0 +1,41 @@
+# WOR-221 step I: extended concurrency sweep (c=1-6) at 131K and 262K.
+# Extends step H (which ran c=1-4 at 131K only) to:
+#   - c=5 and c=6 at 131K (find cliff beyond the c=3-4 flat zone)
+#   - 262K coding at c=1-6 (production-relevant long-context case)
+#   - 262K boundary at c=5-6 (extend step H's c=1-4 boundary data)
+#
+# Step H findings:
+#   - 131K coding flat from c=3→c=4 (HBM bandwidth saturated at c=3)
+#   - 262K boundary c=4 faster per-req than c=3 (better decode batch efficiency)
+#   - seqs=16 within 2.5% of seqs=8 at c<=2
+#
+# Start vLLM in WSL2 (same command as step H — no restart needed):
+#   python scripts/bench/run_wor221_sweep.py --step I --list
+#
+# Manual run:
+#   python scripts/bench/run_bench.py --config config/bench-wor221i.toml --backend vllm_seqs_16
+
+[matrix]
+context_sizes          = [131072, 262144]
+boundary_context_sizes = [262144]
+concurrency_levels     = [7, 8]
+repeats                = 3
+skip_oom_larger_ctx    = false
+require_single_concurrency_first = false
+
+[[backends]]
+id             = "vllm_seqs_16"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_seqs_16"
+quant      = "nvfp4"
+
+[[tiers]]
+name = "coding"
+
+[[tiers]]
+name = "boundary"
