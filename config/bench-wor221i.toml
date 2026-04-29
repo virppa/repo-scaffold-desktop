@@ -18,10 +18,10 @@
 [matrix]
 context_sizes          = [131072, 262144]
 boundary_context_sizes = [262144]
-concurrency_levels     = [1, 2, 3, 4, 5, 6]
+concurrency_levels     = [7, 8]
 repeats                = 3
 skip_oom_larger_ctx    = false
-require_single_concurrency_first = true
+require_single_concurrency_first = false
 
 [[backends]]
 id             = "vllm_seqs_16"

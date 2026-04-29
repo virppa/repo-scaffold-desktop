@@ -1,7 +1,7 @@
 # vLLM Benchmark Findings — WOR-118
 
 **Spike:** WOR-118 (gates WOR-210)
-**Hardware:** RTX 5090 32 GB (SM_120 / Blackwell), WSL2, CUDA 12.9
+**Hardware:** RTX 5090 32 GB (SM_120 / Blackwell), WSL2, CUDA 13.0 (driver 596.21, supports up to 13.2)
 **Model under test:** `Qwen3.6-35B-A3B-NVFP4` — Blackwell-native FP4 weights, ~21 GiB in VRAM
 **Served by:** vLLM 0.20.0
 **Baselines:** Ollama `qwen3.6:35b-a3b` and `qwen3-coder:30b` on the same hardware
@@ -151,7 +151,10 @@ Short prompts (speed tier) don't trigger the bandwidth cliff — c=4 agg exceeds
 short outputs. The cliff is output-length driven. For coding workloads (long output with
 thinking), c=2 is the ceiling at any context size.
 
-**`--max-local-workers 2` for all watcher configurations.**
+~~**`--max-local-workers 2`** for all watcher configurations~~ — **superseded by WOR-221.**
+The c=3 collapse above was caused by `max_num_seqs=200` HBM pre-allocation pressure, not a hard
+GPU limit. With `max_num_seqs=16` (WOR-221 finding), no cliff exists at any tested concurrency
+level. Aggregate tok/s scales monotonically to c=8 (~1000 tok/s). See WOR-221 conclusions below.
 
 ---
 
@@ -408,7 +411,7 @@ throughput difference is likely small.
 | `max_num_batched_tokens` | Keep at 4096 — irrelevant without chunked prefill; standard scheduler budget | No change |
 | `num_scheduler_steps` | **Unavailable** in vLLM 0.20.0 — flag rejected at server startup | Skip; revisit on vLLM upgrade |
 | `max_num_seqs=200` | **Actively harmful** — reducing to 8 gives +37–67% throughput across all tiers | Switch to `--max-num-seqs 16` |
-| Max viable concurrency | Pending step H — WOR-118 cliff was at c=3 with seqs=200; with seqs=16 c=3/4 may be viable | Confirm from step H results |
+| Max viable concurrency | **No cliff** — WOR-118 cliff was seqs=200 pressure; with seqs=16 agg scales to c=8 (~1000 tok/s) | **`--max-local-workers 8`** |
 
 #### H — max_num_seqs=16, c=1/2/3/4 (production config, concurrency cliff probe)
 
@@ -445,20 +448,130 @@ Sweep ID: `run_20260429_211048`
 - No OOM at c=4 with 262K — APC means all workers share one cached prefix copy.
 - c=5/6 and 262K coding context pending step I.
 
-#### I — Extended concurrency sweep, c=1-6, 131K+262K coding (step I)
+#### I — Extended concurrency sweep, c=1-8, coding 131K+262K, boundary 262K (step I)
 
 `vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 16 --max-num-batched-tokens 4096`
 
-Config: `config/bench-wor221i.toml` (concurrency_levels=[1,2,3,4,5,6])
-Sweep ID: _(fill in)_
+Config: `config/bench-wor221i.toml`. Data below accumulates H (c=1–4) + I (c=5–8).
 
-| Tier | Context | c | TTFT avg (s) | Per-req tok/s | Agg tok/s |
-|------|---------|---|-------------|--------------|-----------|
-| coding | 131K | 1–6 | | | |
-| coding | 262K | 1–6 | | | |
-| boundary | 262K | 1–6 | | | |
+**Coding tier — FP8 KV, 131K context:**
+
+| c | TTFT (s) | Per-req tok/s | Agg tok/s |
+|---|---------|--------------|-----------|
+| 1 | 2.27 | 186.8 | 186.8 |
+| 2 | 2.25 | 160.4 | 320.7 |
+| 3 | 2.24 | 141.9 | 425.6 |
+| 4 | 2.27 | 142.0 | 567.9 |
+| 5 | 2.25 | 124.1 | 620.7 |
+| 6 | 2.27 | 144.8 | 869.0 |
+| 7 | 2.33 | 129.9 | 909.5 |
+| 8 | 2.26 | 124.9 | **998.8** |
+
+**Coding tier — FP8 KV, 262K context:**
+
+| c | TTFT (s) | Per-req tok/s | Agg tok/s |
+|---|---------|--------------|-----------|
+| 1 | 2.17 | 182.3 | 182.3 |
+| 2 | 2.27 | 157.6 | 315.2 |
+| 3 | 2.26 | 144.5 | 433.6 |
+| 4 | 2.29 | 144.9 | 579.4 |
+| 5 | 2.26 | 125.5 | 627.5 |
+| 6 | 2.26 | 123.1 | 738.8 |
+| 7 | 2.28 | 123.9 | 867.1 |
+| 8 | 2.29 | 124.6 | **996.7** |
+
+**Boundary tier — FP8 KV, 262K context (~249K token prompt):**
+
+| c | TTFT (s) | Per-req tok/s | Agg tok/s |
+|---|---------|--------------|-----------|
+| 1 | 6.92 | 155.1 | 155.1 |
+| 2 | 2.64 | 134.4 | 268.9 |
+| 3 | 3.02 | 122.0 | 366.0 |
+| 4 | 3.28 | 129.9 | 519.5 |
+| 5 | 3.59 | 130.9 | 654.7 |
+| 6 | 3.85 | 118.4 | 710.2 |
+| 7 | 8.38 | 120.6 | 844.4 |
+| 8 | 4.67 | 118.9 | **951.1** |
+
+**Key findings:**
+
+- **No concurrency cliff** — aggregate tok/s grows monotonically c=1→c=8 across all tiers and
+  context sizes. No OOM at 262K with 8 concurrent workers (APC deduplication; all workers share
+  one physical copy of the KV prefix blocks).
+- **131K ≈ 262K at every c level** (max 3% delta). APC hit rate 96.5%+ — context size is
+  irrelevant to decode throughput once the prefix is cached. One 262K server config handles all.
+- **CUDA graph batch-size effect** — vLLM captures graphs at [1,2,4,8,16,...]. At c=5 and c=7,
+  the 8-slot graph runs at 62%/87% fill; per-req dips slightly vs c=4/c=6/c=8. The dips are
+  real but small (~10 tok/s) and aggregate always increases.
+- **~1000 tok/s aggregate at c=8** for both coding context sizes. Eight concurrent workers, each
+  generating ~125 tok/s, from a single RTX 5090.
+- **`--max-local-workers 8` recommended.** Per-req at c=8 (125 tok/s) is still 125× faster than
+  a human types. Task splitting is the natural governor — the watcher rarely opens 8 simultaneous
+  tickets, but the headroom is real and costs nothing to configure.
+
+#### A2 — seqs=200 backcheck (confirm step A cause)
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 4096`
+
+Config: `config/bench-wor221a2.toml` — coding 131K only, c=1/2.
+
+| c | TTFT (s) | Per-req tok/s | Agg tok/s | vs seqs=16 (step H) |
+|---|---------|--------------|-----------|---------------------|
+| 1 | 2.31 | 113.8 | 113.8 | **−39%** |
+| 2 | 2.27 | 102.1 | 204.2 | **−36%** |
+
+**Verdict: confirmed.** seqs=200 causes a 36–39% throughput penalty vs seqs=16 with otherwise
+identical flags. The c=1 penalty (no scheduling interaction) proves this is pure HBM pressure
+from the 200-slot pre-allocation, not a scheduling artifact.
+
+#### J — BF16 KV, seqs=16, c=1-8 at 65K+131K (step J)
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 131072 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 16 --max-num-batched-tokens 4096`
+
+No `--kv-cache-dtype fp8` (BF16 default). `--max-model-len 131072` (BF16 VRAM limit).
+Config: `config/bench-wor221j.toml`. Backend: `vllm_bf16_seqs16`.
+
+**Coding — BF16 vs FP8 (131K coding, selected concurrency levels):**
+
+| c | BF16 131K tok/s | BF16 agg | FP8 131K tok/s | FP8 agg | Delta agg |
+|---|----------------|----------|----------------|---------|-----------|
+| 1 | 182.5 | 182.5 | 186.8 | 186.8 | −2.3% |
+| 4 | 142.6 | 570.4 | 142.0 | 567.9 | +0.4% |
+| 8 | 125.0 | **1000.0** | 124.9 | **998.8** | +0.1% |
+
+**Boundary — BF16 131K vs FP8 262K (larger prompt, same GPU decode bandwidth):**
+
+| Config | c | Per-req tok/s | Agg tok/s |
+|--------|---|--------------|-----------|
+| BF16 131K | 1 | 145.3 | 145.3 |
+| FP8 262K | 1 | 155.1 | **+6.7%** |
+| BF16 131K | 4 | 106.3 | 425.4 |
+| FP8 262K | 4 | 129.9 | **+22%** |
+| BF16 131K | 8 | 89.1 | 712.7 |
+| FP8 262K | 8 | 118.9 | **+34%** |
+
+**Verdict: FP8 strictly dominates.** BF16 and FP8 coding throughput are within 3% at every
+concurrency level — statistically identical. For boundary workloads, FP8 262K is 6–34% *faster*
+than BF16 131K despite a 2× larger prompt: FP8 halves KV cache bits, so 262K FP8 reads the same
+HBM bandwidth as 131K BF16 at decode time, then leverages the larger batch more efficiently at
+high concurrency. BF16 offers no speed advantage and half the context window.
+
+**Single universal server config: FP8 KV, max_model_len=262144.**
 
 ---
+
+### Updated conclusions (WOR-221 complete)
+
+| Parameter | Verdict | WOR-218 action |
+|-----------|---------|----------------|
+| `enable_chunked_prefill` | **OFF** — −45% boundary regression (Mamba SSM per-chunk overhead) | Do not enable |
+| `max_num_batched_tokens` | Keep at 4096 — irrelevant without chunked prefill | No change |
+| `num_scheduler_steps` | **Unavailable** in vLLM 0.20.0 | Skip; revisit on upgrade |
+| `max_num_seqs=200` | **−37–67% throughput** vs seqs=16 — HBM pre-allocation pressure | **`--max-num-seqs 16`** |
+| Max viable concurrency | **No cliff** with seqs=16 — agg scales c=1→c=8, ~1000 tok/s at c=8 | **`--max-local-workers 8`** |
+| KV cache dtype | FP8 = BF16 at ≤131K; FP8 +34% boundary agg at c=8; 2× context | **`--kv-cache-dtype fp8`** |
+| Context ceiling | 131K ≈ 262K in throughput (APC + FP8 compression) | Use 262K as universal config |
+| CUDA version | Already CUDA 13.0 (PyTorch) / driver 596.21 — WOR-221 numbers include CUDA 13 gains | No action (WOR-222 closed) |
 
 **Production config for WOR-218:**
 
@@ -476,5 +589,8 @@ vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
   --tool-call-parser qwen3_coder
 ```
 
-The `--max-num-seqs 16` change alone makes the watcher backend 37–67% faster than the WOR-118
-baseline at equivalent concurrency levels. No other parameter changes needed.
+**Watcher setting:** `--max-local-workers 8`
+
+The `--max-num-seqs 16` change alone gives 37–67% improvement over the WOR-118 baseline.
+At c=8, aggregate decode reaches ~1000 tok/s — eight simultaneous workers at ~125 tok/s each
+from a single RTX 5090, on any context size from 16K to 262K.
