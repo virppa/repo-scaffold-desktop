@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 from scripts.bench.drivers.vllm import VllmDriver  # noqa: E402
 
 CONFIG = "config/bench-wor221.toml"
+CONFIG_H = "config/bench-wor221h.toml"
 MODEL = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
 VLLM_BASE_URL = "http://localhost:8000"
 
@@ -132,6 +133,22 @@ STEPS: dict[str, dict] = {
             "the 200-seq ceiling is confirmed non-binding for our workload."
         ),
     },
+    "H": {
+        "backend_id": "vllm_seqs_16",
+        "config": CONFIG_H,
+        "label": "max_num_seqs=16 — production config, c=1/2/3/4 concurrency sweep",
+        "vllm_cmd": _cmd(
+            "--max-num-seqs 16",
+            "--max-num-batched-tokens 4096",
+        ),
+        "note": (
+            "Production recommendation. Tests c=1/2/3/4 to find the cliff.\n"
+            "G showed seqs=8 gives +37-67% over seqs=200 by freeing HBM block budget.\n"
+            "WOR-118 hit an APC cliff at c=3 with seqs=200 consuming that budget;\n"
+            "with seqs=16 those blocks return to APC — c=3/4 may now be viable.\n"
+            "Uses config/bench-wor221h.toml (concurrency_levels=[1,2,3,4])."
+        ),
+    },
 }
 
 
@@ -149,12 +166,12 @@ def wait_for_vllm(timeout_s: int = 300) -> bool:
     return False
 
 
-def run_bench(backend_id: str, resume: str | None) -> int:
+def run_bench(backend_id: str, resume: str | None, config: str = CONFIG) -> int:
     cmd = [
         sys.executable,
         "scripts/bench/run_bench.py",
         "--config",
-        CONFIG,
+        config,
         "--backend",
         backend_id,
     ]
@@ -223,8 +240,9 @@ def main() -> None:
     time.sleep(20)
 
     bid = info["backend_id"]
-    print(f"\nRunning bench (backend_id={bid!r})...")
-    rc = run_bench(bid, args.resume)
+    cfg = info.get("config", CONFIG)
+    print(f"\nRunning bench (backend_id={bid!r}, config={cfg!r})...")
+    rc = run_bench(bid, args.resume, cfg)
 
     if rc == 0:
         print(f"\nStep {args.step} complete. Results in bench.db under {bid!r}.")

@@ -1,0 +1,42 @@
+# WOR-221 step H: production config (max_num_seqs=16) at c=1/2/3.
+# Separate from bench-wor221.toml so existing steps A-G are not affected.
+#
+# Step G showed max_num_seqs=8 outperforms max_num_seqs=200 by 37-67%.
+# This step tests the production recommendation (seqs=16) and probes whether
+# c=3 is now viable — WOR-118 hit an APC cliff at c=3 with seqs=200 eating
+# KV cache block budget. With seqs=16 those blocks are freed back to APC.
+#
+# Start vLLM in WSL2:
+#   python scripts/bench/run_wor221_sweep.py --step H --list
+#
+# Manual single-config run:
+#   python scripts/bench/run_bench.py --config config/bench-wor221h.toml --backend vllm_seqs_16
+
+[matrix]
+context_sizes          = [131072]
+boundary_context_sizes = [262144]
+concurrency_levels     = [1, 2, 3, 4]
+repeats                = 3
+skip_oom_larger_ctx    = false
+require_single_concurrency_first = true
+
+[[backends]]
+# H — production config: max_num_seqs=16, max_num_batched_tokens=4096 (no chunked prefill).
+id             = "vllm_seqs_16"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_seqs_16"
+quant      = "nvfp4"
+
+[[tiers]]
+name = "speed"
+
+[[tiers]]
+name = "coding"
+
+[[tiers]]
+name = "boundary"

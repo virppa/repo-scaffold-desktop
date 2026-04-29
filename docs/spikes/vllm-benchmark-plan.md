@@ -408,6 +408,36 @@ throughput difference is likely small.
 | `max_num_batched_tokens` | Keep at 4096 — irrelevant without chunked prefill; standard scheduler budget | No change |
 | `num_scheduler_steps` | **Unavailable** in vLLM 0.20.0 — flag rejected at server startup | Skip; revisit on vLLM upgrade |
 | `max_num_seqs=200` | **Actively harmful** — reducing to 8 gives +37–67% throughput across all tiers | Switch to `--max-num-seqs 16` |
+| Max viable concurrency | Pending step H — WOR-118 cliff was at c=3 with seqs=200; with seqs=16 c=3/4 may be viable | Confirm from step H results |
+
+#### H — max_num_seqs=16, c=1/2/3/4 (production config, concurrency cliff probe)
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 16 --max-num-batched-tokens 4096`
+
+Config: `config/bench-wor221h.toml` (concurrency_levels=[1,2,3,4])
+Sweep ID: _(fill in)_
+
+| Tier | Context | c | TTFT avg (s) | Per-req tok/s | Agg tok/s | vs G (seqs=8) |
+|------|---------|---|-------------|--------------|-----------|---------------|
+| speed | 131K | 1 | | | | |
+| speed | 131K | 2 | | | | |
+| speed | 131K | 3 | | | | |
+| speed | 131K | 4 | | | | |
+| coding | 131K | 1 | | | | |
+| coding | 131K | 2 | | | | |
+| coding | 131K | 3 | | | | |
+| coding | 131K | 4 | | | | |
+| boundary | 262K | 1 | | | | |
+| boundary | 262K | 2 | | | | |
+| boundary | 262K | 3 | | | | |
+| boundary | 262K | 4 | | | | |
+
+Expected: c=1/2 should match G (seqs=8). c=3/4 probes the concurrency cliff — WOR-118 hit
+degradation at c=3 with seqs=200 likely due to APC block eviction; with seqs=16 those blocks
+are freed and c=3 may be viable. c=4 checks whether the cliff has moved or if HBM bandwidth
+saturation is the real ceiling.
+
+---
 
 **Production config for WOR-218:**
 
