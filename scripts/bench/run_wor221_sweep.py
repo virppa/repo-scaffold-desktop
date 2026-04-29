@@ -13,6 +13,8 @@ Usage:
     python scripts/bench/run_wor221_sweep.py --step E   # num_scheduler_steps=4
     python scripts/bench/run_wor221_sweep.py --step F   # num_scheduler_steps=8
     python scripts/bench/run_wor221_sweep.py --step G   # max_num_seqs=8 sanity check
+    python scripts/bench/run_wor221_sweep.py --step H   # seqs=16 production, c=1-4
+    python scripts/bench/run_wor221_sweep.py --step I   # seqs=16, c=1-6, 131K+262K
     python scripts/bench/run_wor221_sweep.py --list     # show all steps and commands
 
 Resume an interrupted bench run:
@@ -34,6 +36,7 @@ from scripts.bench.drivers.vllm import VllmDriver  # noqa: E402
 
 CONFIG = "config/bench-wor221.toml"
 CONFIG_H = "config/bench-wor221h.toml"
+CONFIG_I = "config/bench-wor221i.toml"
 MODEL = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
 VLLM_BASE_URL = "http://localhost:8000"
 
@@ -131,6 +134,22 @@ STEPS: dict[str, dict] = {
         "note": (
             "Forces maximum queue pressure at c=2. If throughput matches A,\n"
             "the 200-seq ceiling is confirmed non-binding for our workload."
+        ),
+    },
+    "I": {
+        "backend_id": "vllm_seqs_16",
+        "config": CONFIG_I,
+        "label": "Extended sweep — 131K+262K coding, c=1-6 (find cliff beyond c=4)",
+        "vllm_cmd": _cmd(
+            "--max-num-seqs 16",
+            "--max-num-batched-tokens 4096",
+        ),
+        "note": (
+            "Same server as H — no restart needed if H just finished.\n"
+            "Adds c=5/6 at 131K and all concurrency levels at 262K coding.\n"
+            "H showed 131K flat at c=3-4; looking for where per-req degrades.\n"
+            "262K boundary c=4 was faster than c=3 (batch efficiency) — extend.\n"
+            "Uses config/bench-wor221i.toml."
         ),
     },
     "H": {

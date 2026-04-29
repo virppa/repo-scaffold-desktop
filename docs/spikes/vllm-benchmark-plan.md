@@ -417,25 +417,46 @@ throughput difference is likely small.
 Config: `config/bench-wor221h.toml` (concurrency_levels=[1,2,3,4])
 Sweep ID: _(fill in)_
 
+Sweep ID: `run_20260429_211048`
+
 | Tier | Context | c | TTFT avg (s) | Per-req tok/s | Agg tok/s | vs G (seqs=8) |
 |------|---------|---|-------------|--------------|-----------|---------------|
-| speed | 131K | 1 | | | | |
-| speed | 131K | 2 | | | | |
-| speed | 131K | 3 | | | | |
-| speed | 131K | 4 | | | | |
-| coding | 131K | 1 | | | | |
-| coding | 131K | 2 | | | | |
-| coding | 131K | 3 | | | | |
-| coding | 131K | 4 | | | | |
-| boundary | 262K | 1 | | | | |
-| boundary | 262K | 2 | | | | |
-| boundary | 262K | 3 | | | | |
-| boundary | 262K | 4 | | | | |
+| speed | 131K | 1 | 2.07 | 170.9 | 170.9 | +0.5% |
+| speed | 131K | 2 | 2.10 | 141.9 | 283.8 | +1.4% |
+| speed | 131K | 3 | 2.19 | 132.2 | 396.6 | — |
+| speed | 131K | 4 | 2.11 | 132.7 | 530.8 | — |
+| coding | 131K | 1 | 2.32 | 187.7 | 187.7 | +0.3% |
+| coding | 131K | 2 | 2.26 | 156.3 | 312.6 | −2.6% |
+| coding | 131K | 3 | 2.24 | 142.9 | 428.7 | — |
+| coding | 131K | 4 | 2.29 | 143.2 | 572.8 | — |
+| boundary | 262K | 1 | 2.44 | 152.2 | 152.2 | −1.5% |
+| boundary | 262K | 2 | 2.65 | 135.6 | 271.2 | +2.5% |
+| boundary | 262K | 3 | 3.08 | 122.1 | 366.3 | — |
+| boundary | 262K | 4 | 3.25 | **133.6** | 534.4 | — |
 
-Expected: c=1/2 should match G (seqs=8). c=3/4 probes the concurrency cliff — WOR-118 hit
-degradation at c=3 with seqs=200 likely due to APC block eviction; with seqs=16 those blocks
-are freed and c=3 may be viable. c=4 checks whether the cliff has moved or if HBM bandwidth
-saturation is the real ceiling.
+**Key findings:**
+
+- seqs=16 within 2.5% of seqs=8 at c≤2 — production recommendation confirmed.
+- **131K flat from c=3→c=4** (coding: 142.9 vs 143.2, speed: 132.2 vs 132.7). HBM bandwidth
+  is fully saturated at c=3. Adding a 4th worker doesn't cannibalize others. Aggregate keeps
+  scaling: coding c=4 agg = 572 tok/s vs 429 at c=3.
+- **Boundary 262K c=4 faster per-req than c=3** (133.6 vs 122.1, +9%). With 4 APC-sharing
+  workers, decode batch size is 4 tokens/step vs 3 → better GPU utilization. Not a cliff.
+- No OOM at c=4 with 262K — APC means all workers share one cached prefix copy.
+- c=5/6 and 262K coding context pending step I.
+
+#### I — Extended concurrency sweep, c=1-6, 131K+262K coding (step I)
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 16 --max-num-batched-tokens 4096`
+
+Config: `config/bench-wor221i.toml` (concurrency_levels=[1,2,3,4,5,6])
+Sweep ID: _(fill in)_
+
+| Tier | Context | c | TTFT avg (s) | Per-req tok/s | Agg tok/s |
+|------|---------|---|-------------|--------------|-----------|
+| coding | 131K | 1–6 | | | |
+| coding | 262K | 1–6 | | | |
+| boundary | 262K | 1–6 | | | |
 
 ---
 
