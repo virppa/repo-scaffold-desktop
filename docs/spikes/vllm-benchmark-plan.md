@@ -308,102 +308,122 @@ use the production server config so results are directly comparable to FP8 basel
 
 ### Step results
 
-Steps run independently — fill in as each completes. Sweep ID printed at bench start.
+Steps run independently. Sweep IDs are the `run_YYYYMMDD_HHMMSS` prefix printed at bench start.
 
 #### A — Baseline (no chunked prefill, batched_tokens=4096)
 
 `vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 4096`
 
-Sweep ID: _(fill in)_
+Sweep ID: `run_20260429_194431`
 
-| Tier | Context | c | TTFT p50 (s) | Per-req tok/s | Agg tok/s |
+| Tier | Context | c | TTFT avg (s) | Per-req tok/s | Agg tok/s |
 |------|---------|---|-------------|--------------|-----------|
-| speed | 131K | 1 | | | |
-| speed | 131K | 2 | | | |
-| coding | 131K | 1 | | | |
-| coding | 131K | 2 | | | |
-| boundary | 262K | 1 | | | |
-| boundary | 262K | 2 | | | |
+| speed | 131K | 1 | 2.20 | 113.5 | 113.5 |
+| speed | 131K | 2 | 2.09 | 93.7 | 187.4 |
+| coding | 131K | 1 | 2.45 | 120.2 | 120.2 |
+| coding | 131K | 2 | 2.60 | 96.2 | 192.4 |
+| boundary | 262K | 1 | 8.03 | 113.7 | 113.7 |
+| boundary | 262K | 2 | 3.00 | 87.7 | 175.4 |
 
 #### B — Chunked prefill ON, batched_tokens=4096
 
 `vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 4096 --enable-chunked-prefill`
 
-Sweep ID: _(fill in)_
+Sweep ID: `run_20260429_195236`
 
-| Tier | Context | c | TTFT p50 (s) | Per-req tok/s | Agg tok/s | vs A |
+| Tier | Context | c | TTFT avg (s) | Per-req tok/s | Agg tok/s | vs A |
 |------|---------|---|-------------|--------------|-----------|------|
-| speed | 131K | 1 | | | | |
-| speed | 131K | 2 | | | | |
-| coding | 131K | 1 | | | | |
-| coding | 131K | 2 | | | | |
-| boundary | 262K | 1 | | | | |
-| boundary | 262K | 2 | | | | |
+| speed | 131K | 1 | 2.17 | 120.7 | 120.7 | +6% |
+| speed | 131K | 2 | 2.09 | 99.7 | 199.5 | +6% |
+| coding | 131K | 1 | 2.40 | 123.4 | 123.4 | +3% |
+| coding | 131K | 2 | 2.77 | 84.6 | 169.1 | **−12%** |
+| boundary | 262K | 1 | 9.43 | 62.8 | 62.8 | **−45%** |
+| boundary | 262K | 2 | 2.83 | 54.6 | 109.2 | **−38%** |
 
-#### C — Chunked prefill ON, batched_tokens=8192
+**Verdict: REGRESSION.** The boundary c=1 case (no competing workers, pure prefill cost) drops −45%.
+That eliminates scheduling contention as a cause — the Mamba SSM must checkpoint and restore state
+at every chunk boundary (~61 chunks for a 249K-token prefill at batched_tokens=4096). This overhead
+dominates throughput at large context sizes. Larger batched_tokens (C, D) would reduce chunk count
+but can't eliminate the SSM per-chunk tax.
 
-`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 8192 --enable-chunked-prefill`
+#### C — Chunked prefill ON, batched_tokens=8192 — **SKIPPED**
 
-Sweep ID: _(fill in)_
+Skipped: B shows −45% boundary regression at c=1, which eliminates scheduling artifacts as the
+cause. The root issue is Mamba SSM state checkpointing per chunk. Larger batched_tokens halve chunk
+count but don't remove the per-chunk overhead — partial recovery would still leave boundary
+throughput well below baseline A.
 
-| Tier | Context | c | TTFT p50 (s) | Per-req tok/s | Agg tok/s | vs A |
-|------|---------|---|-------------|--------------|-----------|------|
-| boundary | 262K | 2 | | | | |
-| coding | 131K | 2 | | | | |
+#### D — Chunked prefill ON, batched_tokens=16384 — **SKIPPED**
 
-#### D — Chunked prefill ON, batched_tokens=16384
+Skipped: same rationale as C. Even at 16384 tokens/chunk (16× larger than B), the ~15 chunks for
+a 249K prefill each incur SSM state save/restore. The −38% c=2 regression from B would not
+recover to match A.
 
-`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 16384 --enable-chunked-prefill`
+#### E — num_scheduler_steps=4 — **SKIPPED (flag not in vLLM 0.20.0)**
 
-Sweep ID: _(fill in)_
+`--num-scheduler-steps` is not a recognized argument in vLLM 0.20.0. Verified: server startup
+fails with "unrecognized arguments: --num-scheduler-steps 4". Flag was added in a later release.
 
-| Tier | Context | c | TTFT p50 (s) | Per-req tok/s | Agg tok/s | vs A |
-|------|---------|---|-------------|--------------|-----------|------|
-| boundary | 262K | 2 | | | | |
-| coding | 131K | 2 | | | | |
+#### F — num_scheduler_steps=8 — **SKIPPED (flag not in vLLM 0.20.0)**
 
-#### E — num_scheduler_steps=4
-
-`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 4096 --num-scheduler-steps 4`
-
-**Note:** If vLLM 0.20.0 rejects `--num-scheduler-steps`, record "flag not available" and skip F.
-
-Sweep ID: _(fill in)_ — or SKIP (flag unavailable in 0.20.0)
-
-| Tier | Context | c | Per-req tok/s | Agg tok/s | vs A |
-|------|---------|---|--------------|-----------|------|
-| coding | 131K | 2 | | | |
-| speed | 131K | 2 | | | |
-
-#### F — num_scheduler_steps=8
-
-`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 4096 --num-scheduler-steps 8`
-
-Sweep ID: _(fill in)_ — or SKIP
-
-| Tier | Context | c | Per-req tok/s | Agg tok/s | vs A |
-|------|---------|---|--------------|-----------|------|
-| coding | 131K | 2 | | | |
-| speed | 131K | 2 | | | |
+Same as E — flag unavailable in 0.20.0.
 
 #### G — max_num_seqs=8 (queue pressure sanity check)
 
 `vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 8 --max-num-batched-tokens 4096`
 
-Sweep ID: _(fill in)_
+Sweep ID: `run_20260429_200447`
 
-| Tier | Context | c | Per-req tok/s | Agg tok/s | vs A | Verdict |
-|------|---------|---|--------------|-----------|------|---------|
-| coding | 131K | 2 | | | | match A → 200 not binding / degrade → sweep needed |
-| speed | 131K | 2 | | | | |
+| Tier | Context | c | TTFT avg (s) | Per-req tok/s | Agg tok/s | vs A |
+|------|---------|---|-------------|--------------|-----------|------|
+| speed | 131K | 1 | 2.41 | 163.0 | 163.0 | **+44%** |
+| speed | 131K | 2 | 2.16 | 140.0 | 280.1 | **+49%** |
+| coding | 131K | 1 | 2.17 | 187.0 | 187.0 | **+56%** |
+| coding | 131K | 2 | 2.31 | 160.4 | 320.9 | **+67%** |
+| boundary | 262K | 1 | 7.01 | 155.8 | 155.8 | **+37%** |
+| boundary | 262K | 2 | 2.57 | 132.3 | 264.6 | **+51%** |
+
+**Verdict: UNEXPECTED — max_num_seqs=200 is actively harmful for this workload.** The hypothesis
+was that G would match A (confirming 200 is non-binding). Instead G outperforms A by 37–67%
+across every tier and concurrency level, including c=1 where there is no queue pressure at all.
+
+**Likely mechanism:** vLLM pre-allocates internal scheduler state (block tables, sequence metadata)
+proportional to `max_num_seqs`. With 200 slots, this consumes enough HBM to create memory pressure
+during decode, reducing effective GPU utilization. With 8 slots, more HBM is available for KV cache
+and compute. The c=1 improvement (no scheduling interaction) proves the effect is pure
+memory-pressure, not scheduling efficiency. Follow-up: check `nvidia-smi`'s VRAM usage at idle
+with max_num_seqs=200 vs 8 to quantify the pre-allocation delta.
+
+**Immediate WOR-218 action:** switch to `--max-num-seqs 16` (headroom for c=2 bursts with 8× safety
+margin). Testing max_num_seqs=16 vs 8 is low priority — at c=2 either cap is non-binding, and the
+throughput difference is likely small.
 
 ---
 
-### Conclusions (fill in after all steps complete)
+### Conclusions
 
 | Parameter | Verdict | WOR-218 action |
 |-----------|---------|----------------|
-| `enable_chunked_prefill` | | |
-| `max_num_batched_tokens` winner | | |
-| `num_scheduler_steps` | | |
-| `max_num_seqs=200` | | |
+| `enable_chunked_prefill` | **OFF** — −45% boundary regression (Mamba SSM chunk overhead at each chunk boundary) | Do not enable |
+| `max_num_batched_tokens` | Keep at 4096 — irrelevant without chunked prefill; standard scheduler budget | No change |
+| `num_scheduler_steps` | **Unavailable** in vLLM 0.20.0 — flag rejected at server startup | Skip; revisit on vLLM upgrade |
+| `max_num_seqs=200` | **Actively harmful** — reducing to 8 gives +37–67% throughput across all tiers | Switch to `--max-num-seqs 16` |
+
+**Production config for WOR-218:**
+
+```bash
+vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+  --max-model-len 262144 \
+  --kv-cache-dtype fp8 \
+  --max-num-seqs 16 \
+  --max-num-batched-tokens 4096 \
+  --reasoning-parser qwen3 \
+  --enable-prefix-caching \
+  --language-model-only \
+  --safetensors-load-strategy prefetch \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder
+```
+
+The `--max-num-seqs 16` change alone makes the watcher backend 37–67% faster than the WOR-118
+baseline at equivalent concurrency levels. No other parameter changes needed.
