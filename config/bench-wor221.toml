@@ -1,0 +1,137 @@
+# WOR-221: vLLM parameter sweep
+# Tests chunked prefill (A–D), num_scheduler_steps (E–F), max_num_seqs (G).
+# ALL runs use the FP8 KV production server config for apples-to-apples comparison.
+#
+# FP8 baselines from bench.db (run_20260428_201813 / run_20260428_204415):
+#   coding  131K c=2: ~101 tok/s per-req  (~202 agg)
+#   coding  262K c=2:  ~88 tok/s per-req  (~176 agg)
+#   boundary 262K c=2: ~90 tok/s per-req  (~180 agg)
+#
+# Sweep orchestrator (Windows terminal):
+#   python scripts/bench/run_wor221_sweep.py
+#
+# Manual single-config run (Windows terminal, vLLM already running):
+#   python scripts/bench/run_bench.py --config config/bench-wor221.toml --backend vllm_chunk_off_4096
+
+[matrix]
+# 131K for coding/speed (matches FP8 baseline run_20260428_201813).
+context_sizes          = [131072]
+# 262K for boundary: matches FP8 baseline run_20260428_204415 (~90 tok/s c=2).
+# 131K boundary would compare against the BF16 sweep (run_20260428_000929) — not apples-to-apples.
+boundary_context_sizes = [262144]
+concurrency_levels     = [1, 2]
+repeats                = 3
+skip_oom_larger_ctx    = false
+# Gate: only run c=2 if c=1 succeeded. Avoids wasting time on a broken server.
+require_single_concurrency_first = true
+
+# ── Chunked prefill sweep (configs A–D) ───────────────────────────────────────
+# Measures cross-worker TTFT at c=2. Primary investigation.
+
+[[backends]]
+# A — baseline: no chunked prefill, max_num_batched_tokens=4096 (WOR-118 default).
+id             = "vllm_chunk_off_4096"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+[[backends]]
+# B — chunked prefill on, batched_tokens=4096 (Mamba minimum: block_size=2096).
+id             = "vllm_chunk_on_4096"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+[[backends]]
+# C — chunked prefill on, batched_tokens=8192.
+id             = "vllm_chunk_on_8192"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+[[backends]]
+# D — chunked prefill on, batched_tokens=16384.
+id             = "vllm_chunk_on_16384"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+# ── num_scheduler_steps sweep (configs E–F) ───────────────────────────────────
+# Baseline (steps=1) reuses config A above — no separate backend needed.
+
+[[backends]]
+# E — num_scheduler_steps=4.
+id             = "vllm_sched_steps_4"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+[[backends]]
+# F — num_scheduler_steps=8.
+id             = "vllm_sched_steps_8"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+# ── max_num_seqs sanity check (config G) ──────────────────────────────────────
+# G — max_num_seqs=8 forces queue pressure. If identical to A, 200 is not binding.
+
+[[backends]]
+id             = "vllm_seqs_8"
+enabled        = true
+base_url       = "http://localhost:8000"
+enable_thinking = true
+
+# ── Models ────────────────────────────────────────────────────────────────────
+# Local path must match --model used when starting vLLM in WSL2.
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_chunk_off_4096"
+quant      = "nvfp4"
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_chunk_on_4096"
+quant      = "nvfp4"
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_chunk_on_8192"
+quant      = "nvfp4"
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_chunk_on_16384"
+quant      = "nvfp4"
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_sched_steps_4"
+quant      = "nvfp4"
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_sched_steps_8"
+quant      = "nvfp4"
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_seqs_8"
+quant      = "nvfp4"
+
+# ── Tiers ─────────────────────────────────────────────────────────────────────
+
+[[tiers]]
+# Short prompt (~256 tok out). Establishes c=2 throughput baseline at low prefill cost.
+name = "speed"
+
+[[tiers]]
+# Real coding task. Directly comparable to WOR-118 c=2 aggregate (179 tok/s at 262K).
+# Primary throughput regression check — must not drop below WOR-118 baseline.
+name = "coding"
+
+[[tiers]]
+# 95%-fill prompt at 131K (~124K tokens). Real prefill pressure — primary tier for
+# measuring chunked prefill impact on second-worker TTFT at c=2.
+name = "boundary"

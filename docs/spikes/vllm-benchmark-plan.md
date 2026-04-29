@@ -284,3 +284,126 @@ size, so even a full APC hit saves prefill compute that is invisible against the
 floor; (2) `prefill_unshared` uses `seed=42` for all repeats, so its blocks are also
 cached by r=2. The actual APC win is real — cold boundary hit shows 9.53s → 2.34s for
 124K tokens. Disregard the APC EFFECTIVENESS reporter section for this model.
+
+---
+
+## WOR-221 parameter sweep findings
+
+**Spike:** WOR-221
+**Config:** FP8 KV throughout (`--kv-cache-dtype fp8 --max-model-len 262144`) — all steps
+use the production server config so results are directly comparable to FP8 baselines below.
+**Sweep script:** `python scripts/bench/run_wor221_sweep.py --step <A-G>`
+**Config file:** `config/bench-wor221.toml`
+
+### FP8 baselines (from bench.db, used as comparison targets)
+
+| Tier | Context | c | Per-req tok/s | Agg tok/s | Source sweep |
+|------|---------|---|--------------|-----------|--------------|
+| coding | 131K | 1 | ~106 | — | run_20260428_201813 |
+| coding | 131K | 2 | ~103 | ~206 | run_20260428_201813 |
+| coding | 262K | 1 | ~125 | — | run_20260428_201813 |
+| coding | 262K | 2 | ~88 | ~176 | run_20260428_201813 |
+| boundary | 262K | 1 | ~105 (warm) | — | run_20260428_204415 |
+| boundary | 262K | 2 | ~90 | ~180 | run_20260428_204415 |
+
+### Step results
+
+Steps run independently — fill in as each completes. Sweep ID printed at bench start.
+
+#### A — Baseline (no chunked prefill, batched_tokens=4096)
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 4096`
+
+Sweep ID: _(fill in)_
+
+| Tier | Context | c | TTFT p50 (s) | Per-req tok/s | Agg tok/s |
+|------|---------|---|-------------|--------------|-----------|
+| speed | 131K | 1 | | | |
+| speed | 131K | 2 | | | |
+| coding | 131K | 1 | | | |
+| coding | 131K | 2 | | | |
+| boundary | 262K | 1 | | | |
+| boundary | 262K | 2 | | | |
+
+#### B — Chunked prefill ON, batched_tokens=4096
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 4096 --enable-chunked-prefill`
+
+Sweep ID: _(fill in)_
+
+| Tier | Context | c | TTFT p50 (s) | Per-req tok/s | Agg tok/s | vs A |
+|------|---------|---|-------------|--------------|-----------|------|
+| speed | 131K | 1 | | | | |
+| speed | 131K | 2 | | | | |
+| coding | 131K | 1 | | | | |
+| coding | 131K | 2 | | | | |
+| boundary | 262K | 1 | | | | |
+| boundary | 262K | 2 | | | | |
+
+#### C — Chunked prefill ON, batched_tokens=8192
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 8192 --enable-chunked-prefill`
+
+Sweep ID: _(fill in)_
+
+| Tier | Context | c | TTFT p50 (s) | Per-req tok/s | Agg tok/s | vs A |
+|------|---------|---|-------------|--------------|-----------|------|
+| boundary | 262K | 2 | | | | |
+| coding | 131K | 2 | | | | |
+
+#### D — Chunked prefill ON, batched_tokens=16384
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 16384 --enable-chunked-prefill`
+
+Sweep ID: _(fill in)_
+
+| Tier | Context | c | TTFT p50 (s) | Per-req tok/s | Agg tok/s | vs A |
+|------|---------|---|-------------|--------------|-----------|------|
+| boundary | 262K | 2 | | | | |
+| coding | 131K | 2 | | | | |
+
+#### E — num_scheduler_steps=4
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 4096 --num-scheduler-steps 4`
+
+**Note:** If vLLM 0.20.0 rejects `--num-scheduler-steps`, record "flag not available" and skip F.
+
+Sweep ID: _(fill in)_ — or SKIP (flag unavailable in 0.20.0)
+
+| Tier | Context | c | Per-req tok/s | Agg tok/s | vs A |
+|------|---------|---|--------------|-----------|------|
+| coding | 131K | 2 | | | |
+| speed | 131K | 2 | | | |
+
+#### F — num_scheduler_steps=8
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 200 --max-num-batched-tokens 4096 --num-scheduler-steps 8`
+
+Sweep ID: _(fill in)_ — or SKIP
+
+| Tier | Context | c | Per-req tok/s | Agg tok/s | vs A |
+|------|---------|---|--------------|-----------|------|
+| coding | 131K | 2 | | | |
+| speed | 131K | 2 | | | |
+
+#### G — max_num_seqs=8 (queue pressure sanity check)
+
+`vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 --max-model-len 262144 --kv-cache-dtype fp8 --reasoning-parser qwen3 --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch --max-num-seqs 8 --max-num-batched-tokens 4096`
+
+Sweep ID: _(fill in)_
+
+| Tier | Context | c | Per-req tok/s | Agg tok/s | vs A | Verdict |
+|------|---------|---|--------------|-----------|------|---------|
+| coding | 131K | 2 | | | | match A → 200 not binding / degrade → sweep needed |
+| speed | 131K | 2 | | | | |
+
+---
+
+### Conclusions (fill in after all steps complete)
+
+| Parameter | Verdict | WOR-218 action |
+|-----------|---------|----------------|
+| `enable_chunked_prefill` | | |
+| `max_num_batched_tokens` winner | | |
+| `num_scheduler_steps` | | |
+| `max_num_seqs=200` | | |
