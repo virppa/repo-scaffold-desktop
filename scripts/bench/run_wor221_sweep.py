@@ -14,7 +14,9 @@ Usage:
     python scripts/bench/run_wor221_sweep.py --step F   # num_scheduler_steps=8
     python scripts/bench/run_wor221_sweep.py --step G   # max_num_seqs=8 sanity check
     python scripts/bench/run_wor221_sweep.py --step H   # seqs=16 production, c=1-4
-    python scripts/bench/run_wor221_sweep.py --step I   # seqs=16, c=1-6, 131K+262K
+    python scripts/bench/run_wor221_sweep.py --step I   # seqs=16, c=1-8, 131K+262K
+    python scripts/bench/run_wor221_sweep.py --step A2  # seqs=200 backcheck
+    python scripts/bench/run_wor221_sweep.py --step J   # BF16 KV, seqs=16, 65K+131K
     python scripts/bench/run_wor221_sweep.py --list     # show all steps and commands
 
 Resume an interrupted bench run:
@@ -37,6 +39,8 @@ from scripts.bench.drivers.vllm import VllmDriver  # noqa: E402
 CONFIG = "config/bench-wor221.toml"
 CONFIG_H = "config/bench-wor221h.toml"
 CONFIG_I = "config/bench-wor221i.toml"
+CONFIG_A2 = "config/bench-wor221a2.toml"
+CONFIG_J = "config/bench-wor221j.toml"
 MODEL = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
 VLLM_BASE_URL = "http://localhost:8000"
 
@@ -134,6 +138,42 @@ STEPS: dict[str, dict] = {
         "note": (
             "Forces maximum queue pressure at c=2. If throughput matches A,\n"
             "the 200-seq ceiling is confirmed non-binding for our workload."
+        ),
+    },
+    "A2": {
+        "backend_id": "vllm_seqs_200_check",
+        "config": CONFIG_A2,
+        "label": "seqs=200 backcheck — verify step A result",
+        "vllm_cmd": _cmd(
+            "--max-num-seqs 200",
+            "--max-num-batched-tokens 4096",
+        ),
+        "note": (
+            "Repeats step A with the current bench methodology to confirm\n"
+            "that ~120 tok/s was caused by max_num_seqs=200, not a session\n"
+            "artefact. Expected: ~120 tok/s -> confirmed. ~187 tok/s -> investigate."
+        ),
+    },
+    "J": {
+        "backend_id": "vllm_bf16_seqs16",
+        "config": CONFIG_J,
+        "label": "BF16 KV cache, seqs=16, c=1-8 at 65K+131K",
+        "vllm_cmd": (
+            "vllm serve "
+            + MODEL
+            + " --max-model-len 131072"
+            + " --reasoning-parser qwen3"
+            + " --enable-prefix-caching"
+            + " --language-model-only"
+            + " --safetensors-load-strategy prefetch"
+            + " --max-num-seqs 16"
+            + " --max-num-batched-tokens 4096"
+        ),
+        "note": (
+            "No --kv-cache-dtype flag (BF16 KV default).\n"
+            "No --max-model-len 262144 — BF16 KV at 131K only.\n"
+            "Tests whether FP8 KV compression changes throughput at <=131K.\n"
+            "Compare vllm_bf16_seqs16 vs vllm_seqs_16 in bench.db."
         ),
     },
     "I": {
