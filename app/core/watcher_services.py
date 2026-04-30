@@ -174,12 +174,19 @@ class ServiceManager:
                 env=env,
             )
 
+    def _litellm_serving(self) -> bool:
+        """Return True if LiteLLM is accepting HTTP requests on _LITELLM_PORT."""
+        try:
+            conn = http.client.HTTPConnection("localhost", _LITELLM_PORT, timeout=2)
+            conn.request("GET", "/health")
+            conn.getresponse()
+            return True
+        except (OSError, http.client.HTTPException):
+            return False
+
     def ensure_litellm_running(self) -> None:
         """Start the LiteLLM proxy if not already listening on _LITELLM_PORT."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            already_up = sock.connect_ex(("localhost", _LITELLM_PORT)) == 0
-
-        if already_up:
+        if self._litellm_serving():
             logger.info("LiteLLM proxy already running on port %d", _LITELLM_PORT)
             return
 
@@ -221,7 +228,7 @@ class ServiceManager:
         self._wait_for_litellm_ready()
 
     def _wait_for_litellm_ready(self, timeout: float = 60.0) -> None:
-        """Poll TCP until LiteLLM's port accepts connections or process dies."""
+        """Poll HTTP until LiteLLM is serving or process dies."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._litellm_proc and self._litellm_proc.poll() is not None:
@@ -230,10 +237,8 @@ class ServiceManager:
                     f"LiteLLM proxy exited (rc={rc}). "
                     f"Check .claude/litellm.log for details."
                 )
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
-                if sock.connect_ex(("localhost", _LITELLM_PORT)) == 0:
-                    return
+            if self._litellm_serving():
+                return
             time.sleep(0.5)
         raise TimeoutError(
             f"LiteLLM proxy not ready after {timeout}s. "
