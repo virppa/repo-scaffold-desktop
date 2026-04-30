@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.core.metrics import (
+    _CREATE_TABLE,
     CheckRunEntry,
     CheckStats,
     EpicSummary,
@@ -358,3 +359,94 @@ class TestMigration:
         assert result.local_tokens == 10500
         assert result.local_input_tokens == 10000
         assert result.local_output_tokens == 500
+
+
+# ---------------------------------------------------------------------------
+# TaskProfile fields in TicketMetrics (WOR-216)
+# ---------------------------------------------------------------------------
+
+
+class TestTaskProfileFields:
+    def test_task_profile_fields_round_trip(self, tmp_path):
+        """TaskProfile fields round-trip through the DB."""
+        store = _store(tmp_path)
+        store.record(
+            _ticket(
+                change_type="feature",
+                reasoning_demand="analytical",
+                scope_clarity="specified",
+                constraint_density="medium",
+                ac_specificity="testable",
+                multi_file_consistency_required=True,
+                is_greenfield=False,
+                has_external_dependency=True,
+                tech_stack=["python", "yaml_toml"],
+                raw_extensions=[".py", ".toml"],
+            )
+        )
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.change_type == "feature"
+        assert result.reasoning_demand == "analytical"
+        assert result.scope_clarity == "specified"
+        assert result.constraint_density == "medium"
+        assert result.ac_specificity == "testable"
+        assert result.multi_file_consistency_required is True
+        assert result.is_greenfield is False
+        assert result.has_external_dependency is True
+        assert result.tech_stack == ["python", "yaml_toml"]
+        assert result.raw_extensions == [".py", ".toml"]
+
+    def test_task_profile_fields_none_default(self, tmp_path):
+        """TaskProfile fields default to None/False when not provided."""
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.change_type is None
+        assert result.reasoning_demand is None
+        assert result.scope_clarity is None
+        assert result.constraint_density is None
+        assert result.ac_specificity is None
+        assert result.multi_file_consistency_required is False
+        assert result.is_greenfield is False
+        assert result.has_external_dependency is False
+        assert result.tech_stack is None
+        assert result.raw_extensions is None
+
+    def test_task_profile_json_encoded(self, tmp_path):
+        """tech_stack and raw_extensions are stored as JSON strings."""
+        store = _store(tmp_path)
+        store.record(
+            _ticket(
+                tech_stack=["python"],
+                raw_extensions=[".py"],
+            )
+        )
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.tech_stack == ["python"]
+        assert result.raw_extensions == [".py"]
+
+    def test_task_profile_migrate_columns_added(self, tmp_path):
+        """Pre-existing DB gets TaskProfile columns via _migrate."""
+        import sqlite3
+
+        db_path = tmp_path / "metrics.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(_CREATE_TABLE)
+
+        # Now open through MetricsStore — should migrate successfully
+        store = MetricsStore(db_path=db_path)
+        store.record(
+            _ticket(
+                change_type="bugfix",
+                reasoning_demand="mechanical",
+                tech_stack=["python"],
+            )
+        )
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.change_type == "bugfix"
+        assert result.reasoning_demand == "mechanical"
+        assert result.tech_stack == ["python"]

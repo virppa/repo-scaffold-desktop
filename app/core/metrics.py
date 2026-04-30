@@ -37,30 +37,40 @@ CREATE TABLE IF NOT EXISTS check_run_log (
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS ticket_metrics (
-    ticket_id             TEXT NOT NULL,
-    project_id            TEXT NOT NULL,
-    epic_id               TEXT,
-    implementation_mode   TEXT NOT NULL,
-    cloud_used            INTEGER NOT NULL DEFAULT 0,
-    cloud_model           TEXT,
-    cloud_tokens          INTEGER,
-    cloud_cost_estimate   REAL,
-    local_used            INTEGER NOT NULL DEFAULT 0,
-    local_model           TEXT,
-    local_input_tokens    INTEGER,
-    local_output_tokens   INTEGER,
-    local_tokens          INTEGER,
-    local_wall_time       REAL,
+    ticket_id                      TEXT NOT NULL,
+    project_id                     TEXT NOT NULL,
+    epic_id                        TEXT,
+    implementation_mode            TEXT NOT NULL,
+    cloud_used                     INTEGER NOT NULL DEFAULT 0,
+    cloud_model                    TEXT,
+    cloud_tokens                   INTEGER,
+    cloud_cost_estimate            REAL,
+    local_used                     INTEGER NOT NULL DEFAULT 0,
+    local_model                    TEXT,
+    local_input_tokens             INTEGER,
+    local_output_tokens            INTEGER,
+    local_tokens                   INTEGER,
+    local_wall_time                REAL,
     local_output_tokens_per_second REAL,
-    escalated_to_cloud    INTEGER NOT NULL DEFAULT 0,
-    outcome               TEXT NOT NULL,
-    retry_count           INTEGER NOT NULL DEFAULT 0,
-    check_failures_json   TEXT,
-    lines_changed         INTEGER,
-    files_changed         INTEGER,
-    sonar_findings_count  INTEGER,
-    context_compactions   INTEGER,
-    recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    escalated_to_cloud             INTEGER NOT NULL DEFAULT 0,
+    outcome                        TEXT NOT NULL,
+    retry_count                    INTEGER NOT NULL DEFAULT 0,
+    check_failures_json            TEXT,
+    lines_changed                  INTEGER,
+    files_changed                  INTEGER,
+    sonar_findings_count           INTEGER,
+    context_compactions            INTEGER,
+    change_type                    TEXT,
+    reasoning_demand               TEXT,
+    scope_clarity                  TEXT,
+    constraint_density             TEXT,
+    ac_specificity                 TEXT,
+    multi_file_consistency_required INTEGER NOT NULL DEFAULT 0,
+    is_greenfield                  INTEGER NOT NULL DEFAULT 0,
+    has_external_dependency        INTEGER NOT NULL DEFAULT 0,
+    tech_stack                     TEXT,
+    raw_extensions                 TEXT,
+    recorded_at                    TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
 """
@@ -107,6 +117,40 @@ class TicketMetrics(BaseModel):
     context_compactions: int | None = Field(
         default=None,
         description="Claude Code context compaction count during the session",
+    )
+
+    # TaskProfile fields (WOR-216)
+    change_type: str | None = Field(
+        default=None,
+        description="change_type from TaskProfile: "
+        "(bugfix/feature/refactor/api_integration/architectural/test/docs)",
+    )
+    reasoning_demand: str | None = Field(
+        default=None,
+        description="reasoning_demand from TaskProfile (mechanical/analytical/design)",
+    )
+    scope_clarity: str | None = Field(
+        default=None,
+        description="scope_clarity from TaskProfile (specified/inferred/ambiguous)",
+    )
+    constraint_density: str | None = Field(
+        default=None,
+        description="constraint_density from TaskProfile (low/medium/high)",
+    )
+    ac_specificity: str | None = Field(
+        default=None,
+        description="ac_specificity from TaskProfile (testable/behavioral/vague)",
+    )
+    multi_file_consistency_required: bool = False
+    is_greenfield: bool = False
+    has_external_dependency: bool = False
+    tech_stack: list[str] | None = Field(
+        default=None,
+        description="List of tech stack literals from TaskProfile",
+    )
+    raw_extensions: list[str] | None = Field(
+        default=None,
+        description="List of raw file extensions from TaskProfile",
     )
 
 
@@ -198,6 +242,38 @@ class MetricsStore:
                 "ALTER TABLE ticket_metrics "
                 "ADD COLUMN local_output_tokens_per_second REAL"
             )
+        # TaskProfile columns (WOR-216)
+        if "change_type" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN change_type TEXT")
+        if "reasoning_demand" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN reasoning_demand TEXT")
+        if "scope_clarity" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN scope_clarity TEXT")
+        if "constraint_density" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN constraint_density TEXT"
+            )
+        if "ac_specificity" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN ac_specificity TEXT")
+        if "multi_file_consistency_required" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics "
+                "ADD COLUMN multi_file_consistency_required INTEGER NOT NULL DEFAULT 0"
+            )
+        if "is_greenfield" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics "
+                "ADD COLUMN is_greenfield INTEGER NOT NULL DEFAULT 0"
+            )
+        if "has_external_dependency" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics "
+                "ADD COLUMN has_external_dependency INTEGER NOT NULL DEFAULT 0"
+            )
+        if "tech_stack" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN tech_stack TEXT")
+        if "raw_extensions" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN raw_extensions TEXT")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -222,7 +298,11 @@ class MetricsStore:
                     escalated_to_cloud, outcome,
                     retry_count, check_failures_json,
                     lines_changed, files_changed,
-                    sonar_findings_count, context_compactions
+                    sonar_findings_count, context_compactions,
+                    change_type, reasoning_demand, scope_clarity,
+                    constraint_density, ac_specificity,
+                    multi_file_consistency_required, is_greenfield,
+                    has_external_dependency, tech_stack, raw_extensions
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -233,17 +313,42 @@ class MetricsStore:
                     :escalated_to_cloud, :outcome,
                     :retry_count, :check_failures_json,
                     :lines_changed, :files_changed,
-                    :sonar_findings_count, :context_compactions
+                    :sonar_findings_count, :context_compactions,
+                    :change_type, :reasoning_demand, :scope_clarity,
+                    :constraint_density, :ac_specificity,
+                    :multi_file_consistency_required, :is_greenfield,
+                    :has_external_dependency, :tech_stack, :raw_extensions
                 )
                 """,
                 {
-                    **metrics.model_dump(exclude={"check_failures"}),
+                    **metrics.model_dump(
+                        exclude={"check_failures", "tech_stack", "raw_extensions"},
+                    ),
                     "cloud_used": int(metrics.cloud_used),
                     "local_used": int(metrics.local_used),
                     "escalated_to_cloud": int(metrics.escalated_to_cloud),
                     "check_failures_json": (
                         json.dumps(metrics.check_failures)
                         if metrics.check_failures is not None
+                        else None
+                    ),
+                    "multi_file_consistency_required": int(
+                        metrics.multi_file_consistency_required,
+                    ),
+                    "is_greenfield": int(metrics.is_greenfield),
+                    "has_external_dependency": int(metrics.has_external_dependency),
+                    "tech_stack": (
+                        metrics.tech_stack
+                        if isinstance(metrics.tech_stack, str)
+                        else json.dumps(metrics.tech_stack)
+                        if metrics.tech_stack
+                        else None
+                    ),
+                    "raw_extensions": (
+                        metrics.raw_extensions
+                        if isinstance(metrics.raw_extensions, str)
+                        else json.dumps(metrics.raw_extensions)
+                        if metrics.raw_extensions
                         else None
                     ),
                 },
@@ -362,7 +467,17 @@ def _row_to_metrics(row: sqlite3.Row) -> TicketMetrics:
     d["cloud_used"] = bool(d["cloud_used"])
     d["local_used"] = bool(d["local_used"])
     d["escalated_to_cloud"] = bool(d["escalated_to_cloud"])
+    d["multi_file_consistency_required"] = bool(
+        d.get("multi_file_consistency_required"),
+    )
+    d["is_greenfield"] = bool(d.get("is_greenfield"))
+    d["has_external_dependency"] = bool(d.get("has_external_dependency"))
     raw_failures = d.pop("check_failures_json", None)
     d["check_failures"] = json.loads(raw_failures) if raw_failures is not None else None
+    # Parse JSON-encoded tech_stack and raw_extensions
+    raw_tech_stack = d.pop("tech_stack", None)
+    d["tech_stack"] = json.loads(raw_tech_stack) if raw_tech_stack is not None else None
+    raw_raw_ext = d.pop("raw_extensions", None)
+    d["raw_extensions"] = json.loads(raw_raw_ext) if raw_raw_ext is not None else None
     d.pop("recorded_at", None)
     return TicketMetrics.model_validate(d)

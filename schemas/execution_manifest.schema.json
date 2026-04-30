@@ -49,6 +49,101 @@
       "title": "FailurePolicy",
       "type": "object"
     },
+    "TaskProfile": {
+      "additionalProperties": false,
+      "description": "Work dimensions for a ticket \u2014 collected at plan time for routing calibration.",
+      "properties": {
+        "change_type": {
+          "enum": [
+            "bugfix",
+            "feature",
+            "refactor",
+            "api_integration",
+            "architectural",
+            "test",
+            "docs"
+          ],
+          "title": "Change Type",
+          "type": "string"
+        },
+        "reasoning_demand": {
+          "enum": [
+            "mechanical",
+            "analytical",
+            "design"
+          ],
+          "title": "Reasoning Demand",
+          "type": "string"
+        },
+        "scope_clarity": {
+          "enum": [
+            "specified",
+            "inferred",
+            "ambiguous"
+          ],
+          "title": "Scope Clarity",
+          "type": "string"
+        },
+        "constraint_density": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Constraint Density",
+          "type": "string"
+        },
+        "ac_specificity": {
+          "enum": [
+            "testable",
+            "behavioral",
+            "vague"
+          ],
+          "title": "Ac Specificity",
+          "type": "string"
+        },
+        "multi_file_consistency_required": {
+          "title": "Multi File Consistency Required",
+          "type": "boolean"
+        },
+        "is_greenfield": {
+          "title": "Is Greenfield",
+          "type": "boolean"
+        },
+        "has_external_dependency": {
+          "title": "Has External Dependency",
+          "type": "boolean"
+        },
+        "tech_stack": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tech Stack",
+          "type": "array"
+        },
+        "raw_extensions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Raw Extensions",
+          "type": "array"
+        }
+      },
+      "required": [
+        "change_type",
+        "reasoning_demand",
+        "scope_clarity",
+        "constraint_density",
+        "ac_specificity",
+        "multi_file_consistency_required",
+        "is_greenfield",
+        "has_external_dependency",
+        "tech_stack",
+        "raw_extensions"
+      ],
+      "title": "TaskProfile",
+      "type": "object"
+    },
     "TicketStateMap": {
       "additionalProperties": false,
       "description": "Linear workflow state names used by the watcher to advance ticket state.",
@@ -263,6 +358,17 @@
     },
     "artifact_paths": {
       "$ref": "#/$defs/ArtifactPaths"
+    },
+    "task_profile": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TaskProfile"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

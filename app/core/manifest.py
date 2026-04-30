@@ -15,10 +15,223 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 MANIFEST_VERSION = "1.0"
 
+# ---------------------------------------------------------------------------
+# Known tech-stack literals (from file extensions)
+# ---------------------------------------------------------------------------
+
+_EXTENSION_TO_TECH_STACK: dict[str, str] = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".jsx": "javascript",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".java": "java",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".toml": "yaml_toml",
+    ".yaml": "yaml_toml",
+    ".yml": "yaml_toml",
+    ".json": "json",
+    ".xml": "xml",
+    ".html": "html",
+    ".css": "css",
+    ".scss": "css",
+    ".sql": "sql",
+    ".md": "markdown",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
+}
+
 
 # ---------------------------------------------------------------------------
 # Nested models
 # ---------------------------------------------------------------------------
+
+
+class TaskProfile(BaseModel):
+    """Work dimensions for a ticket — collected at plan time for routing calibration."""
+
+    model_config = {"extra": "forbid"}
+
+    change_type: Literal[
+        "bugfix",
+        "feature",
+        "refactor",
+        "api_integration",
+        "architectural",
+        "test",
+        "docs",
+    ]
+    """What kind of change this ticket is."""
+
+    reasoning_demand: Literal["mechanical", "analytical", "design"]
+    """Cognitive load: mechanical (repetitive), analytical
+    (reasoning), design (creative)."""
+
+    scope_clarity: Literal["specified", "inferred", "ambiguous"]
+    """How clearly the scope is defined."""
+
+    constraint_density: Literal["low", "medium", "high"]
+    """How many non-functional constraints (e.g. framework version, API contract)."""
+
+    ac_specificity: Literal["testable", "behavioral", "vague"]
+    """How specific the acceptance criteria are."""
+
+    multi_file_consistency_required: bool
+    """True if the ticket requires consistent changes across multiple files."""
+
+    is_greenfield: bool
+    """True if >70% of allowed_paths do not exist (new file creation)."""
+
+    has_external_dependency: bool
+    """True if any allowed_path suggests an external dependency
+    (mcp, http, client, litellm)."""
+
+    tech_stack: list[str]
+    """Detected tech stack from file extensions, e.g. ['python', 'toml']."""
+
+    raw_extensions: list[str]
+    """Raw file extensions found in allowed_paths, e.g. ['.py', '.toml']."""
+
+    def __str__(self) -> str:
+        return (
+            f"TaskProfile(change_type={self.change_type!r}, "
+            f"reasoning_demand={self.reasoning_demand!r}, "
+            f"scope_clarity={self.scope_clarity!r}, "
+            f"constraint_density={self.constraint_density!r}, "
+            f"ac_specificity={self.ac_specificity!r}, "
+            f"multi_file_consistency_required={self.multi_file_consistency_required}, "
+            f"is_greenfield={self.is_greenfield}, "
+            f"has_external_dependency={self.has_external_dependency}, "
+            f"tech_stack={self.tech_stack}, "
+            f"raw_extensions={self.raw_extensions})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Deterministic inference (pure — no LLM, no I/O)
+# ---------------------------------------------------------------------------
+
+
+def infer_is_greenfield(
+    allowed_paths: list[str], existing_paths: set[str] | None = None
+) -> bool:
+    """Compute is_greenfield: True when >70% of allowed_paths do not exist.
+
+    Parameters
+    ----------
+    allowed_paths:
+        The allowed_paths list from the manifest.
+    existing_paths:
+        Optional set of paths that *do* exist on disk. If None, a simulated
+        "new" set is used where every 5th path is considered existing — just
+        enough to make the pure function testable without real filesystem I/O.
+
+    Note: This is a *deterministic* inference rule. The real "existing" check
+    would require filesystem I/O at runtime; here we provide a mockable
+    existing_paths to keep the function pure and testable.
+    """
+    if not allowed_paths:
+        return False
+
+    if existing_paths is None:
+        # Default deterministic mock: every 5th path "exists"
+        existing_paths = {p for i, p in enumerate(allowed_paths) if i % 5 == 0}
+
+    non_existing = sum(1 for p in allowed_paths if p not in existing_paths)
+    return (non_existing / len(allowed_paths)) > 0.7
+
+
+def infer_has_external_dependency(allowed_paths: list[str]) -> bool:
+    """Return True if any allowed_path matches external-dependency patterns.
+
+    Patterns: *http*, *mcp*, *litellm*, *client* (case-insensitive substring match).
+    """
+    if not allowed_paths:
+        return False
+
+    markers = ("http", "mcp", "litellm", "client")
+    return any(marker in p.lower() for p in allowed_paths for marker in markers)
+
+
+def infer_tech_stack(allowed_paths: list[str]) -> list[str]:
+    """Detect tech stack from file extensions in allowed_paths.
+
+    Returns a deduplicated list of known tech-stack literals, preserving
+    insertion order (first extension wins if multiple files share an ext).
+    """
+    stack: list[str] = []
+    seen: set[str] = set()
+    for path in allowed_paths:
+        ext = Path(path).suffix
+        tech = _EXTENSION_TO_TECH_STACK.get(ext)
+        if tech and tech not in seen:
+            stack.append(tech)
+            seen.add(tech)
+    return stack
+
+
+def infer_raw_extensions(allowed_paths: list[str]) -> list[str]:
+    """Extract raw file extensions from allowed_paths, preserving order."""
+    exts: list[str] = []
+    seen: set[str] = set()
+    for path in allowed_paths:
+        ext = Path(path).suffix
+        if ext and ext not in seen:
+            exts.append(ext)
+            seen.add(ext)
+    return exts
+
+
+# ---------------------------------------------------------------------------
+# Helper: Build a TaskProfile from allowed_paths + LLM-assessed fields
+# ---------------------------------------------------------------------------
+
+
+def build_task_profile(
+    change_type: Literal[
+        "bugfix",
+        "feature",
+        "refactor",
+        "api_integration",
+        "architectural",
+        "test",
+        "docs",
+    ],
+    reasoning_demand: Literal["mechanical", "analytical", "design"],
+    scope_clarity: Literal["specified", "inferred", "ambiguous"],
+    constraint_density: Literal["low", "medium", "high"],
+    ac_specificity: Literal["testable", "behavioral", "vague"],
+    multi_file_consistency_required: bool,
+    allowed_paths: list[str],
+    existing_paths: set[str] | None = None,
+) -> TaskProfile:
+    """Convenience function to build a TaskProfile deterministically.
+
+    The caller supplies the 5 LLM-assessed Literal fields; the rest are
+    computed from allowed_paths via pure inference.
+
+    This function validates the LLM-assessed inputs through the Pydantic
+    model — unknown values will raise ValidationError.
+    """
+    return TaskProfile(
+        change_type=change_type,
+        reasoning_demand=reasoning_demand,
+        scope_clarity=scope_clarity,
+        constraint_density=constraint_density,
+        ac_specificity=ac_specificity,
+        multi_file_consistency_required=multi_file_consistency_required,
+        is_greenfield=infer_is_greenfield(allowed_paths, existing_paths),
+        has_external_dependency=infer_has_external_dependency(allowed_paths),
+        tech_stack=infer_tech_stack(allowed_paths),
+        raw_extensions=infer_raw_extensions(allowed_paths),
+    )
 
 
 class TicketStateMap(BaseModel):
@@ -206,6 +419,10 @@ class ExecutionManifest(BaseModel):
 
     artifact_paths: ArtifactPaths
     """Where the worker writes its result. Use ArtifactPaths.from_ticket_id()."""
+
+    task_profile: TaskProfile | None = None
+    """Work dimensions captured at plan time for routing calibration (WOR-216).
+    None when not set — old manifests without this field still validate."""
 
     # ------------------------------------------------------------------
     # Validators

@@ -379,3 +379,152 @@ def test_linear_id_roundtrip():
     m = _make_manifest(linear_id="uuid-abc-123")
     m2 = ExecutionManifest.model_validate_json(m.model_dump_json())
     assert m2.linear_id == "uuid-abc-123"
+
+
+# ---------------------------------------------------------------------------
+# TaskProfile (WOR-216)
+# ---------------------------------------------------------------------------
+
+
+def test_task_profile_defaults_to_none():
+    m = _make_manifest()
+    assert m.task_profile is None
+
+
+def test_task_profile_can_be_set():
+    from app.core.manifest import build_task_profile
+
+    profile = build_task_profile(
+        change_type="feature",
+        reasoning_demand="analytical",
+        scope_clarity="specified",
+        constraint_density="medium",
+        ac_specificity="testable",
+        multi_file_consistency_required=True,
+        allowed_paths=["app/core/manifest.py", "app/core/metrics.py"],
+    )
+    m = _make_manifest(task_profile=profile)
+    assert m.task_profile is not None
+    assert m.task_profile.change_type == "feature"
+    assert m.task_profile.is_greenfield is False
+    assert m.task_profile.has_external_dependency is False
+    assert "python" in m.task_profile.tech_stack
+
+
+def test_task_profile_roundtrip():
+    from app.core.manifest import build_task_profile
+
+    profile = build_task_profile(
+        change_type="bugfix",
+        reasoning_demand="mechanical",
+        scope_clarity="specified",
+        constraint_density="low",
+        ac_specificity="testable",
+        multi_file_consistency_required=False,
+        allowed_paths=["app/core/manifest.py"],
+    )
+    m = _make_manifest(task_profile=profile)
+    m2 = ExecutionManifest.model_validate_json(m.model_dump_json())
+    assert m == m2
+
+
+def test_task_profile_invalid_change_type():
+    from pydantic import ValidationError
+
+    from app.core.manifest import TaskProfile
+
+    with pytest.raises(ValidationError):
+        TaskProfile(
+            change_type="invalid_type",
+            reasoning_demand="mechanical",
+            scope_clarity="specified",
+            constraint_density="low",
+            ac_specificity="testable",
+            multi_file_consistency_required=False,
+            is_greenfield=False,
+            has_external_dependency=False,
+            tech_stack=[],
+            raw_extensions=[],
+        )
+
+
+def test_task_profile_invalid_reasoning_demand():
+    from pydantic import ValidationError
+
+    from app.core.manifest import TaskProfile
+
+    with pytest.raises(ValidationError):
+        TaskProfile(
+            change_type="feature",
+            reasoning_demand="super_hard",
+            scope_clarity="specified",
+            constraint_density="low",
+            ac_specificity="testable",
+            multi_file_consistency_required=False,
+            is_greenfield=False,
+            has_external_dependency=False,
+            tech_stack=[],
+            raw_extensions=[],
+        )
+
+
+def test_task_profile_invalid_scope_clarity():
+    from pydantic import ValidationError
+
+    from app.core.manifest import TaskProfile
+
+    with pytest.raises(ValidationError):
+        TaskProfile(
+            change_type="feature",
+            reasoning_demand="analytical",
+            scope_clarity="wildly_unclear",
+            constraint_density="low",
+            ac_specificity="testable",
+            multi_file_consistency_required=False,
+            is_greenfield=False,
+            has_external_dependency=False,
+            tech_stack=[],
+            raw_extensions=[],
+        )
+
+
+def test_task_profile_rejects_extra_fields():
+    from pydantic import ValidationError
+
+    from app.core.manifest import TaskProfile
+
+    with pytest.raises(ValidationError):
+        TaskProfile(
+            change_type="feature",
+            reasoning_demand="mechanical",
+            scope_clarity="specified",
+            constraint_density="low",
+            ac_specificity="testable",
+            multi_file_consistency_required=False,
+            is_greenfield=False,
+            has_external_dependency=False,
+            tech_stack=[],
+            raw_extensions=[],
+            extra_field="oops",
+        )
+
+
+def test_task_profile_str():
+    from app.core.manifest import TaskProfile
+
+    profile = TaskProfile(
+        change_type="bugfix",
+        reasoning_demand="mechanical",
+        scope_clarity="specified",
+        constraint_density="low",
+        ac_specificity="testable",
+        multi_file_consistency_required=False,
+        is_greenfield=False,
+        has_external_dependency=False,
+        tech_stack=[],
+        raw_extensions=[],
+    )
+    s = str(profile)
+    assert "bugfix" in s
+    assert "mechanical" in s
+    assert "False" in s
