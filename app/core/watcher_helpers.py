@@ -133,6 +133,11 @@ def build_worker_env(
     elif mode == "local":
         env["ANTHROPIC_BASE_URL"] = _LITELLM_BASE_URL
         env.setdefault("ANTHROPIC_API_KEY", "sk-dummy")
+        # Treat the context window as 80K for compaction purposes: Claude Code
+        # compacts at ~95% of this value (~76K tokens), preventing the unbounded
+        # context growth observed in WOR-216/WOR-217/WOR-212 (peak 163K tokens).
+        # --context-window is not a valid CLI flag; this env var is the correct hook.
+        env.setdefault("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "80000")
     return env
 
 
@@ -178,11 +183,8 @@ def build_worker_cmd(
         # --bare strips OAuth; safe for local (dummy API key via LiteLLM).
         # --effort normal: bounded implementation tasks don't benefit from max extended
         #   thinking budget; normal saves tokens without quality regression.
-        # --context-window 80000: force compaction at 80K tokens instead of letting
-        #   context drift to the model max, preventing late-session turns from bloating
-        #   to 140K+ input with near-zero output (observed in WOR-216 / WOR-217).
         base.insert(2, "--bare")
-        base += ["--effort", "normal", "--context-window", "80000"]
+        base += ["--effort", "normal"]
         base += ["--model", _LOCAL_MODEL]
     else:
         base += ["--effort", "max"]
