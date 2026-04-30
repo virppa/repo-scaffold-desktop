@@ -130,6 +130,14 @@ If the commit is rejected by a pre-commit hook, fix the issue and retry the comm
 
 ### 5. Write the result artifact
 
+> **THIS STEP IS MANDATORY ON ALL EXIT PATHS**
+>
+> You **MUST** write the result artifact below — it is your only output channel
+> to the watcher. Without it the session's token counts, check stats, and
+> escalation flags are permanently lost. This step cannot be skipped, even if
+> you believe the work is complete or the session is ending abnormally.
+> Write it before calling exit / abort / any early-return path.
+
 Write a JSON result file to `artifact_paths.result_json`. Create parent dirs as needed.
 
 **On success:**
