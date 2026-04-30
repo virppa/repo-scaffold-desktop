@@ -70,7 +70,7 @@ class Watcher:
     def __init__(
         self,
         worker_mode: str = "default",
-        max_local_workers: int = 1,
+        max_local_workers: int = 8,
         max_cloud_workers: int = 3,
         linear_client: LinearClientProtocol | None = None,
         metrics_store: MetricsStore | None = None,
@@ -393,7 +393,6 @@ class Watcher:
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
 
         if effective_mode == "local":
-            self._services.ensure_ollama_running()
             self._services.ensure_litellm_running()
 
         backed_up_plans = backup_plan_files()

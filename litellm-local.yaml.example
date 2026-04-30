@@ -1,15 +1,12 @@
 model_list:
     # --- vLLM backend (recommended) ---
     # Start server in WSL2 first:
-    #   VLLM_MOE_BACKEND=FLASHINFER_TRTLLM vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
-    #     --max-model-len 131072 --max-num-seqs 200 \
+    #   vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+    #     --max-model-len 131072 --max-num-seqs 16 \
+    #     --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \
     #     --reasoning-parser qwen3 --enable-prefix-caching \
     #     --language-model-only --safetensors-load-strategy prefetch \
     #     --enable-auto-tool-choice --tool-call-parser qwen3_coder
-    #
-    # --enable-auto-tool-choice and --tool-call-parser qwen3_coder are required for
-    # tool use (function calling). Not yet validated in the watcher setup — add and
-    # test when wiring up the first real worker session against vLLM.
     - model_name: claude-sonnet-4-6
       litellm_params:
         model: openai//home/antti/models/Qwen3.6-35B-A3B-NVFP4

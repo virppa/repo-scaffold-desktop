@@ -307,3 +307,15 @@ def test_watcher_max_workers_alias_sets_both():
     _, kwargs = MockWatcher.call_args
     assert kwargs.get("max_local_workers") == 4
     assert kwargs.get("max_cloud_workers") == 4
+
+
+def test_watcher_max_local_workers_default_is_8():
+    from unittest.mock import MagicMock, patch
+
+    mock_instance = MagicMock()
+    mock_instance.run.return_value = None
+    with patch("app.core.watcher.Watcher", return_value=mock_instance) as MockWatcher:
+        rc = main(["watcher"])
+    assert rc == 0
+    _, kwargs = MockWatcher.call_args
+    assert kwargs.get("max_local_workers") == 8
