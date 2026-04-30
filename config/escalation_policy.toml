@@ -31,3 +31,11 @@ critical = "escalate"
 major = "fix_locally"
 minor = "fix_locally"
 info = "fix_locally"
+
+[improvement_log]
+# Long-lived Linear ticket used for global improvement log.
+# The watcher appends one-line findings after each worker session and
+# monitors the comment count against review_threshold.
+ticket_id = "WOR-254"
+review_threshold = 15
+runtime_threshold_minutes = 60
