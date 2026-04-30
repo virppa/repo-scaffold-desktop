@@ -200,3 +200,52 @@ def test_retry_zero_raises(tmp_path: Path) -> None:
     path = write_policy(tmp_path, toml)
     with pytest.raises(ValidationError):
         EscalationPolicy.from_toml(path)
+
+
+# ---------------------------------------------------------------------------
+# Improvement log config
+# ---------------------------------------------------------------------------
+
+
+def test_improvement_log_section_loads(tmp_path: Path) -> None:
+    toml = MINIMAL_VALID_TOML + "\n[improvement_log]\nticket_id = 'WOR-254'\n"
+    path = write_policy(tmp_path, toml)
+    policy = EscalationPolicy.from_toml(path)
+    assert policy.improvement_log is not None
+    assert policy.improvement_log.ticket_id == "WOR-254"
+
+
+def test_improvement_log_defaults(tmp_path: Path) -> None:
+    toml = MINIMAL_VALID_TOML + "\n[improvement_log]\nticket_id = 'WOR-254'\n"
+    path = write_policy(tmp_path, toml)
+    policy = EscalationPolicy.from_toml(path)
+    assert policy.improvement_log.review_threshold == 15
+    assert policy.improvement_log.runtime_threshold_minutes == 60
+
+
+def test_improvement_log_custom_threshold(tmp_path: Path) -> None:
+    toml = (
+        MINIMAL_VALID_TOML + "\n[improvement_log]\nticket_id = 'WOR-254'\n"
+        "review_threshold = 10\n"
+        "runtime_threshold_minutes = 30\n"
+    )
+    path = write_policy(tmp_path, toml)
+    policy = EscalationPolicy.from_toml(path)
+    assert policy.improvement_log.review_threshold == 10
+    assert policy.improvement_log.runtime_threshold_minutes == 30
+
+
+def test_improvement_log_absent_is_none(tmp_path: Path) -> None:
+    path = write_policy(tmp_path, MINIMAL_VALID_TOML)
+    policy = EscalationPolicy.from_toml(path)
+    assert policy.improvement_log is None
+
+
+def test_improvement_log_extra_keys_raise(tmp_path: Path) -> None:
+    toml = (
+        MINIMAL_VALID_TOML + "\n[improvement_log]\nticket_id = 'WOR-254'\n"
+        "fake_key = 123\n"
+    )
+    path = write_policy(tmp_path, toml)
+    with pytest.raises(ValidationError):
+        EscalationPolicy.from_toml(path)
