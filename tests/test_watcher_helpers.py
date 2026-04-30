@@ -108,7 +108,7 @@ def test_local_cmd_includes_model_flag(tmp_path: Path) -> None:
     cmd = build_worker_cmd("WOR-10", "local", tmp_path)
     assert "--model" in cmd
     idx = cmd.index("--model")
-    assert cmd[idx + 1] == "qwen3-coder:30b"
+    assert cmd[idx + 1] == "claude-sonnet-4-6"
 
 
 def test_cmd_includes_dangerously_skip_permissions(tmp_path: Path) -> None:
