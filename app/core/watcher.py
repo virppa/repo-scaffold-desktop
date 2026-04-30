@@ -384,6 +384,12 @@ class Watcher:
                 )
                 return
 
+        if effective_mode == "local":
+            if not self._services.probe_vllm_health():
+                logger.warning("Deferring %s — vLLM not ready yet", ticket_id)
+                return
+            self._services.ensure_litellm_running()
+
         worktree_path = create_worktree(self._repo_root, manifest)
         copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)
         write_worker_pytest_config(worktree_path)
@@ -395,10 +401,6 @@ class Watcher:
             ticket_id,
         )
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
-
-        if effective_mode == "local":
-            self._services.probe_vllm_health()
-            self._services.ensure_litellm_running()
 
         backed_up_plans = backup_plan_files()
         process = launch_worker(
