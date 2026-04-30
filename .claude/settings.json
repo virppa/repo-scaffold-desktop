@@ -69,7 +69,7 @@
     ]
   },
   "skills_source": "github:virppa/repo-scaffold-skills",
-  "skills_version": "v1.2.2",
+  "skills_version": "v1.2.3",
   "permissions": {
     "allow": [
       "Write(.claude/artifacts/**)",

@@ -176,15 +176,6 @@ If all four apply, note it explicitly: *"This ticket is a good candidate for int
 
 Once the human says to proceed, generate and write an `ExecutionManifest` JSON to disk. This is the handoff artifact the local worker reads — it must not require re-reading Linear or re-planning.
 
-**Before writing the manifest, run these three pre-flight checks:**
-
-**A. Context snippets** — Read the key functions the worker will call or test from `related_files_hint`. If any function's behaviour depends on a constant defined in another module or a non-obvious path indirection (e.g. `repo_root.parent / _WORKTREE_BASE` where `_WORKTREE_BASE` is in `watcher_types.py`), copy those lines verbatim into `context_snippets` as `"# <file>:<start>-<end>\n<lines>"`. Rule: if you needed to read a second file to understand the first, the worker needs it too — inline it as a snippet rather than leaving it in `related_files_hint` alone.
-
-**B. Tool constraint (test-only manifests)** — If every glob in `allowed_paths` targets only test files (e.g. `tests/**`, `tests/test_*.py`), prepend this entry to `implementation_constraints`:
-`"Fix code by editing test files directly with Edit/Write tools. Do not use Bash to experiment with Python path logic or prototype solutions — reason from the source code, then edit."`
-
-**C. AC function name validation** — For any function or method name mentioned in `acceptance_criteria`, verify it exists in the relevant source file: `grep -rn "def <name>" app/`. Correct any mismatch before writing the manifest — this prevents the worker from writing tests for functions that don't exist.
-
 Construct the manifest from the planning context gathered in steps 1–4:
 
 ```json
