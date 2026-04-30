@@ -256,7 +256,7 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_calls_ensure_ollama_and_litellm_for_local_effective_mode(
+def test_dispatch_calls_ensure_litellm_but_not_ollama_for_local_effective_mode(
     tmp_path: Path,
 ) -> None:
     manifest = _make_manifest(
@@ -286,7 +286,7 @@ def test_dispatch_calls_ensure_ollama_and_litellm_for_local_effective_mode(
     ):
         w._dispatch_next_ticket()
 
-    mock_ollama.assert_called_once()
+    mock_ollama.assert_not_called()
     mock_litellm.assert_called_once()
 
 

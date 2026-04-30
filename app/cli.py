@@ -114,8 +114,8 @@ def _build_parser() -> argparse.ArgumentParser:
     watcher.add_argument(
         "--max-local-workers",
         type=int,
-        default=1,
-        help="Maximum concurrent local worker sessions (default: 1).",
+        default=8,
+        help="Maximum concurrent local worker sessions (default: 8).",
     )
     watcher.add_argument(
         "--max-cloud-workers",

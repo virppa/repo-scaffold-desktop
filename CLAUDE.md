@@ -28,7 +28,7 @@ python -m app.cli watcher --worker-mode cloud    # force cloud (Anthropic API) f
 python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy + RTX 5090)
 # Also: WORKER_MODE=cloud python -m app.cli watcher
 # Concurrency (pools are independent — local is never starved by cloud burst):
-python -m app.cli watcher --max-local-workers 1  # default 1; GPU serial bottleneck
+python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concurrency
 python -m app.cli watcher --max-cloud-workers 3  # default 3; parallelisable
 python -m app.cli watcher --max-workers 2        # backward-compat alias: sets both to 2
 
@@ -214,14 +214,22 @@ No setup needed — hooks activate as soon as Claude Code loads the project.
 
 ## Local model development
 
-To run Claude Code routed to a local model (Ollama) instead of the Anthropic API:
+To run Claude Code routed to a local vLLM server instead of the Anthropic API:
 
 ```bash
-# 1. Copy the example config and start LiteLLM proxy (keep terminal open)
+# 1. Start vLLM server in WSL2 (keep terminal open)
+vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+  --max-model-len 131072 --max-num-seqs 16 \
+  --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \
+  --reasoning-parser qwen3 --enable-prefix-caching \
+  --language-model-only --safetensors-load-strategy prefetch \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder
+
+# 2. Copy the example config and start LiteLLM proxy (keep terminal open)
 cp litellm-local.yaml.example litellm-local.yaml
 litellm --config litellm-local.yaml --port 8082 --drop_params
 
-# 2. Launch Claude Code in a new terminal
+# 3. Launch Claude Code in a new terminal
 set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
 set ANTHROPIC_API_KEY=sk-dummy
 claude --model qwen3-coder:30b
