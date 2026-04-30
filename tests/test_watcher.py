@@ -409,3 +409,72 @@ def test_handle_signal_sigterm_terminates_litellm_proc_and_stops_running() -> No
     mock_proc.terminate.assert_called_once()
     assert w._services._litellm_proc is None
     assert w._running is False
+
+
+# ---------------------------------------------------------------------------
+# _log_startup_info — cloud mode omits max_local_workers
+# ---------------------------------------------------------------------------
+
+
+def test_startup_info_cloud_mode_omits_max_local_workers(
+    tmp_path: Path, caplog: pytest.LogCaptureContext
+) -> None:
+    w = Watcher(
+        linear_client=MagicMock(),
+        worker_mode="cloud",
+        max_local_workers=8,
+        max_cloud_workers=3,
+        repo_root=tmp_path,
+    )
+    with caplog.at_level(logging.INFO, logger="app.core.watcher"):
+        w._log_startup_info()
+    msg = caplog.text
+    assert "mode=cloud" in msg
+    assert "max_cloud_workers=3" in msg
+    assert "max_local_workers" not in msg
+
+
+# ---------------------------------------------------------------------------
+# _log_startup_info — local mode omits max_cloud_workers
+# ---------------------------------------------------------------------------
+
+
+def test_startup_info_local_mode_omits_max_cloud_workers(
+    tmp_path: Path, caplog: pytest.LogCaptureContext
+) -> None:
+    w = Watcher(
+        linear_client=MagicMock(),
+        worker_mode="local",
+        max_local_workers=8,
+        max_cloud_workers=3,
+        repo_root=tmp_path,
+    )
+    with caplog.at_level(logging.INFO, logger="app.core.watcher"):
+        w._log_startup_info()
+    msg = caplog.text
+    assert "mode=local" in msg
+    assert "max_local_workers=8" in msg
+    assert "max_cloud_workers" not in msg
+
+
+# ---------------------------------------------------------------------------
+# _log_startup_info — default mode logs both pool sizes
+# ---------------------------------------------------------------------------
+
+
+def test_startup_info_default_mode_logs_both_pool_sizes(
+    tmp_path: Path, caplog: pytest.LogCaptureContext
+) -> None:
+    w = Watcher(
+        linear_client=MagicMock(),
+        worker_mode="default",
+        max_local_workers=8,
+        max_cloud_workers=3,
+        repo_root=tmp_path,
+    )
+    with caplog.at_level(logging.INFO, logger="app.core.watcher"):
+        w._log_startup_info()
+    msg = caplog.text
+    assert "mode=default" in msg
+    assert "max_local_workers=8" in msg
+    assert "max_cloud_workers=3" in msg
