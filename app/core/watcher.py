@@ -10,7 +10,7 @@ Usage (via CLI):
 Worker modes:
     cloud   — spawn claude with clean env (no ANTHROPIC_BASE_URL); routes to
               Anthropic API unmodified.
-    local   — spawn claude --model qwen3-coder:30b via LiteLLM proxy on
+    local   — spawn claude --model claude-sonnet-4-6 via LiteLLM proxy on
               localhost:8082; auto-starts proxy if not already running.
     default — respect manifest.implementation_mode per ticket.
 """
@@ -55,6 +55,7 @@ class _ProcessedTicket(NamedTuple):
     epic_id: str | None
     worker_branch: str
     elapsed: float
+    succeeded: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +66,7 @@ class _ProcessedTicket(NamedTuple):
 class Watcher:
     """Orchestrates local worker sessions end-to-end."""
 
-    _POLL_INTERVAL = 30  # seconds between Linear polls
+    _POLL_INTERVAL = 10  # seconds between Linear polls
 
     def __init__(
         self,
@@ -451,6 +452,7 @@ class Watcher:
                     epic_id=worker.manifest.epic_id,
                     worker_branch=worker.manifest.worker_branch,
                     elapsed=elapsed,
+                    succeeded=rc == 0,
                 )
             )
         return still_running
@@ -516,15 +518,26 @@ class Watcher:
             return
 
         if self._processed_tickets:
+            failed = [t for t in self._processed_tickets if not t.succeeded]
+            succeeded = [t for t in self._processed_tickets if t.succeeded]
             epic_id = next(
                 (t.epic_id for t in self._processed_tickets if t.epic_id), None
             )
-            logger.info("All sub-tickets processed — epic complete")
+            if failed:
+                logger.warning(
+                    "All tickets processed — %d failed, %d succeeded",
+                    len(failed),
+                    len(succeeded),
+                )
+            else:
+                logger.info("All sub-tickets processed — epic complete")
             logger.info("%-15s  %-55s  %s", "Ticket", "PR URL", "Elapsed")
             for t in self._processed_tickets:
-                pr_url = self._lookup_pr_url(t.worker_branch)
+                pr_url = (
+                    self._lookup_pr_url(t.worker_branch) if t.succeeded else "(failed)"
+                )
                 logger.info("%-15s  %-55s  %.0fs", t.ticket_id, pr_url, t.elapsed)
-            if epic_id:
+            if epic_id and not failed:
                 try:
                     self._linear.post_comment(
                         epic_id,

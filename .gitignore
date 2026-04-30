@@ -66,3 +66,4 @@ bench_results.db
 
 # Benchmark config backups
 config/*.toml.bak
+bench.db
