@@ -9,12 +9,12 @@ model_list:
     #     --enable-auto-tool-choice --tool-call-parser qwen3_coder
     - model_name: claude-sonnet-4-6
       litellm_params:
-        model: openai_chat//home/antti/models/Qwen3.6-35B-A3B-NVFP4
+        model: openai//home/antti/models/Qwen3.6-35B-A3B-NVFP4
         api_base: http://localhost:8000/v1
         api_key: dummy
     - model_name: "*"
       litellm_params:
-        model: openai_chat//home/antti/models/Qwen3.6-35B-A3B-NVFP4
+        model: openai//home/antti/models/Qwen3.6-35B-A3B-NVFP4
         api_base: http://localhost:8000/v1
         api_key: dummy
 
@@ -35,4 +35,7 @@ model_list:
     #         num_ctx: 65536
 
 litellm_settings:
+  use_responses_api: false
+
+general_settings:
   use_responses_api: false

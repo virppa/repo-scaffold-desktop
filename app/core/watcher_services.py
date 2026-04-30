@@ -192,7 +192,11 @@ class ServiceManager:
             )
 
         logger.info("Starting LiteLLM proxy (port %d)…", _LITELLM_PORT)
-        env = {**os.environ, "PYTHONUTF8": "1"}
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "1",
+            "LITELLM_USE_RESPONSES_API": "False",
+        }
         litellm_cmd = [
             "litellm",
             "--config",
