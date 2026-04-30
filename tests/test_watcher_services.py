@@ -102,6 +102,20 @@ def test_probe_vllm_health_opens_terminal_on_windows(tmp_path: Path) -> None:
     assert "wsl" in cmd
 
 
+def test_probe_vllm_health_opens_terminal_only_once(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch("http.client.HTTPConnection") as mock_conn_cls,
+        patch("sys.platform", "win32"),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
+        mgr.probe_vllm_health()
+        mgr.probe_vllm_health()  # second call — terminal must not open again
+
+    mock_popen.assert_called_once()
+
+
 def test_probe_vllm_health_handles_missing_wt_exe(tmp_path: Path) -> None:
     mgr = ServiceManager(tmp_path)
     with (
