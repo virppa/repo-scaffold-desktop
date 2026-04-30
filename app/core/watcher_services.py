@@ -83,8 +83,9 @@ class ServiceManager:
                     "--",
                     "wsl",
                     "bash",
+                    "-l",
                     "-c",
-                    _VLLM_FP8_CMD + "; exec bash",
+                    _VLLM_FP8_CMD,
                 ],
                 creationflags=(
                     getattr(subprocess, "DETACHED_PROCESS", 0)
