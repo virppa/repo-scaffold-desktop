@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from app.core.watcher_services import ServiceManager
+from app.core.watcher_services import _VLLM_FP8_CMD, ServiceManager
 
 # ---------------------------------------------------------------------------
 # ServiceManager.stop  (formerly _stop_litellm_proxy via Watcher shim)
@@ -71,7 +71,7 @@ def test_probe_vllm_health_returns_true_when_up(tmp_path: Path) -> None:
         result = mgr.probe_vllm_health()
 
     assert result is True
-    mock_conn.request.assert_called_once_with("GET", "/health")
+    mock_conn.request.assert_called_once_with("GET", "/v1/models")
 
 
 def test_probe_vllm_health_returns_false_and_logs_when_down(tmp_path: Path) -> None:
@@ -84,6 +84,27 @@ def test_probe_vllm_health_returns_false_and_logs_when_down(tmp_path: Path) -> N
         result = mgr.probe_vllm_health()
 
     assert result is False
+    assert mgr._vllm_warned is True
+
+
+def test_probe_vllm_health_logs_short_message_on_repeat_failure(
+    tmp_path: Path, caplog: Any
+) -> None:
+    import logging
+
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch("http.client.HTTPConnection") as mock_conn_cls,
+        patch("sys.platform", "linux"),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher_services"),
+    ):
+        mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
+        mgr.probe_vllm_health()  # first call — logs full command
+        caplog.clear()
+        mgr.probe_vllm_health()  # second call — short message only
+
+    # Full vLLM command should NOT appear on the second call
+    assert _VLLM_FP8_CMD not in caplog.text
 
 
 def test_probe_vllm_health_opens_terminal_on_windows(tmp_path: Path) -> None:
@@ -125,6 +146,75 @@ def test_probe_vllm_health_handles_missing_wt_exe(tmp_path: Path) -> None:
     ):
         mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
         mgr.probe_vllm_health()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# ServiceManager._litellm_serving / ensure_litellm_running
+# ---------------------------------------------------------------------------
+
+
+def test_litellm_serving_returns_true_when_http_responds(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    mock_conn = MagicMock()
+    with patch("http.client.HTTPConnection", return_value=mock_conn):
+        result = mgr._litellm_serving()
+    assert result is True
+    mock_conn.request.assert_called_once_with("GET", "/health")
+
+
+def test_litellm_serving_returns_false_on_connection_error(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    with patch("http.client.HTTPConnection") as mock_cls:
+        mock_cls.return_value.request.side_effect = OSError("connection refused")
+        result = mgr._litellm_serving()
+    assert result is False
+
+
+def test_ensure_litellm_running_skips_start_when_already_serving(
+    tmp_path: Path,
+) -> None:
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch.object(mgr, "_litellm_serving", return_value=True),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mgr.ensure_litellm_running()
+    mock_popen.assert_not_called()
+
+
+def test_wait_for_litellm_ready_retries_until_serving(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    call_count = 0
+
+    def _serving_side_effect() -> bool:
+        nonlocal call_count
+        call_count += 1
+        return call_count >= 3
+
+    with (
+        patch.object(mgr, "_litellm_serving", side_effect=_serving_side_effect),
+        patch("time.sleep"),
+    ):
+        mgr._wait_for_litellm_ready()
+
+    assert call_count == 3
+
+
+def test_wait_for_litellm_ready_raises_when_proc_exits(tmp_path: Path) -> None:
+    import pytest
+
+    mgr = ServiceManager(tmp_path)
+    mock_proc = MagicMock(spec=subprocess.Popen)
+    mock_proc.poll.return_value = 1
+    mock_proc.returncode = 1
+    mgr._litellm_proc = mock_proc
+
+    with (
+        patch.object(mgr, "_litellm_serving", return_value=False),
+        patch("time.sleep"),
+        pytest.raises(RuntimeError, match="exited"),
+    ):
+        mgr._wait_for_litellm_ready()
 
 
 # ---------------------------------------------------------------------------

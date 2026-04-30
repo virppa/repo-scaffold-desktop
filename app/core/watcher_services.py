@@ -45,29 +45,39 @@ class ServiceManager:
         self._litellm_proc: subprocess.Popen[bytes] | None = None
         self._running = True
         self._vllm_terminal_opened = False
+        self._vllm_warned = False
 
     def probe_vllm_health(self) -> bool:
-        """Check whether vLLM is responding on localhost:_VLLM_PORT/health.
+        """Check whether vLLM is ready to serve on localhost:_VLLM_PORT.
 
-        Returns True if healthy. If not responding, logs the FP8 server command
-        at WARNING level and on Windows opens a new WSL2 Windows Terminal tab
-        so the server can be started without leaving the watcher window.
+        Uses /v1/models (not /health): /health returns 200 as soon as the HTTP
+        server starts, before model weights are loaded. /v1/models only returns
+        200 once the model is registered and ready for inference.
+
+        Returns True if ready. Logs at WARNING level when not ready; the full
+        startup command is printed only on the first failure to avoid log spam.
+        On Windows opens a new WSL2 terminal tab on the first failure only.
         """
         try:
             conn = http.client.HTTPConnection("localhost", _VLLM_PORT, timeout=3)
-            conn.request("GET", "/health")
+            conn.request("GET", "/v1/models")
             resp = conn.getresponse()
             if resp.status == 200:
-                logger.info("vLLM health check passed (port %d)", _VLLM_PORT)
+                logger.info("vLLM ready (port %d)", _VLLM_PORT)
                 return True
         except (OSError, http.client.HTTPException):
             pass
 
-        logger.warning(
-            "vLLM not responding on port %d — start the server in WSL2:\n\n  %s\n",
-            _VLLM_PORT,
-            _VLLM_FP8_CMD,
-        )
+        if not self._vllm_warned:
+            logger.warning(
+                "vLLM not responding on port %d — start the server in WSL2:\n\n  %s\n",
+                _VLLM_PORT,
+                _VLLM_FP8_CMD,
+            )
+            self._vllm_warned = True
+        else:
+            logger.warning("vLLM not ready yet on port %d — waiting…", _VLLM_PORT)
+
         if sys.platform == "win32" and not self._vllm_terminal_opened:
             self._open_vllm_terminal()
             self._vllm_terminal_opened = True
@@ -174,12 +184,19 @@ class ServiceManager:
                 env=env,
             )
 
+    def _litellm_serving(self) -> bool:
+        """Return True if LiteLLM is accepting HTTP requests on _LITELLM_PORT."""
+        try:
+            conn = http.client.HTTPConnection("localhost", _LITELLM_PORT, timeout=2)
+            conn.request("GET", "/health")
+            conn.getresponse()
+            return True
+        except (OSError, http.client.HTTPException):
+            return False
+
     def ensure_litellm_running(self) -> None:
         """Start the LiteLLM proxy if not already listening on _LITELLM_PORT."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            already_up = sock.connect_ex(("localhost", _LITELLM_PORT)) == 0
-
-        if already_up:
+        if self._litellm_serving():
             logger.info("LiteLLM proxy already running on port %d", _LITELLM_PORT)
             return
 
@@ -221,7 +238,7 @@ class ServiceManager:
         self._wait_for_litellm_ready()
 
     def _wait_for_litellm_ready(self, timeout: float = 60.0) -> None:
-        """Poll TCP until LiteLLM's port accepts connections or process dies."""
+        """Poll HTTP until LiteLLM is serving or process dies."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self._litellm_proc and self._litellm_proc.poll() is not None:
@@ -230,10 +247,8 @@ class ServiceManager:
                     f"LiteLLM proxy exited (rc={rc}). "
                     f"Check .claude/litellm.log for details."
                 )
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
-                if sock.connect_ex(("localhost", _LITELLM_PORT)) == 0:
-                    return
+            if self._litellm_serving():
+                return
             time.sleep(0.5)
         raise TimeoutError(
             f"LiteLLM proxy not ready after {timeout}s. "
