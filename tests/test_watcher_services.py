@@ -113,6 +113,47 @@ def test_probe_vllm_health_handles_missing_wt_exe(tmp_path: Path) -> None:
         mgr.probe_vllm_health()  # must not raise
 
 
+# ---------------------------------------------------------------------------
+# ServiceManager._start_litellm_windows
+# ---------------------------------------------------------------------------
+
+
+def test_start_litellm_windows_opens_wt_tab(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    with patch("subprocess.Popen") as mock_popen:
+        mgr._start_litellm_windows(["litellm", "--config", "cfg.yaml"], {})
+
+    mock_popen.assert_called_once()
+    cmd = mock_popen.call_args[0][0]
+    assert cmd[0] == "wt.exe"
+    assert "new-tab" in cmd
+    assert "cmd.exe" in cmd  # shell wrapper so PATHEXT resolves litellm.bat/.exe
+    assert "/k" in cmd
+    assert "litellm" in cmd[-1]  # shell_cmd string is last arg
+    assert mgr._litellm_proc is None  # wt.exe exits immediately; not tracked
+
+
+def test_start_litellm_windows_falls_back_to_console_when_no_wt(
+    tmp_path: Path,
+) -> None:
+    mgr = ServiceManager(tmp_path)
+    with patch(
+        "subprocess.Popen",
+        side_effect=[FileNotFoundError("wt.exe not found"), MagicMock()],
+    ) as mock_popen:
+        mgr._start_litellm_windows(["litellm", "--config", "cfg.yaml"], {})
+
+    assert mock_popen.call_count == 2
+    fallback_cmd = mock_popen.call_args[0][0]
+    assert fallback_cmd[0] == "litellm"
+    assert mgr._litellm_proc is not None
+
+
+# ---------------------------------------------------------------------------
+# ServiceManager.ensure_ollama_running
+# ---------------------------------------------------------------------------
+
+
 def test_ensure_ollama_running_already_up(tmp_path: Path) -> None:
     mgr = ServiceManager(tmp_path)
     with (

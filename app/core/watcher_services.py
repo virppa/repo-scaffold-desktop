@@ -28,7 +28,7 @@ from app.core.watcher_types import (
 logger = logging.getLogger(__name__)
 
 _VLLM_FP8_CMD = (
-    "vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+    "/home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4"
     " --max-model-len 262144 --kv-cache-dtype fp8 --max-num-seqs 16"
     " --max-num-batched-tokens 4096 --reasoning-parser qwen3"
     " --enable-prefix-caching --language-model-only"
@@ -83,8 +83,9 @@ class ServiceManager:
                     "--",
                     "wsl",
                     "bash",
+                    "-i",
                     "-c",
-                    _VLLM_FP8_CMD + "; exec bash",
+                    _VLLM_FP8_CMD,
                 ],
                 creationflags=(
                     getattr(subprocess, "DETACHED_PROCESS", 0)
@@ -142,6 +143,35 @@ class ServiceManager:
             raise RuntimeError("Watcher shutting down")
         raise TimeoutError(f"Ollama not ready after {timeout}s.")
 
+    def _start_litellm_windows(self, cmd: list[str], env: dict[str, str]) -> None:
+        """Open a new Windows Terminal tab for the LiteLLM proxy.
+
+        wt.exe exits immediately after opening the tab, so we cannot hold a
+        process handle for it — _litellm_proc stays None and stop() cannot
+        terminate it programmatically.  Falls back to CREATE_NEW_CONSOLE if
+        wt.exe is not available.
+        """
+        try:
+            # cmd.exe /k wraps litellm so the shell resolves .bat/.cmd PATH
+            # extensions; /k keeps the tab open after the process exits.
+            shell_cmd = subprocess.list2cmdline(cmd)
+            subprocess.Popen(  # nosec B603 B607
+                ["wt.exe", "-w", "0", "new-tab", "--", "cmd.exe", "/k", shell_cmd],
+                creationflags=(
+                    getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                ),
+                env=env,
+            )
+            logger.info("Opened Windows Terminal tab for LiteLLM proxy")
+        except FileNotFoundError:
+            logger.warning("wt.exe not found — falling back to new console window")
+            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
+                cmd,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                env=env,
+            )
+
     def ensure_litellm_running(self) -> None:
         """Start the LiteLLM proxy if not already listening on _LITELLM_PORT."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -161,33 +191,23 @@ class ServiceManager:
 
         logger.info("Starting LiteLLM proxy (port %d)…", _LITELLM_PORT)
         env = {**os.environ, "PYTHONUTF8": "1"}
+        litellm_cmd = [
+            "litellm",
+            "--config",
+            str(config_path),
+            "--port",
+            str(_LITELLM_PORT),
+            "--drop_params",
+        ]
         if sys.platform == "win32":
-            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
-                [
-                    "litellm",
-                    "--config",
-                    str(config_path),
-                    "--port",
-                    str(_LITELLM_PORT),
-                    "--drop_params",
-                ],
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
-                env=env,
-            )
+            self._start_litellm_windows(litellm_cmd, env)
         else:
             log_path = self._repo_root / ".claude" / "litellm.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)
             log_file = open(log_path, "wb")  # noqa: SIM115
             logger.info("LiteLLM log: %s", log_path)
             self._litellm_proc = subprocess.Popen(  # nosec B603 B607
-                [
-                    "litellm",
-                    "--config",
-                    str(config_path),
-                    "--port",
-                    str(_LITELLM_PORT),
-                    "--drop_params",
-                ],
+                litellm_cmd,
                 stdout=log_file,
                 stderr=log_file,
                 env=env,
