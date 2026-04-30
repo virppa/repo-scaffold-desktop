@@ -562,6 +562,8 @@ def test_dispatch_proceeds_when_vllm_ready(tmp_path: Path) -> None:
         patch("app.core.watcher.backup_plan_files", return_value=[]),
         patch("app.core.watcher.launch_worker", return_value=fake_process),
         patch.object(w._services, "probe_vllm_health", return_value=True),
+        patch.object(w._services, "ensure_ollama_running"),
+        patch.object(w._services, "ensure_litellm_running"),
     ):
         w._dispatch_next_ticket()
 
