@@ -45,6 +45,7 @@ class ServiceManager:
         self._litellm_proc: subprocess.Popen[bytes] | None = None
         self._running = True
         self._vllm_terminal_opened = False
+        self._vllm_warned = False
 
     def probe_vllm_health(self) -> bool:
         """Check whether vLLM is ready to serve on localhost:_VLLM_PORT.
@@ -53,8 +54,9 @@ class ServiceManager:
         server starts, before model weights are loaded. /v1/models only returns
         200 once the model is registered and ready for inference.
 
-        Returns True if ready. If not, logs the FP8 server command at WARNING
-        level and on Windows opens a new WSL2 Windows Terminal tab.
+        Returns True if ready. Logs at WARNING level when not ready; the full
+        startup command is printed only on the first failure to avoid log spam.
+        On Windows opens a new WSL2 terminal tab on the first failure only.
         """
         try:
             conn = http.client.HTTPConnection("localhost", _VLLM_PORT, timeout=3)
@@ -66,11 +68,16 @@ class ServiceManager:
         except (OSError, http.client.HTTPException):
             pass
 
-        logger.warning(
-            "vLLM not responding on port %d — start the server in WSL2:\n\n  %s\n",
-            _VLLM_PORT,
-            _VLLM_FP8_CMD,
-        )
+        if not self._vllm_warned:
+            logger.warning(
+                "vLLM not responding on port %d — start the server in WSL2:\n\n  %s\n",
+                _VLLM_PORT,
+                _VLLM_FP8_CMD,
+            )
+            self._vllm_warned = True
+        else:
+            logger.warning("vLLM not ready yet on port %d — waiting…", _VLLM_PORT)
+
         if sys.platform == "win32" and not self._vllm_terminal_opened:
             self._open_vllm_terminal()
             self._vllm_terminal_opened = True

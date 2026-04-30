@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from app.core.watcher_services import ServiceManager
+from app.core.watcher_services import _VLLM_FP8_CMD, ServiceManager
 
 # ---------------------------------------------------------------------------
 # ServiceManager.stop  (formerly _stop_litellm_proxy via Watcher shim)
@@ -84,6 +84,27 @@ def test_probe_vllm_health_returns_false_and_logs_when_down(tmp_path: Path) -> N
         result = mgr.probe_vllm_health()
 
     assert result is False
+    assert mgr._vllm_warned is True
+
+
+def test_probe_vllm_health_logs_short_message_on_repeat_failure(
+    tmp_path: Path, caplog: Any
+) -> None:
+    import logging
+
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch("http.client.HTTPConnection") as mock_conn_cls,
+        patch("sys.platform", "linux"),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher_services"),
+    ):
+        mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
+        mgr.probe_vllm_health()  # first call — logs full command
+        caplog.clear()
+        mgr.probe_vllm_health()  # second call — short message only
+
+    # Full vLLM command should NOT appear on the second call
+    assert _VLLM_FP8_CMD not in caplog.text
 
 
 def test_probe_vllm_health_opens_terminal_on_windows(tmp_path: Path) -> None:
