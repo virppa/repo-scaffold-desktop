@@ -47,18 +47,21 @@ class ServiceManager:
         self._vllm_terminal_opened = False
 
     def probe_vllm_health(self) -> bool:
-        """Check whether vLLM is responding on localhost:_VLLM_PORT/health.
+        """Check whether vLLM is ready to serve on localhost:_VLLM_PORT.
 
-        Returns True if healthy. If not responding, logs the FP8 server command
-        at WARNING level and on Windows opens a new WSL2 Windows Terminal tab
-        so the server can be started without leaving the watcher window.
+        Uses /v1/models (not /health): /health returns 200 as soon as the HTTP
+        server starts, before model weights are loaded. /v1/models only returns
+        200 once the model is registered and ready for inference.
+
+        Returns True if ready. If not, logs the FP8 server command at WARNING
+        level and on Windows opens a new WSL2 Windows Terminal tab.
         """
         try:
             conn = http.client.HTTPConnection("localhost", _VLLM_PORT, timeout=3)
-            conn.request("GET", "/health")
+            conn.request("GET", "/v1/models")
             resp = conn.getresponse()
             if resp.status == 200:
-                logger.info("vLLM health check passed (port %d)", _VLLM_PORT)
+                logger.info("vLLM ready (port %d)", _VLLM_PORT)
                 return True
         except (OSError, http.client.HTTPException):
             pass
