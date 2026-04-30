@@ -12,11 +12,17 @@ model_list:
         model: hosted_vllm//home/antti/models/Qwen3.6-35B-A3B-NVFP4
         api_base: http://localhost:8000/v1
         api_key: dummy
+        temperature: 0.6
+        top_p: 0.95
+        top_k: 20
     - model_name: "*"
       litellm_params:
         model: hosted_vllm//home/antti/models/Qwen3.6-35B-A3B-NVFP4
         api_base: http://localhost:8000/v1
         api_key: dummy
+        temperature: 0.6
+        top_p: 0.95
+        top_k: 20
 
     # --- Ollama fallback ---
     # - model_name: claude-sonnet-4-6
