@@ -28,7 +28,7 @@ from app.core.watcher_types import (
 logger = logging.getLogger(__name__)
 
 _VLLM_FP8_CMD = (
-    "vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+    "/home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4"
     " --max-model-len 262144 --kv-cache-dtype fp8 --max-num-seqs 16"
     " --max-num-batched-tokens 4096 --reasoning-parser qwen3"
     " --enable-prefix-caching --language-model-only"
@@ -84,7 +84,6 @@ class ServiceManager:
                     "wsl",
                     "bash",
                     "-i",
-                    "-l",
                     "-c",
                     _VLLM_FP8_CMD,
                 ],
