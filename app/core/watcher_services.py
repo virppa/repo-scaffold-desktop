@@ -22,9 +22,19 @@ from app.core.watcher_types import (
     _LITELLM_PORT,
     _OLLAMA_KEEPALIVE,
     _OLLAMA_PORT,
+    _VLLM_PORT,
 )
 
 logger = logging.getLogger(__name__)
+
+_VLLM_FP8_CMD = (
+    "vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+    " --max-model-len 262144 --kv-cache-dtype fp8 --max-num-seqs 16"
+    " --max-num-batched-tokens 4096 --reasoning-parser qwen3"
+    " --enable-prefix-caching --language-model-only"
+    " --safetensors-load-strategy prefetch"
+    " --enable-auto-tool-choice --tool-call-parser qwen3_coder"
+)
 
 
 class ServiceManager:
@@ -34,6 +44,58 @@ class ServiceManager:
         self._repo_root = repo_root
         self._litellm_proc: subprocess.Popen[bytes] | None = None
         self._running = True
+
+    def probe_vllm_health(self) -> bool:
+        """Check whether vLLM is responding on localhost:_VLLM_PORT/health.
+
+        Returns True if healthy. If not responding, logs the FP8 server command
+        at WARNING level and on Windows opens a new WSL2 Windows Terminal tab
+        so the server can be started without leaving the watcher window.
+        """
+        try:
+            conn = http.client.HTTPConnection("localhost", _VLLM_PORT, timeout=3)
+            conn.request("GET", "/health")
+            resp = conn.getresponse()
+            if resp.status == 200:
+                logger.info("vLLM health check passed (port %d)", _VLLM_PORT)
+                return True
+        except (OSError, http.client.HTTPException):
+            pass
+
+        logger.warning(
+            "vLLM not responding on port %d — start the server in WSL2:\n\n  %s\n",
+            _VLLM_PORT,
+            _VLLM_FP8_CMD,
+        )
+        if sys.platform == "win32":
+            self._open_vllm_terminal()
+        return False
+
+    def _open_vllm_terminal(self) -> None:
+        """Open a new Windows Terminal tab running the vLLM FP8 command in WSL2."""
+        try:
+            subprocess.Popen(  # nosec B603 B607
+                [
+                    "wt.exe",
+                    "-w",
+                    "0",
+                    "new-tab",
+                    "--",
+                    "wsl",
+                    "bash",
+                    "-c",
+                    _VLLM_FP8_CMD + "; exec bash",
+                ],
+                creationflags=(
+                    getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                ),
+            )
+            logger.info("Opened WSL2 terminal tab for vLLM server")
+        except FileNotFoundError:
+            logger.warning("wt.exe not found — start vLLM manually in WSL2")
+        except OSError as exc:
+            logger.warning("Could not open WSL2 terminal: %s", exc)
 
     def ensure_ollama_running(self) -> None:
         """Start Ollama with the configured model if not already on _OLLAMA_PORT."""

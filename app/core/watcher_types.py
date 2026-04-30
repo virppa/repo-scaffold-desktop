@@ -23,6 +23,7 @@ _LITELLM_CONFIG = "litellm-local.yaml"
 _LOCAL_MODEL = "qwen3-coder:30b"
 _LITELLM_BASE_URL = f"http://localhost:{_LITELLM_PORT}"
 _OLLAMA_PORT = 11434
+_VLLM_PORT = 8000
 _OLLAMA_KEEPALIVE = "120m"
 _WORKTREE_BASE = Path("worktrees")
 

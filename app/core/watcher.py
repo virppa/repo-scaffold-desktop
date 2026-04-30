@@ -109,6 +109,9 @@ class Watcher:
         self._register_signals()
         self._cleanup_orphaned_worktrees()
 
+        if self._mode in ("local", "default"):
+            self._services.probe_vllm_health()
+
         if self._mode == "local":
             self._services.ensure_litellm_running()
 
@@ -393,6 +396,7 @@ class Watcher:
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
 
         if effective_mode == "local":
+            self._services.probe_vllm_health()
             self._services.ensure_litellm_running()
 
         backed_up_plans = backup_plan_files()

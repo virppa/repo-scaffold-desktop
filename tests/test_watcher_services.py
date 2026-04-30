@@ -55,6 +55,64 @@ def test_stop_noop_when_no_proc(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# ServiceManager.probe_vllm_health
+# ---------------------------------------------------------------------------
+
+
+def test_probe_vllm_health_returns_true_when_up(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_conn = MagicMock()
+    mock_conn.getresponse.return_value = mock_resp
+
+    with patch("http.client.HTTPConnection", return_value=mock_conn):
+        result = mgr.probe_vllm_health()
+
+    assert result is True
+    mock_conn.request.assert_called_once_with("GET", "/health")
+
+
+def test_probe_vllm_health_returns_false_and_logs_when_down(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch("http.client.HTTPConnection") as mock_conn_cls,
+        patch("sys.platform", "linux"),  # non-Windows: no terminal spawn
+    ):
+        mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
+        result = mgr.probe_vllm_health()
+
+    assert result is False
+
+
+def test_probe_vllm_health_opens_terminal_on_windows(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch("http.client.HTTPConnection") as mock_conn_cls,
+        patch("sys.platform", "win32"),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
+        mgr.probe_vllm_health()
+
+    mock_popen.assert_called_once()
+    cmd = mock_popen.call_args[0][0]
+    assert "wt.exe" in cmd
+    assert "wsl" in cmd
+
+
+def test_probe_vllm_health_handles_missing_wt_exe(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch("http.client.HTTPConnection") as mock_conn_cls,
+        patch("sys.platform", "win32"),
+        patch("subprocess.Popen", side_effect=FileNotFoundError("wt.exe not found")),
+    ):
+        mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
+        mgr.probe_vllm_health()  # must not raise
+
+
 def test_ensure_ollama_running_already_up(tmp_path: Path) -> None:
     mgr = ServiceManager(tmp_path)
     with (

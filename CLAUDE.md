@@ -219,7 +219,7 @@ To run Claude Code routed to a local vLLM server instead of the Anthropic API:
 ```bash
 # 1. Start vLLM server in WSL2 (keep terminal open)
 vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
-  --max-model-len 131072 --max-num-seqs 16 \
+  --max-model-len 262144 --max-num-seqs 16 \
   --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \
   --reasoning-parser qwen3 --enable-prefix-caching \
   --language-model-only --safetensors-load-strategy prefetch \
