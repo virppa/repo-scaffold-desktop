@@ -71,7 +71,7 @@ def test_probe_vllm_health_returns_true_when_up(tmp_path: Path) -> None:
         result = mgr.probe_vllm_health()
 
     assert result is True
-    mock_conn.request.assert_called_once_with("GET", "/health")
+    mock_conn.request.assert_called_once_with("GET", "/v1/models")
 
 
 def test_probe_vllm_health_returns_false_and_logs_when_down(tmp_path: Path) -> None:
