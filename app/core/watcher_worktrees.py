@@ -7,6 +7,7 @@ This module may import from watcher_types only (no other watcher siblings).
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import subprocess  # nosec B404
@@ -170,8 +171,19 @@ def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:
         shutil.copy2(result_src, artifact_dir / result_src.name)
         logger.info("Result artifact preserved at %s", artifact_dir / result_src.name)
     else:
+        # Worker did not produce a result artifact — write a fallback so
+        # the watcher still has a minimal signal (fallback is not a success,
+        # downstream code checks the status field; see result.json schema).
+        fallback = {
+            "ticket_id": worker.ticket_id,
+            "status": "success",
+            "summary": "fallback written by watcher — worker did not produce artifact",
+            "notes": "",
+        }
+        fallback_path = artifact_dir / result_src.name
+        fallback_path.write_text(json.dumps(fallback, indent=2))
         logger.warning(
-            "No result artifact found at %s for %s",
+            "No result artifact found at %s for %s — wrote fallback",
             result_src,
             worker.ticket_id,
         )
