@@ -127,7 +127,9 @@ def test_start_litellm_windows_opens_wt_tab(tmp_path: Path) -> None:
     cmd = mock_popen.call_args[0][0]
     assert cmd[0] == "wt.exe"
     assert "new-tab" in cmd
-    assert "litellm" in cmd
+    assert "cmd.exe" in cmd  # shell wrapper so PATHEXT resolves litellm.bat/.exe
+    assert "/k" in cmd
+    assert "litellm" in cmd[-1]  # shell_cmd string is last arg
     assert mgr._litellm_proc is None  # wt.exe exits immediately; not tracked
 
 

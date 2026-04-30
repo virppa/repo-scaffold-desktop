@@ -152,8 +152,11 @@ class ServiceManager:
         wt.exe is not available.
         """
         try:
+            # cmd.exe /k wraps litellm so the shell resolves .bat/.cmd PATH
+            # extensions; /k keeps the tab open after the process exits.
+            shell_cmd = subprocess.list2cmdline(cmd)
             subprocess.Popen(  # nosec B603 B607
-                ["wt.exe", "-w", "0", "new-tab", "--"] + cmd,
+                ["wt.exe", "-w", "0", "new-tab", "--", "cmd.exe", "/k", shell_cmd],
                 creationflags=(
                     getattr(subprocess, "DETACHED_PROCESS", 0)
                     | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
