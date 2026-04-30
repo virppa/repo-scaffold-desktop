@@ -24,8 +24,14 @@ from app.core.watcher_types import (
 # ---------------------------------------------------------------------------
 
 
-def _parse_worker_usage(log_path: Path) -> tuple[int | None, int | None]:
-    """Read stream-json worker log and return (local_tokens, context_compactions)."""
+def _parse_worker_usage(
+    log_path: Path,
+) -> tuple[int | None, int | None, int | None]:
+    """Read stream-json worker log and return (input_tokens, output_tokens,
+
+    context_compactions).  Returns three-tuple to separate prefill tokens
+    from generation tokens, enabling per-second throughput tracking.
+    """
     try:
         with log_path.open(encoding="utf-8") as f:
             for raw in f:
@@ -38,14 +44,17 @@ def _parse_worker_usage(log_path: Path) -> tuple[int | None, int | None]:
                     continue
                 if obj.get("type") == "result":
                     usage = obj.get("usage") or {}
-                    local_tokens = (usage.get("input_tokens") or 0) + (
-                        usage.get("output_tokens") or 0
-                    )
+                    input_tokens = usage.get("input_tokens")
+                    output_tokens = usage.get("output_tokens")
                     context_compactions = obj.get("context_compactions")
-                    return local_tokens, context_compactions
+                    # Return None when either token field is missing so the
+                    # caller can decide whether to compute a sum.
+                    if input_tokens is None or output_tokens is None:
+                        return None, None, context_compactions
+                    return int(input_tokens), int(output_tokens), context_compactions
     except Exception:
-        return None, None
-    return None, None
+        return None, None, None
+    return None, None, None
 
 
 # ---------------------------------------------------------------------------

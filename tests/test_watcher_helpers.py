@@ -189,8 +189,9 @@ def test_parse_worker_usage_success(tmp_path: Path) -> None:
         }
     )
     log = _write_log(tmp_path, ['{"type":"other","x":1}', result_line])
-    tokens, compactions = _parse_worker_usage(log)
-    assert tokens == 1200
+    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    assert input_tok == 1000
+    assert output_tok == 200
     assert compactions == 3
 
 
@@ -199,14 +200,17 @@ def test_parse_worker_usage_no_context_compactions(tmp_path: Path) -> None:
         {"type": "result", "usage": {"input_tokens": 500, "output_tokens": 50}}
     )
     log = _write_log(tmp_path, [result_line])
-    tokens, compactions = _parse_worker_usage(log)
-    assert tokens == 550
+    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    assert input_tok == 500
+    assert output_tok == 50
     assert compactions is None
 
 
 def test_parse_worker_usage_missing_log(tmp_path: Path) -> None:
-    tokens, compactions = _parse_worker_usage(tmp_path / "no_such_file.log")
-    assert tokens is None
+    log = tmp_path / "no_such_file.log"
+    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    assert input_tok is None
+    assert output_tok is None
     assert compactions is None
 
 
@@ -218,16 +222,18 @@ def test_parse_worker_usage_no_result_line(tmp_path: Path) -> None:
             json.dumps({"type": "assistant", "content": "hello"}),
         ],
     )
-    tokens, compactions = _parse_worker_usage(log)
-    assert tokens is None
+    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    assert input_tok is None
+    assert output_tok is None
     assert compactions is None
 
 
 def test_parse_worker_usage_malformed_json(tmp_path: Path) -> None:
     log = tmp_path / "worker.log"
     log.write_text("not json at all\n{broken\n", encoding="utf-8")
-    tokens, compactions = _parse_worker_usage(log)
-    assert tokens is None
+    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    assert input_tok is None
+    assert output_tok is None
     assert compactions is None
 
 
@@ -241,8 +247,9 @@ def test_parse_worker_usage_mixed_valid_invalid_lines(tmp_path: Path) -> None:
     )
     log = tmp_path / "worker.log"
     log.write_text("garbage line\n" + result_line + "\n", encoding="utf-8")
-    tokens, compactions = _parse_worker_usage(log)
-    assert tokens == 400
+    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    assert input_tok == 300
+    assert output_tok == 100
     assert compactions == 1
 
 
@@ -254,15 +261,17 @@ def test_parse_worker_usage_returns_first_result_line(tmp_path: Path) -> None:
         {"type": "result", "usage": {"input_tokens": 999, "output_tokens": 999}}
     )
     log = _write_log(tmp_path, [first, second])
-    tokens, _ = _parse_worker_usage(log)
-    assert tokens == 15
+    input_tok, output_tok, _ = _parse_worker_usage(log)
+    assert input_tok == 10
+    assert output_tok == 5
 
 
 def test_parse_worker_usage_empty_file(tmp_path: Path) -> None:
     log = tmp_path / "empty.log"
     log.write_text("", encoding="utf-8")
-    tokens, compactions = _parse_worker_usage(log)
-    assert tokens is None
+    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    assert input_tok is None
+    assert output_tok is None
     assert compactions is None
 
 
@@ -297,3 +306,44 @@ def test_parse_ollama_model_raises_when_file_missing(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError):
         _parse_ollama_model(tmp_path / "nonexistent.yaml")
+
+
+# ---------------------------------------------------------------------------
+# _parse_worker_usage — 3-tuple return (WOR-230)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_worker_usage_returns_separate_tokens(tmp_path: Path) -> None:
+    """input_tokens and output_tokens are returned separately."""
+    result_line = json.dumps(
+        {
+            "type": "result",
+            "usage": {"input_tokens": 12000, "output_tokens": 800},
+        }
+    )
+    log = _write_log(tmp_path, [result_line])
+    input_tok, output_tok, _ = _parse_worker_usage(log)
+    assert input_tok == 12000
+    assert output_tok == 800
+
+
+def test_parse_worker_usage_missing_input_token_returns_none(
+    tmp_path: Path,
+) -> None:
+    """When input_tokens is absent, all tokens are None."""
+    result_line = json.dumps({"type": "result", "usage": {"output_tokens": 500}})
+    log = _write_log(tmp_path, [result_line])
+    input_tok, output_tok, _ = _parse_worker_usage(log)
+    assert input_tok is None
+    assert output_tok is None
+
+
+def test_parse_worker_usage_missing_output_token_returns_none(
+    tmp_path: Path,
+) -> None:
+    """When output_tokens is absent, all tokens are None."""
+    result_line = json.dumps({"type": "result", "usage": {"input_tokens": 3000}})
+    log = _write_log(tmp_path, [result_line])
+    input_tok, output_tok, _ = _parse_worker_usage(log)
+    assert input_tok is None
+    assert output_tok is None
