@@ -77,7 +77,7 @@ def test_create_pr_pushes_branch_before_gh_pr(tmp_path: Path) -> None:
 def test_create_pr_logs_warning_on_auto_merge_failure(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    manifest = _make_manifest()
+    manifest = _make_manifest(base_branch="epic/wor-96-parent")
     pr_url = "https://github.com/example/pr/1"
 
     def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
@@ -601,6 +601,39 @@ def test_run_checks_last_failure_overwritten_by_last_failing_check(
 
 
 # ---------------------------------------------------------------------------
+# create_pr — main-targeting guard (no auto-merge)
+# ---------------------------------------------------------------------------
+
+
+def test_create_pr_skips_auto_merge_when_targeting_main(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    manifest = _make_manifest(base_branch="main")
+    pr_url = "https://github.com/example/pr/99"
+    called_cmds: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        called_cmds.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = (
+            pr_url if cmd[:3] == ["gh", "pr", "create"] else "abc1234 some commit"
+        )
+        result.stderr = ""
+        return result
+
+    with (
+        patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run),
+        caplog.at_level(logging.INFO, logger="app.core.watcher_subprocess"),
+    ):
+        returned_url = create_pr(manifest, tmp_path)
+
+    assert returned_url == pr_url
+    assert any("targets main" in msg for msg in caplog.messages)
+    assert not any(cmd[:3] == ["gh", "pr", "merge"] for cmd in called_cmds)
+
+
+# ---------------------------------------------------------------------------
 # create_pr — additional failure paths
 # ---------------------------------------------------------------------------
 
@@ -625,7 +658,7 @@ def test_create_pr_raises_when_no_commits_ahead(tmp_path: Path) -> None:
 def test_create_pr_falls_back_to_immediate_merge_on_auto_merge_api_error(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    manifest = _make_manifest()
+    manifest = _make_manifest(base_branch="epic/wor-96-parent")
     pr_url = "https://github.com/example/pr/42"
 
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
@@ -655,7 +688,7 @@ def test_create_pr_falls_back_to_immediate_merge_on_auto_merge_api_error(
 def test_create_pr_warns_when_immediate_merge_also_fails(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    manifest = _make_manifest()
+    manifest = _make_manifest(base_branch="epic/wor-96-parent")
     pr_url = "https://github.com/example/pr/42"
 
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
