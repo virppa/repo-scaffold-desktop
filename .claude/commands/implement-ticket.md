@@ -19,25 +19,7 @@ ABORT: Unsupported manifest_version '<version>'. This worker supports 1.0 only.
 Confirm the following fields are present before continuing:
 - `ticket_id`, `worker_branch`, `base_branch`, `objective`, `artifact_paths`
 
-### 0.5. Check for prior failure context (if present)
-
-Read `.claude/artifacts/<ticket_id_lower>/last_failure.json` if it exists.
-(e.g. for WOR-80: `.claude/artifacts/wor_80/last_failure.json`)
-
-If the file is present, surface its contents as context before proceeding:
-
-```
-PRIOR FAILURE CONTEXT:
-  Failed at: <failed_at>
-  Check:     <check>
-  Stdout:    <stdout>
-  Stderr:    <stderr>
-```
-
-Use this context to understand what the previous worker attempt failed on and
-avoid repeating the same mistake. Do NOT abort — this is informational only.
-
-### 0.6. Load context snippets (if present)
+### 0.5. Load context snippets (if present)
 
 If `manifest.context_snippets` is non-null and non-empty, treat each entry as
 a pre-loaded code excerpt — do NOT re-read these sections from disk unless you
@@ -61,22 +43,6 @@ Check out the correct branch before running /implement-ticket.
 
 `save_issue(id: "<ticket_id>", state: "<ticket_state_map.in_progress_local>")`
 
-### 2.7. Pre-read all implementation files (one pass, before writing any code)
-
-Read every file you will need to modify — in a single pass, before touching anything:
-- All files listed in `related_files_hint`
-- Any other `allowed_paths` files you know you will edit based on the objective
-
-Take inline notes about current structure, signatures, and invariants as you read. **Then stop reading and start writing.**
-
-**Context discipline — obey these rules for the entire session:**
-
-- **Each file gets one read.** Do not re-read a file you already read unless you made a structural change large enough that your notes are no longer accurate (rare — think "rewrote the whole class").
-- **Trust the Edit tool.** After an Edit call the file is updated — the diff in the tool result shows exactly what changed. Do NOT re-read the file to confirm the edit took effect.
-- **Do not re-read context_snippets.** They are pre-loaded verbatim — treat them as files you have already read.
-- **Batch your edits, then run checks once.** Write all code changes across all files first. Run `ruff`, `mypy`, and `pytest` as a single final pass — not after each individual edit.
-- **No exploratory Bash.** Do not run Python one-liners to probe module structure or test a hypothesis. Reason from the source code you have already read, then edit.
-
 ### 3. Implement
 
 Implement the work described in `objective` and `acceptance_criteria`. Obey these hard rules at all times:
@@ -88,31 +54,6 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 **Constraints** — follow every item in `implementation_constraints` exactly.
 
 **No re-planning** — do not re-read Linear, re-query the project, or change scope. If something in the codebase is surprising, implement defensively within the manifest scope and note it in the result artifact summary.
-
-### 3.5. Auto-fix style violations
-
-Before running required checks, apply the auto-fixers:
-
-```bash
-ruff format .
-ruff check . --fix
-```
-
-These are safe to run on any Python codebase: `ruff format` reformats long lines and spacing; `ruff check --fix` removes unused imports and corrects other auto-fixable violations. Run them after all code changes are written.
-
-Then verify:
-
-```bash
-ruff check .
-mypy app/
-```
-
-If violations remain after `--fix`, fix them before continuing:
-- **E501** (line too long): break the line at a logical boundary — function parameter, string concatenation, or by extracting a variable
-- **F401** (unused import): delete the import line
-- **mypy errors**: fix the type mismatch in the code; do not add `# type: ignore`
-
-Do not proceed to step 4 until both `ruff check .` and `mypy app/` exit cleanly.
 
 ### 4. Run required checks
 
