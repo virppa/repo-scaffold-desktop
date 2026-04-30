@@ -59,6 +59,67 @@ class _ProcessedTicket(NamedTuple):
     succeeded: bool = True
 
 
+def _findings_for_shutdown(
+    processed: list[_ProcessedTicket],
+) -> list[dict[str, object]]:
+    """Derive one summary dict per processed ticket from the result artefacts."""
+    from app.core.watcher_finalize import _infer_category, _read_result_data
+
+    findings: list[dict[str, object]] = []
+    for ticket in processed:
+        artifact_dir = (
+            Path.cwd()
+            / ".claude"
+            / "artifacts"
+            / (ticket.ticket_id.lower().replace("-", "_"))
+        )
+        result_path = artifact_dir / "result.json"
+        data = _read_result_data(result_path)
+        if data is None:
+            continue
+        ticket_id = str(data.get("ticket_id") or ticket.ticket_id)
+        epic_id = str(data.get("epic_id") or "")
+        status = str(data.get("status") or "")
+        notes = str(data.get("notes") or "")
+        summary = str(data.get("summary") or "")
+        cf_raw = data.get("checks_failed")
+        check_failures = [
+            str(item) for item in (cf_raw if isinstance(cf_raw, list) else [])
+        ]
+        scope_drift = bool(data.get("scope_drift"))
+        forbidden_path = bool(data.get("forbidden_path_touched"))
+        wall_time = ticket.elapsed
+
+        category = _infer_category(
+            scope_drift=scope_drift,
+            forbidden_path_touched=forbidden_path,
+            check_failures=check_failures,
+            wall_time=wall_time,
+            runtime_threshold_minutes=60,
+            escalated=not ticket.succeeded,
+            notes=notes,
+            status=status,
+        )
+        findings.append(
+            {
+                "ticket_id": ticket_id,
+                "epic_id": epic_id,
+                "category": category,
+                "status": status,
+                "summary": summary,
+                "notes": notes,
+                "check_failures": check_failures,
+                "wall_time": wall_time,
+            }
+        )
+    return findings
+
+
+def findings_for_shutdown_count(processed: list[_ProcessedTicket]) -> int:
+    """Return the count of findings written for the given processed tickets."""
+    return len(_findings_for_shutdown(processed))
+
+
 # ---------------------------------------------------------------------------
 # Watcher
 # ---------------------------------------------------------------------------
@@ -132,6 +193,7 @@ class Watcher:
                     break
                 time.sleep(self._POLL_INTERVAL)
         finally:
+            self._print_improvement_log_status()
             self._wait_for_active_workers()
             self._services.stop()
             self._remove_pid_file()
@@ -640,6 +702,28 @@ class Watcher:
         signal.signal(signal.SIGINT, self._handle_signal)
         if hasattr(signal, "SIGTERM"):
             signal.signal(signal.SIGTERM, self._handle_signal)
+
+    def _print_improvement_log_status(self) -> None:
+        """Print improvement-log comment count and threshold info at shutdown."""
+        if not self._escalation_policy.improvement_log:
+            return
+        ticket_id = self._escalation_policy.improvement_log.ticket_id
+        threshold = self._escalation_policy.improvement_log.review_threshold
+        try:
+            comments = self._linear.list_comments(ticket_id)
+            count = len(comments)
+            marker = " — above threshold" if count > threshold else ""
+            logger.info(
+                "Improvement log (%s): %d findings pending review%s",
+                ticket_id,
+                count,
+                marker,
+            )
+        except Exception:
+            logger.warning(
+                "Could not fetch comment count for improvement log ticket %s",
+                ticket_id,
+            )
 
     def _handle_signal(self, signum: int, frame: object) -> None:
         logger.info(

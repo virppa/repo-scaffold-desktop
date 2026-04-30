@@ -6,11 +6,12 @@ Extracted from Watcher._finalize_worker to reduce watcher.py LOC toward the
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess  # nosec B404
 from pathlib import Path
 
-from app.core.escalation_policy import EscalationPolicy
+from app.core.escalation_policy import EscalationPolicy, ImprovementLogConfig
 from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import MetricsStore, Outcome, TicketMetrics
@@ -93,8 +94,8 @@ def finalize_worker(
     mode: str,
     project_id: str,
 ) -> None:
-    outcome, escalated, artifacts_preserved, sonar_findings = _execute_finalization(
-        worker, returncode, linear, escalation_policy, repo_root
+    outcome, escalated, artifacts_preserved, sonar_findings, result_data = (
+        _execute_finalization(worker, returncode, linear, escalation_policy, repo_root)
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
@@ -134,6 +135,19 @@ def finalize_worker(
         )
     )
 
+    # Improvement log — append a one-line finding after each worker session
+    # Skip when result_data is missing/empty (e.g. result.json not yet written).
+    if escalation_policy.improvement_log is not None and result_data:
+        write_improvement_log_finding(
+            linear=linear,
+            linear_id=worker.linear_id,
+            improvement_log_config=escalation_policy.improvement_log,
+            result_data=result_data,
+            ticket_id=worker.ticket_id,
+            epic_id=worker.manifest.epic_id or "",
+            wall_time=wall_time,
+        )
+
     restore_plan_files(worker.backed_up_plans)
     if not artifacts_preserved:
         preserve_worker_artifacts(repo_root, worker)
@@ -151,14 +165,18 @@ def _execute_finalization(
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
     repo_root: Path,
-) -> tuple[Outcome, bool, bool, list[str] | None]:
+) -> tuple[Outcome, bool, bool, list[str] | None, dict[str, object] | None]:
     """Determine outcome, escalation status, and artifact state.
 
-    Returns (outcome, escalated, artifacts_preserved, sonar_findings).
+    Returns (outcome, escalated, artifacts_preserved, sonar_findings,
+    result_data).  *result_data* is read from the worker's result.json so that
+    callers can produce improvement-log comments without re-reading the file.
     """
     manifest = worker.manifest
     ticket_id = worker.ticket_id
     linear_id = worker.linear_id
+    result_path = repo_root / manifest.artifact_paths.result_json
+    result_data = _read_result_data(result_path)
 
     if returncode != 0:
         logger.error("Worker %s exited non-zero (%d)", ticket_id, returncode)
@@ -177,7 +195,7 @@ def _execute_finalization(
             safe_set_state(
                 linear, linear_id, manifest.ticket_state_map.failed, ticket_id
             )
-        return "failure", escalated, False, None
+        return "failure", escalated, False, None, result_data
 
     checks_ok = run_checks(manifest, worker.worktree_path)
     if not checks_ok:
@@ -198,16 +216,16 @@ def _execute_finalization(
             safe_set_state(
                 linear, linear_id, manifest.ticket_state_map.failed, ticket_id
             )
-        return "failure", escalated, False, None
+        return "failure", escalated, False, None, result_data
 
     preserve_worker_artifacts(repo_root, worker)
-    flags = _read_result_flags(repo_root / manifest.artifact_paths.result_json)
+    flags = _read_result_flags(result_path)
     action = escalation_policy.classify_result(**flags)
 
     outcome, escalated, sonar_findings = _handle_policy_outcome(
         action, flags, worker, linear, escalation_policy
     )
-    return outcome, escalated, True, sonar_findings
+    return outcome, escalated, True, sonar_findings, result_data
 
 
 def _handle_policy_outcome(
@@ -294,3 +312,164 @@ def _try_post_comment(
         linear.post_comment(linear_id, body)
     except Exception:
         logger.warning("Could not post comment for %s", ticket_id)
+
+
+# ---------------------------------------------------------------------------
+# Improvement log
+# ---------------------------------------------------------------------------
+
+_CATEGORY_HIERARCHY: tuple[tuple[str, bool, bool], ...] = (
+    ("scope", True, False),
+    ("quality", False, True),
+    ("perf", False, False),
+    ("escalation", False, False),
+    ("improvement", False, False),
+)
+
+
+def _infer_category(
+    *,
+    scope_drift: bool,
+    forbidden_path_touched: bool,
+    check_failures: list[str],
+    wall_time: float,
+    runtime_threshold_minutes: int,
+    escalated: bool,
+    notes: str,
+    status: str,
+) -> str:
+    """Infer the improvement-log category from result data.
+
+    Priority order:
+      1. scope_drift / forbidden_path → scope
+      2. check_failures → quality
+      3. wall_time over threshold → perf
+      4. escalated to cloud → escalation
+      5. default → improvement
+    """
+    if scope_drift or forbidden_path_touched:
+        return "scope"
+    if check_failures:
+        return "quality"
+    if wall_time > runtime_threshold_minutes * 60 and wall_time > 0:
+        return "perf"
+    if escalated:
+        return "escalation"
+    if status == "success" and notes:
+        return "improvement"
+    return "improvement"
+
+
+# fmt: off
+_RESULT_DATA_KEYS = (
+    "ticket_id", "epic_id", "status", "summary", "notes",
+    "checks_failed", "scope_drift", "forbidden_path_touched",
+    "escalated_to_cloud",
+)
+# fmt: on
+
+
+def _read_result_data(result_path: Path) -> dict[str, object] | None:
+    """Read the worker result.json and return selected fields.
+
+    Returns a dict with the keys in `_RESULT_DATA_KEYS` when the file
+    exists and is valid JSON.  Returns ``None`` when the file is missing
+    or malformed — callers should handle the absence gracefully.
+    """
+    try:
+        raw = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return {k: raw.get(k) for k in _RESULT_DATA_KEYS}
+
+
+def write_improvement_log_finding(
+    *,
+    linear: LinearClientProtocol,
+    linear_id: str,
+    improvement_log_config: ImprovementLogConfig,
+    result_data: dict[str, object] | None,
+    ticket_id: str,
+    epic_id: str,
+    wall_time: float,
+) -> None:
+    """Append a one-line finding to the improvement log ticket.
+
+    If the comment count on the improvement log ticket exceeds
+    ``improvement_log.review_threshold``, the ticket state is set to
+    ``ReadyForReview`` and a warning is logged.
+
+    Called after each worker finalization when the policy configures an
+    improvement-log ticket.
+    """
+    if not improvement_log_config or result_data is None:
+        return
+
+    log_ticket_id = improvement_log_config.ticket_id
+    review_threshold = improvement_log_config.review_threshold
+    runtime_threshold = improvement_log_config.runtime_threshold_minutes
+
+    # Extract fields from result data for category inference
+    # Use `or` fallback because the value may be explicitly None in the JSON.
+    r_scope = bool(result_data.get("scope_drift"))
+    r_forbidden = bool(result_data.get("forbidden_path_touched"))
+    cf_raw = result_data.get("checks_failed")
+    cf_list = cf_raw if isinstance(cf_raw, list) else []
+    r_check_failures = [str(item) for item in cf_list]
+    r_escalated = bool(result_data.get("escalated_to_cloud"))
+    r_notes = str(result_data.get("notes") or "")
+    r_status = str(result_data.get("status") or "")
+    r_ticket_id = str(result_data.get("ticket_id") or ticket_id)
+    r_epic_id = str(result_data.get("epic_id") or epic_id or "")
+
+    category = _infer_category(
+        scope_drift=r_scope,
+        forbidden_path_touched=r_forbidden,
+        check_failures=r_check_failures,
+        wall_time=wall_time,
+        runtime_threshold_minutes=runtime_threshold,
+        escalated=r_escalated,
+        notes=r_notes,
+        status=r_status,
+    )
+
+    # Build the one-sentence finding from available data
+    finding_parts: list[str] = []
+    if r_check_failures:
+        failing = ", ".join(r_check_failures)
+        finding_parts.append(f"{len(r_check_failures)} check(s) failed ({failing})")
+    elif r_notes:
+        finding_parts.append(r_notes)
+    else:
+        finding_parts.append("Worker session completed without issues")
+
+    one_sentence = finding_parts[0] if finding_parts else "no details available"
+
+    runtime_min = int(wall_time) // 60 if wall_time > 0 else 0
+
+    comment_body = (
+        f"[{r_ticket_id} / epic {r_epic_id} / {runtime_min}min] "
+        f"{category}: {one_sentence}"
+    )
+
+    # Append the comment
+    _try_post_comment(linear, log_ticket_id, r_ticket_id, comment_body)
+
+    # Count existing comments and check threshold
+    try:
+        comments = linear.list_comments(log_ticket_id)
+        comment_count = len(comments)
+        if comment_count > review_threshold:
+            logger.warning(
+                "Improvement log ticket %s has %d findings "
+                "(threshold %d) — setting to ReadyForReview",
+                log_ticket_id,
+                comment_count,
+                review_threshold,
+            )
+            safe_set_state(linear, log_ticket_id, "ReadyForReview", log_ticket_id)
+    except Exception:
+        logger.warning(
+            "Could not fetch comment count for improvement log ticket %s",
+            log_ticket_id,
+        )

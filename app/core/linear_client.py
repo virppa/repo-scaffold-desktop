@@ -162,6 +162,28 @@ class LinearClient:
             return None
         return cast(str, issue["state"]["type"])
 
+    def list_comments(self, issue_id: str) -> list[dict[str, Any]]:
+        """Return all comments on *issue_id* as a list of dicts with 'body' keys."""
+        data = self._query(
+            """
+            query ListComments($issueId: String!) {
+              issue(id: $issueId) {
+                comments {
+                  nodes {
+                    body
+                  }
+                }
+              }
+            }
+            """,
+            {"issueId": issue_id},
+        )
+        issue = data.get("issue")
+        if issue is None:
+            return []
+        nodes = issue.get("comments", {}).get("nodes", [])
+        return [{"body": node["body"]} for node in nodes]
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

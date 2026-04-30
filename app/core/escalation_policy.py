@@ -72,6 +72,14 @@ class SonarConfig(BaseModel):
     info: Action
 
 
+class ImprovementLogConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    ticket_id: str
+    review_threshold: int = 15
+    runtime_threshold_minutes: int = 60
+
+
 class EscalationPolicy(BaseModel):
     """Typed representation of escalation_policy.toml."""
 
@@ -81,6 +89,7 @@ class EscalationPolicy(BaseModel):
     auto_escalate: AutoEscalateConfig
     human_escalate: HumanEscalateConfig
     sonar: SonarConfig
+    improvement_log: ImprovementLogConfig | None = None
 
     # ------------------------------------------------------------------
     # Classification helpers
