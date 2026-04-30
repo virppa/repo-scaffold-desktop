@@ -87,7 +87,8 @@ class ServiceManager:
                     _VLLM_FP8_CMD + "; exec bash",
                 ],
                 creationflags=(
-                    subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                    getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 ),
             )
             logger.info("Opened WSL2 terminal tab for vLLM server")
