@@ -165,7 +165,7 @@ class ServiceManager:
             logger.warning("wt.exe not found — falling back to new console window")
             self._litellm_proc = subprocess.Popen(  # nosec B603 B607
                 cmd,
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
                 env=env,
             )
 
