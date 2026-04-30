@@ -14,7 +14,7 @@ from pathlib import Path
 from app.core.escalation_policy import EscalationPolicy, ImprovementLogConfig
 from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import MetricsStore, Outcome, TicketMetrics
+from app.core.metrics import MetricsStore, Outcome, ReworkEvent, TicketMetrics
 from app.core.watcher_helpers import (
     _POLICY_FLAGS,
     _parse_worker_usage,
@@ -95,7 +95,9 @@ def finalize_worker(
     project_id: str,
 ) -> None:
     outcome, escalated, artifacts_preserved, sonar_findings, result_data = (
-        _execute_finalization(worker, returncode, linear, escalation_policy, repo_root)
+        _execute_finalization(
+            worker, returncode, linear, escalation_policy, repo_root, metrics
+        )
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
@@ -165,6 +167,7 @@ def _execute_finalization(
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
     repo_root: Path,
+    metrics: MetricsStore,
 ) -> tuple[Outcome, bool, bool, list[str] | None, dict[str, object] | None]:
     """Determine outcome, escalation status, and artifact state.
 
@@ -181,6 +184,15 @@ def _execute_finalization(
     if returncode != 0:
         logger.error("Worker %s exited non-zero (%d)", ticket_id, returncode)
         escalated = bool(manifest.failure_policy.escalate_to_cloud)
+        if escalated:
+            metrics.record_rework_event(
+                ReworkEvent(
+                    ticket_id=ticket_id,
+                    model_id=worker.manifest.epic_id or "",
+                    rework_reason="escalated",
+                    rework_cost_minutes=0.0,
+                )
+            )
         if escalated:
             logger.info("Escalating %s to cloud per failure policy", ticket_id)
             safe_set_state(linear, linear_id, "In Progress", ticket_id)
@@ -200,9 +212,25 @@ def _execute_finalization(
     checks_ok = run_checks(manifest, worker.worktree_path)
     if not checks_ok:
         worker.retry_count += 1
+        metrics.record_rework_event(
+            ReworkEvent(
+                ticket_id=ticket_id,
+                model_id=worker.manifest.epic_id or "",
+                rework_reason="local_retry",
+                rework_cost_minutes=0.0,
+            )
+        )
     if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
         escalated = bool(manifest.failure_policy.escalate_to_cloud)
         if escalated:
+            metrics.record_rework_event(
+                ReworkEvent(
+                    ticket_id=ticket_id,
+                    model_id=worker.manifest.epic_id or "",
+                    rework_reason="escalated",
+                    rework_cost_minutes=0.0,
+                )
+            )
             logger.info("Escalating %s to cloud after check failure", ticket_id)
             safe_set_state(linear, linear_id, "In Progress", ticket_id)
             _try_post_comment(
@@ -223,7 +251,7 @@ def _execute_finalization(
     action = escalation_policy.classify_result(**flags)
 
     outcome, escalated, sonar_findings = _handle_policy_outcome(
-        action, flags, worker, linear, escalation_policy
+        action, flags, worker, linear, escalation_policy, metrics
     )
     return outcome, escalated, True, sonar_findings, result_data
 
@@ -234,6 +262,7 @@ def _handle_policy_outcome(
     worker: ActiveWorker,
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
+    metrics: MetricsStore,
 ) -> tuple[Outcome, bool, list[str] | None]:
     """Map a policy action to an outcome, posting Linear comments as needed."""
     ticket_id = worker.ticket_id
@@ -243,6 +272,14 @@ def _handle_policy_outcome(
     if action == "escalate":
         triggering = next((f for f in _POLICY_FLAGS if flags.get(f)), "unknown")
         logger.info("Escalating %s to cloud (flag=%s)", ticket_id, triggering)
+        metrics.record_rework_event(
+            ReworkEvent(
+                ticket_id=ticket_id,
+                model_id=worker.manifest.epic_id or "",
+                rework_reason="escalated",
+                rework_cost_minutes=0.0,
+            )
+        )
         safe_set_state(linear, linear_id, "In Progress", ticket_id)
         _try_post_comment(
             linear,
@@ -269,6 +306,14 @@ def _handle_policy_outcome(
     if _sonar_requires_escalation(
         sonar_findings, ticket_id, linear_id, linear, escalation_policy
     ):
+        metrics.record_rework_event(
+            ReworkEvent(
+                ticket_id=ticket_id,
+                model_id=worker.manifest.epic_id or "",
+                rework_reason="escalated",
+                rework_cost_minutes=0.0,
+            )
+        )
         safe_set_state(linear, linear_id, "In Progress", ticket_id)
         _try_post_comment(
             linear,

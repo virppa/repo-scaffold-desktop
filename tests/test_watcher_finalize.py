@@ -14,6 +14,7 @@ import pytest
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
 from app.core.manifest import FailurePolicy
+from app.core.metrics import ReworkEvent
 from app.core.watcher_finalize import (
     _infer_category,
     _read_result_data,
@@ -708,7 +709,7 @@ def test_execute_finalization_nonzero_returncode_returns_failure(
     from app.core.watcher_finalize import _execute_finalization
 
     result = _execute_finalization(
-        worker, 1, linear_mock, EscalationPolicy.from_toml(), tmp_path
+        worker, 1, linear_mock, EscalationPolicy.from_toml(), tmp_path, MagicMock()
     )
     outcome, escalated, preserved, findings, _result_data = result
 
@@ -739,7 +740,7 @@ def test_execute_finalization_check_failure_abort_returns_failure(
 
     with patch("app.core.watcher_finalize.run_checks", return_value=False):
         result = _execute_finalization(
-            worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path
+            worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path, MagicMock()
         )
     outcome, escalated, preserved, findings, _result_data = result
 
@@ -775,6 +776,7 @@ def test_handle_policy_outcome_escalate_returns_escalated(
         worker,
         linear_mock,
         EscalationPolicy.from_toml(),
+        MagicMock(),
     )
 
     assert outcome == "escalated"
@@ -801,6 +803,7 @@ def test_handle_policy_outcome_human_returns_aborted(tmp_path: Path) -> None:
         worker,
         linear_mock,
         EscalationPolicy.from_toml(),
+        MagicMock(),
     )
 
     assert outcome == "aborted"
@@ -1570,3 +1573,256 @@ def test_finalize_worker_no_crash_without_improvement_log_config(
     )
     # Normal operations still happen
     linear_mock.set_state.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Rework event recording (WOR-212)
+# ---------------------------------------------------------------------------
+
+
+class TestReworkEventRecording:
+    """Tests that rework_events rows are written by _execute_finalization."""
+
+    def test_rework_on_check_failure_local_retry(self, tmp_path: Path) -> None:
+        """Check failure records rework_event with reason=local_retry."""
+        manifest = make_manifest(
+            ticket_id="WOR-10",
+            worker_branch="wor-10-test-ticket",
+        )
+        metrics_mock = MagicMock()
+        worker = ActiveWorker(
+            ticket_id="WOR-10",
+            linear_id="fake-linear-id",
+            manifest=manifest,
+            worktree_path=tmp_path,
+            process=MagicMock(spec=subprocess.Popen),
+        )
+
+        with (
+            patch("app.core.watcher_finalize.run_checks", return_value=False),
+            patch("app.core.watcher_finalize.cleanup_worktree"),
+        ):
+            _call_finalize(worker, metrics=metrics_mock)
+
+        calls = metrics_mock.record_rework_event.call_args_list
+        assert len(calls) == 1
+        entry: ReworkEvent = calls[0][0][0]
+        assert entry.rework_reason == "local_retry"
+        assert entry.ticket_id == "WOR-10"
+
+    def test_rework_on_check_failure_escalation_records_escalated(
+        self, tmp_path: Path
+    ) -> None:
+        """Check failure with escalation records both local_retry and escalated."""
+        manifest = make_manifest(
+            ticket_id="WOR-10",
+            worker_branch="wor-10-test-ticket",
+            failure_policy=FailurePolicy(
+                on_check_failure="abort", escalate_to_cloud=True
+            ),
+        )
+        metrics_mock = MagicMock()
+        worker = ActiveWorker(
+            ticket_id="WOR-10",
+            linear_id="fake-linear-id",
+            manifest=manifest,
+            worktree_path=tmp_path,
+            process=MagicMock(spec=subprocess.Popen),
+        )
+
+        with (
+            patch("app.core.watcher_finalize.run_checks", return_value=False),
+            patch("app.core.watcher_finalize.cleanup_worktree"),
+        ):
+            _call_finalize(worker, metrics=metrics_mock)
+
+        calls = metrics_mock.record_rework_event.call_args_list
+        assert len(calls) == 2
+        local_retry = calls[0][0][0]
+        assert local_retry.rework_reason == "local_retry"
+        escalated = calls[1][0][0]
+        assert escalated.rework_reason == "escalated"
+
+    def test_rework_on_nonzero_exit_escalated(self, tmp_path: Path) -> None:
+        """Non-zero returncode with escalation records reason=escalated."""
+        manifest = make_manifest(
+            ticket_id="WOR-10",
+            worker_branch="wor-10-test-ticket",
+            failure_policy=FailurePolicy(escalate_to_cloud=True),
+        )
+        metrics_mock = MagicMock()
+        worker = ActiveWorker(
+            ticket_id="WOR-10",
+            linear_id="fake-linear-id",
+            manifest=manifest,
+            worktree_path=tmp_path,
+            process=MagicMock(spec=subprocess.Popen),
+        )
+
+        with patch("app.core.watcher_finalize.cleanup_worktree"):
+            _call_finalize(worker, returncode=1, metrics=metrics_mock)
+
+        calls = metrics_mock.record_rework_event.call_args_list
+        assert len(calls) == 1
+        entry: ReworkEvent = calls[0][0][0]
+        assert entry.rework_reason == "escalated"
+        assert entry.ticket_id == "WOR-10"
+
+    def test_no_rework_on_nonzero_exit_no_escalation(self, tmp_path: Path) -> None:
+        """Non-zero returncode without escalation does not record rework."""
+        manifest = make_manifest(
+            ticket_id="WOR-10",
+            worker_branch="wor-10-test-ticket",
+        )
+        metrics_mock = MagicMock()
+        worker = ActiveWorker(
+            ticket_id="WOR-10",
+            linear_id="fake-linear-id",
+            manifest=manifest,
+            worktree_path=tmp_path,
+            process=MagicMock(spec=subprocess.Popen),
+        )
+
+        with patch("app.core.watcher_finalize.cleanup_worktree"):
+            _call_finalize(worker, returncode=1, metrics=metrics_mock)
+
+        metrics_mock.record_rework_event.assert_not_called()
+
+    def test_rework_on_escalate_action(self, tmp_path: Path) -> None:
+        """_handle_policy_outcome action=escalate records reason=escalated."""
+        manifest = make_manifest(
+            ticket_id="WOR-10",
+            worker_branch="wor-10-test-ticket",
+        )
+        metrics_mock = MagicMock()
+        linear_mock = MagicMock()
+
+        worker = ActiveWorker(
+            ticket_id="WOR-10",
+            linear_id="fake-linear-id",
+            manifest=manifest,
+            worktree_path=tmp_path,
+            process=MagicMock(spec=subprocess.Popen),
+        )
+
+        result_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_path = result_dir / "result.json"
+        result_path.write_text(
+            json.dumps({"status": "success", "scope_drift": True}),
+            encoding="utf-8",
+        )
+
+        with (
+            patch("app.core.watcher_finalize.run_checks", return_value=True),
+            patch("app.core.watcher_finalize.preserve_worker_artifacts"),
+            patch(
+                "app.core.watcher_finalize.create_pr",
+                return_value="https://github.com/example/pr/1",
+            ),
+            patch("app.core.watcher_finalize.cleanup_worktree"),
+        ):
+            finalize_worker(
+                worker,
+                returncode=0,
+                wall_time=1.0,
+                linear=linear_mock,
+                metrics=metrics_mock,
+                escalation_policy=EscalationPolicy.from_toml(),
+                repo_root=tmp_path,
+                mode="default",
+                project_id=_DEFAULT_PROJECT,
+            )
+
+        calls = metrics_mock.record_rework_event.call_args_list
+        assert len(calls) == 1
+        entry: ReworkEvent = calls[0][0][0]
+        assert entry.rework_reason == "escalated"
+        assert entry.ticket_id == "WOR-10"
+
+    def test_rework_on_sonar_escalation(self, tmp_path: Path) -> None:
+        """Sonar blocker triggers escalation and records reason=escalated."""
+        manifest = make_manifest(
+            ticket_id="WOR-10",
+            worker_branch="wor-10-test-ticket",
+        )
+        metrics_mock = MagicMock()
+        linear_mock = MagicMock()
+
+        worker = ActiveWorker(
+            ticket_id="WOR-10",
+            linear_id="fake-linear-id",
+            manifest=manifest,
+            worktree_path=tmp_path,
+            process=MagicMock(spec=subprocess.Popen),
+        )
+
+        result_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_path = result_dir / "result.json"
+        result_path.write_text(
+            json.dumps({"status": "success"}),
+            encoding="utf-8",
+        )
+
+        with (
+            patch("app.core.watcher_finalize.run_checks", return_value=True),
+            patch("app.core.watcher_finalize.preserve_worker_artifacts"),
+            patch("app.core.watcher_finalize.create_pr") as mock_create_pr,
+            patch("app.core.watcher_finalize.cleanup_worktree"),
+            patch(
+                "app.core.watcher_finalize.fetch_sonar_findings",
+                return_value=["BLOCKER"],
+            ),
+        ):
+            finalize_worker(
+                worker,
+                returncode=0,
+                wall_time=1.0,
+                linear=linear_mock,
+                metrics=metrics_mock,
+                escalation_policy=EscalationPolicy.from_toml(),
+                repo_root=tmp_path,
+                mode="default",
+                project_id=_DEFAULT_PROJECT,
+            )
+
+        calls = metrics_mock.record_rework_event.call_args_list
+        assert len(calls) == 1
+        entry: ReworkEvent = calls[0][0][0]
+        assert entry.rework_reason == "escalated"
+        assert entry.ticket_id == "WOR-10"
+        mock_create_pr.assert_not_called()
+
+    def test_no_rework_on_success(self, tmp_path: Path) -> None:
+        """Successful finalization does not record any rework events."""
+        manifest = make_manifest(
+            ticket_id="WOR-10",
+            worker_branch="wor-10-test-ticket",
+        )
+        metrics_mock = MagicMock()
+        linear_mock = MagicMock()
+
+        worker = ActiveWorker(
+            ticket_id="WOR-10",
+            linear_id="fake-linear-id",
+            manifest=manifest,
+            worktree_path=tmp_path,
+            process=MagicMock(spec=subprocess.Popen),
+        )
+
+        with (
+            patch("app.core.watcher_finalize.run_checks", return_value=True),
+            patch(
+                "app.core.watcher_finalize.create_pr",
+                return_value="https://github.com/example/pr/1",
+            ),
+            patch("app.core.watcher_finalize.cleanup_worktree"),
+        ):
+            _call_finalize(
+                worker,
+                metrics=metrics_mock,
+                linear=linear_mock,
+            )
+
+        metrics_mock.record_rework_event.assert_not_called()

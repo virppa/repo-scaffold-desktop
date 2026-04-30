@@ -35,6 +35,20 @@ CREATE TABLE IF NOT EXISTS check_run_log (
 )
 """
 
+_CREATE_REWORK_EVENTS = """
+CREATE TABLE IF NOT EXISTS rework_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id       TEXT NOT NULL,
+    model_id        TEXT NOT NULL,
+    backend_id      TEXT,
+    context_size    INTEGER,
+    task_complexity TEXT,
+    rework_reason   TEXT NOT NULL,
+    rework_cost_minutes REAL,
+    recorded_at     TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS ticket_metrics (
     ticket_id                      TEXT NOT NULL,
@@ -199,6 +213,24 @@ class CheckStats(BaseModel):
     max_duration_s: float | None
 
 
+ReworkReason = Literal["local_retry", "escalated", "human_revision", "ci_failure"]
+
+
+class ReworkEvent(BaseModel):
+    """A single rework event — a local worker was re-dispatched or escalated."""
+
+    model_config = {"extra": "forbid"}
+
+    ticket_id: str
+    model_id: str
+    backend_id: str | None = None
+    context_size: int | None = None
+    task_complexity: str | None = None
+    rework_reason: ReworkReason
+    rework_cost_minutes: float
+    recorded_at: str | None = None
+
+
 class MetricsStore:
     """SQLite-backed store for ticket execution metrics."""
 
@@ -221,6 +253,7 @@ class MetricsStore:
         with self._connect() as conn:
             conn.execute(_CREATE_TABLE)
             conn.execute(_CREATE_CHECK_RUN_LOG)
+            conn.execute(_CREATE_REWORK_EVENTS)
             self._migrate(conn)
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
@@ -460,6 +493,48 @@ class MetricsStore:
             )
             for r in rows
         ]
+
+    def record_rework_event(self, entry: ReworkEvent) -> None:
+        """Append a single rework event row."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO rework_events
+                    (ticket_id, model_id, backend_id, context_size,
+                     task_complexity, rework_reason, rework_cost_minutes)
+                VALUES
+                    (:ticket_id, :model_id, :backend_id, :context_size,
+                     :task_complexity, :rework_reason, :rework_cost_minutes)
+                """,
+                entry.model_dump(exclude={"recorded_at"}),
+            )
+
+    def get_rework_rate(self, model_id: str, task_complexity: str) -> float | None:
+        """Return rework probability for (model_id, task_complexity).
+
+        Returns ``None`` when fewer than 10 rework events exist for that
+        pair — callers should fall back to the bench proxy (1 -
+        quality_task_success).
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN rework_reason = 'local_retry' THEN 1 ELSE 0 END)
+                        AS local_retry_count,
+                    SUM(CASE WHEN rework_reason = 'escalated' THEN 1 ELSE 0 END)
+                        AS escalated_count
+                FROM rework_events
+                WHERE model_id = ? AND task_complexity = ?
+                """,
+                (model_id, task_complexity),
+            ).fetchone()
+        total = row["total"] if row["total"] is not None else 0
+        if total < 10:
+            return None
+        rework_count = (row["local_retry_count"] or 0) + (row["escalated_count"] or 0)
+        return round(rework_count / total, 4)
 
 
 def _row_to_metrics(row: sqlite3.Row) -> TicketMetrics:
