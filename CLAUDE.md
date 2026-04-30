@@ -15,6 +15,7 @@ python -m app.main
 # CLI — scaffold
 python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out
 # With optional toggles: --pre-commit --ci --pr-template --issue-templates --codeowners --claude-files
+#                        --playwright (full_agentic only) --linear-mcp / --no-linear-mcp
 # With post-setup:       --git-init --install-precommit
 
 # CLI — user preferences
@@ -31,7 +32,14 @@ python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy + 
 python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concurrency
 python -m app.cli watcher --max-cloud-workers 3  # default 3; parallelisable
 python -m app.cli watcher --max-workers 2        # backward-compat alias: sets both to 2
+python -m app.cli watcher --verbose              # stream worker stdout/stderr live, prefixed with [WOR-NN]
 
+# Benchmark runner (do not run without explicit instruction)
+python scripts/bench/run_bench.py --tier speed
+python scripts/bench/run_bench.py --resume run_20240101_120000
+python scripts/bench/run_bench.py --compare run_20240101 run_20240102
+python scripts/bench/run_bench.py --generate-fixtures
+python scripts/bench/run_bench.py --browse       # open bench.db in Datasette
 
 # CLI — metrics
 python -m app.cli metrics browse   # open metrics DB in Datasette browser UI
@@ -63,6 +71,8 @@ templates/     # Jinja2 template files for scaffold output
 tests/         # Tests against core only
 schemas/       # Exported JSON Schemas for non-Python consumers
 docs/spikes/   # Spike investigation docs
+config/        # escalation_policy.toml + bench-*.toml run configs
+scripts/bench/ # run_bench.py CLI entry point + runner/fixtures helpers
 ```
 
 Module responsibilities:
@@ -80,6 +90,8 @@ Module responsibilities:
 - `watcher_subprocess.py` — worker subprocess lifecycle: `launch_worker`, `run_checks`, `fetch_sonar_findings`, `create_pr`, `build_snippet_tool_restrictions`
 - `watcher_worktrees.py` — git worktree lifecycle: `setup_worktree`, `teardown_worktree`, `rebase_worktree_from_base`, `preserve_worker_artifacts`
 - `watcher_services.py` — `ServiceManager` class: LiteLLM proxy and Ollama process management
+- `watcher_finalize.py` — worker finalization logic: `finalize_worker`, `attempt_pr`, `safe_set_state`; extracted from watcher to keep watcher.py below SonarCloud cognitive-complexity threshold
+- `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records (`bench.db`); mirrors `metrics.py` structure but stores hardware/timing/quality columns per run
 - `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
 - `main.py` — PySide6 `QApplication` entry point
 
