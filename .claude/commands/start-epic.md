@@ -160,6 +160,8 @@ Before writing, run these three pre-flight checks for each ticket:
 
 Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
 
+> **`linear_id` field:** For Batch 1 (ReadyForLocal) manifests, set `null` — the watcher resolves the Linear UUID at dispatch time from its poll response. For WaitingForDeps manifests, set the WOR-NNN identifier string (e.g. `"WOR-45"`). Linear's GraphQL `issueUpdate` accepts both UUID and identifier, so WOR-NNN is correct and sufficient. **Do not attempt to look up the internal UUID** — it is not needed. If `linear_id` is null on a WaitingForDeps manifest, `_notify_promotion()` silently skips the Linear state update and the ticket is permanently stuck after its blockers merge.
+
 ```json
 {
   "manifest_version": "1.0",
@@ -217,8 +219,8 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
 
 Write to `.claude/artifacts/<ticket_id_lower>/manifest.json` with these key differences:
 - `"status": "WaitingForDeps"` — watcher will promote once blockers merge
-- `"linear_id": "<UUID from get_issue — NOT the WOR-XX identifier>"` — required for the watcher to call set_state when promoting
-- `"blocked_by_tickets": ["WOR-45"]` — list the Batch 1 ticket(s) whose file sets conflict with this ticket
+- `"linear_id": "WOR-45"` — use the WOR-NNN identifier directly (Linear's GraphQL `issueUpdate` accepts both UUID and identifier). **Required** for WaitingForDeps: `_notify_promotion()` uses this to set state to ReadyForLocal in Linear; if null, the manifest transitions locally but Linear is never updated and the watcher never picks the ticket up.
+- `"blocked_by_tickets": ["WOR-45"]` — list the Batch 1 ticket(s) whose file sets conflict with this ticket; also use WOR-NNN identifiers
 - `"parallel_safe": false`
 
 All other fields the same as the Batch 1 template above.
