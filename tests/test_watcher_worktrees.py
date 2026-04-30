@@ -369,6 +369,22 @@ def test_preserve_worker_artifacts_missing_result_warns(
 
     assert any("No result artifact" in r.message for r in caplog.records)
 
+    # Assert the fallback file is written instead of only logging
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+    fallback_result = artifact_dir / "result.json"
+    assert fallback_result.exists(), (
+        "Fallback result.json should be written when worker artifact is missing"
+    )
+    import json
+
+    data = json.loads(fallback_result.read_text())
+    assert data["ticket_id"] == "WOR-10"
+    assert data["status"] == "success"
+    assert data["summary"] == (
+        "fallback written by watcher — worker did not produce artifact"
+    )
+    assert data["notes"] == ""
+
 
 def test_preserve_worker_artifacts_handles_last_failure(
     tmp_path: Path,
