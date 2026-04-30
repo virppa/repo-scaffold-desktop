@@ -174,7 +174,47 @@ If all four apply, note it explicitly: *"This ticket is a good candidate for int
 
 ### 4.5. After human approves the plan — generate the execution manifest
 
-Once the human says to proceed, generate and write an `ExecutionManifest` JSON to disk. This is the handoff artifact the local worker reads — it must not require re-reading Linear or re-planning.
+### 4.5. After human approves the plan — generate the execution manifest
+
+#### TaskProfile capture (WOR-216)
+
+At the end of the architect phase, fill a `TaskProfile` with 10 work dimensions:
+
+```json
+{
+  "change_type": "<bugfix|feature|refactor|api_integration|architectural|test|docs>",
+  "reasoning_demand": "<mechanical|analytical|design>",
+  "scope_clarity": "<specified|inferred|ambiguous>",
+  "constraint_density": "<low|medium|high>",
+  "ac_specificity": "<testable|behavioral|vague>",
+  "multi_file_consistency_required": <true|false>,
+  "is_greenfield": <computed>,
+  "has_external_dependency": <computed>,
+  "tech_stack": [...],
+  "raw_extensions": [...]
+}
+```
+
+**Deterministic inference rules** (auto-computed from `allowed_paths`):
+
+| Field | Rule |
+|-------|------|
+| `is_greenfield` | True if >70% of `allowed_paths` paths do not exist on disk |
+| `has_external_dependency` | True if any `allowed_path` contains `*http*`, `*mcp*`, `*litellm*`, or `*client*` |
+| `tech_stack` | File extensions mapped to known literals: `.py->python`, `.js->javascript`, `.ts->typescript`, `.toml->yaml_toml`, etc. |
+| `raw_extensions` | Raw file extensions extracted from `allowed_paths` (`.py`, `.toml`, etc.) |
+
+**LLM-assessed fields** (fill these based on your architect analysis):
+
+- `change_type` - What kind of change this is
+- `reasoning_demand` - How cognitively demanding: mechanical (repetitive), analytical (reasoning), design (creative)
+- `scope_clarity` - How clearly defined: specified (explicit), inferred (deducible), ambiguous (unclear)
+- `constraint_density` - Number of non-functional constraints: low (<2), medium (2-4), high (5+)
+- `ac_specificity` - How specific the acceptance criteria are: testable (assertable), behavioral (descriptive), vague (general)
+
+The worker reads this at `/implement-ticket` time. If `task_profile` is omitted, it defaults to `null` — old manifests still work.
+
+Once the human says the human says to proceed, generate and write an `ExecutionManifest` JSON to disk. This is the handoff artifact the local worker reads — it must not require re-reading Linear or re-planning.
 
 **Before writing the manifest, run these three pre-flight checks:**
 
