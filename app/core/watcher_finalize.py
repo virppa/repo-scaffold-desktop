@@ -98,7 +98,17 @@ def finalize_worker(
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-    local_tokens, context_compactions = _parse_worker_usage(log_path)
+    input_tokens, output_tokens, context_compactions = _parse_worker_usage(log_path)
+    # Backward-compat: local_tokens = input + output (None when either is None)
+    local_tokens: int | None = (
+        (input_tokens or 0) + (output_tokens or 0)
+        if input_tokens is not None and output_tokens is not None
+        else None
+    )
+    # Derive throughput when both output tokens and wall time are available
+    local_output_tokens_per_second: float | None = None
+    if output_tokens is not None and wall_time and wall_time > 0:
+        local_output_tokens_per_second = output_tokens / wall_time
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
     metrics.record(
         TicketMetrics(
@@ -109,8 +119,11 @@ def finalize_worker(
             local_used=(eff == "local"),
             local_model=(_LOCAL_MODEL if eff == "local" else None),
             cloud_used=(eff == "cloud"),
+            local_input_tokens=input_tokens,
+            local_output_tokens=output_tokens,
             local_tokens=local_tokens,
             local_wall_time=wall_time,
+            local_output_tokens_per_second=local_output_tokens_per_second,
             escalated_to_cloud=escalated,
             outcome=outcome,
             retry_count=worker.retry_count,

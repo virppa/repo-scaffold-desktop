@@ -947,3 +947,85 @@ def test_attempt_pr_called_process_error_returns_failure(
     comment_body = linear_mock.post_comment.call_args[0][1]
     assert "WOR-10" in comment_body
     assert "validation failed" in comment_body
+
+
+# ---------------------------------------------------------------------------
+# WOR-230 — local_input_tokens / local_output_tokens wired to metrics
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_writes_separate_token_fields(tmp_path: Path) -> None:
+    """input_tokens and output_tokens are passed to TicketMetrics."""
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    metrics_mock = MagicMock()
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-10.log"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 15000, "output_tokens": 600},
+                "context_compactions": 2,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch(
+            "app.core.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, wall_time=10.0, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.local_input_tokens == 15000
+    assert m.local_output_tokens == 600
+    assert m.local_tokens == 15600  # backward-compat sum
+    assert m.local_output_tokens_per_second == pytest.approx(60.0)  # 600/10
+
+
+def test_finalize_worker_token_fields_none_when_no_log(
+    tmp_path: Path,
+) -> None:
+    """When log is missing, all new token fields are None."""
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch(
+            "app.core.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.local_input_tokens is None
+    assert m.local_output_tokens is None
+    assert m.local_tokens is None
+    assert m.local_output_tokens_per_second is None
