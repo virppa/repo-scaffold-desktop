@@ -107,6 +107,7 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
         patch("app.core.watcher.launch_worker", return_value=fake_process),
         patch.object(w._services, "ensure_ollama_running"),
         patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "probe_vllm_health"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")
 
@@ -241,6 +242,7 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
         patch("app.core.watcher.write_worker_pytest_config"),
         patch.object(watcher._services, "ensure_ollama_running"),
         patch.object(watcher._services, "ensure_litellm_running"),
+        patch.object(watcher._services, "probe_vllm_health"),
         patch("app.core.watcher.launch_worker", return_value=fake_local_process),
     ):
         watcher._start_ticket("WOR-10", "fake-local-id")
@@ -283,11 +285,13 @@ def test_dispatch_calls_ensure_litellm_but_not_ollama_for_local_effective_mode(
         patch("app.core.watcher.launch_worker", return_value=fake_process),
         patch.object(w._services, "ensure_ollama_running") as mock_ollama,
         patch.object(w._services, "ensure_litellm_running") as mock_litellm,
+        patch.object(w._services, "probe_vllm_health") as mock_probe,
     ):
         w._dispatch_next_ticket()
 
     mock_ollama.assert_not_called()
     mock_litellm.assert_called_once()
+    mock_probe.assert_called_once()
 
 
 def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
@@ -315,11 +319,13 @@ def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
         patch("app.core.watcher.launch_worker", return_value=fake_process),
         patch.object(w._services, "ensure_ollama_running") as mock_ollama,
         patch.object(w._services, "ensure_litellm_running") as mock_litellm,
+        patch.object(w._services, "probe_vllm_health") as mock_probe,
     ):
         w._dispatch_next_ticket()
 
     mock_ollama.assert_not_called()
     mock_litellm.assert_not_called()
+    mock_probe.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
