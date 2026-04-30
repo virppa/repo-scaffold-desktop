@@ -183,10 +183,10 @@ def build_worker_cmd(
     ]
     if mode == "local":
         # --bare strips OAuth; safe for local (dummy API key via LiteLLM).
-        # --effort normal: bounded implementation tasks don't benefit from max extended
-        #   thinking budget; normal saves tokens without quality regression.
+        # --effort high: bounded tasks don't need max thinking budget; saves tokens.
+        # (CLI values: low|medium|high|xhigh|max — "normal" was removed)
         base.insert(2, "--bare")
-        base += ["--effort", "normal"]
+        base += ["--effort", "high"]
         base += ["--model", _LOCAL_MODEL]
     else:
         base += ["--effort", "max"]
