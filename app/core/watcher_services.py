@@ -44,6 +44,7 @@ class ServiceManager:
         self._repo_root = repo_root
         self._litellm_proc: subprocess.Popen[bytes] | None = None
         self._running = True
+        self._vllm_terminal_opened = False
 
     def probe_vllm_health(self) -> bool:
         """Check whether vLLM is responding on localhost:_VLLM_PORT/health.
@@ -67,8 +68,9 @@ class ServiceManager:
             _VLLM_PORT,
             _VLLM_FP8_CMD,
         )
-        if sys.platform == "win32":
+        if sys.platform == "win32" and not self._vllm_terminal_opened:
             self._open_vllm_terminal()
+            self._vllm_terminal_opened = True
         return False
 
     def _open_vllm_terminal(self) -> None:
