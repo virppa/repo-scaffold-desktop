@@ -116,12 +116,7 @@ class Watcher:
         if self._mode == "local":
             self._services.ensure_litellm_running()
 
-        logger.info(
-            "Watcher started (mode=%s, max_local_workers=%d, max_cloud_workers=%d)",
-            self._mode,
-            self._max_local_workers,
-            self._max_cloud_workers,
-        )
+        self._log_startup_info()
 
         try:
             while self._running:
@@ -140,6 +135,28 @@ class Watcher:
             self._services.stop()
             self._remove_pid_file()
             logger.info("Watcher stopped cleanly")
+
+    def _log_startup_info(self) -> None:
+        """Log startup pool sizes, omitting irrelevant entries per mode."""
+        if self._mode == "cloud":
+            logger.info(
+                "Watcher started (mode=%s, max_cloud_workers=%d)",
+                self._mode,
+                self._max_cloud_workers,
+            )
+        elif self._mode == "local":
+            logger.info(
+                "Watcher started (mode=%s, max_local_workers=%d)",
+                self._mode,
+                self._max_local_workers,
+            )
+        else:
+            logger.info(
+                "Watcher started (mode=%s, max_local_workers=%d, max_cloud_workers=%d)",
+                self._mode,
+                self._max_local_workers,
+                self._max_cloud_workers,
+            )
 
     def _cleanup_orphaned_worktrees(self) -> None:
         from app.core.watcher_types import _WORKTREE_BASE
