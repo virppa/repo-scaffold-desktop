@@ -83,6 +83,7 @@ class ServiceManager:
                     "--",
                     "wsl",
                     "bash",
+                    "-i",
                     "-l",
                     "-c",
                     _VLLM_FP8_CMD,
