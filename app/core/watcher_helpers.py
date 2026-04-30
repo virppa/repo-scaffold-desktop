@@ -133,11 +133,13 @@ def build_worker_env(
     elif mode == "local":
         env["ANTHROPIC_BASE_URL"] = _LITELLM_BASE_URL
         env.setdefault("ANTHROPIC_API_KEY", "sk-dummy")
-        # Treat the context window as 80K for compaction purposes: Claude Code
-        # compacts at ~95% of this value (~76K tokens), preventing the unbounded
-        # context growth observed in WOR-216/WOR-217/WOR-212 (peak 163K tokens).
-        # --context-window is not a valid CLI flag; this env var is the correct hook.
-        env.setdefault("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "80000")
+        # Compact at ~180K tokens: 240K window × 75% PCT trigger.
+        # vLLM FP8 throughput is flat 16K→262K (WOR-234/WOR-118), so there is no
+        # throughput cliff to avoid — 240K gives generous context while leaving 80K
+        # headroom before the 262K hard limit. 75% fires compaction early enough to
+        # prevent late-session drift observed in WOR-216/WOR-217/WOR-212 (163K peak).
+        env.setdefault("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "240000")
+        env.setdefault("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "75")
     return env
 
 
