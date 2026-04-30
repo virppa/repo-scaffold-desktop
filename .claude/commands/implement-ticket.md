@@ -61,6 +61,22 @@ Check out the correct branch before running /implement-ticket.
 
 `save_issue(id: "<ticket_id>", state: "<ticket_state_map.in_progress_local>")`
 
+### 2.7. Pre-read all implementation files (one pass, before writing any code)
+
+Read every file you will need to modify — in a single pass, before touching anything:
+- All files listed in `related_files_hint`
+- Any other `allowed_paths` files you know you will edit based on the objective
+
+Take inline notes about current structure, signatures, and invariants as you read. **Then stop reading and start writing.**
+
+**Context discipline — obey these rules for the entire session:**
+
+- **Each file gets one read.** Do not re-read a file you already read unless you made a structural change large enough that your notes are no longer accurate (rare — think "rewrote the whole class").
+- **Trust the Edit tool.** After an Edit call the file is updated — the diff in the tool result shows exactly what changed. Do NOT re-read the file to confirm the edit took effect.
+- **Do not re-read context_snippets.** They are pre-loaded verbatim — treat them as files you have already read.
+- **Batch your edits, then run checks once.** Write all code changes across all files first. Run `ruff`, `mypy`, and `pytest` as a single final pass — not after each individual edit.
+- **No exploratory Bash.** Do not run Python one-liners to probe module structure or test a hypothesis. Reason from the source code you have already read, then edit.
+
 ### 3. Implement
 
 Implement the work described in `objective` and `acceptance_criteria`. Obey these hard rules at all times:

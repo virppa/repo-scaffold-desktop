@@ -243,10 +243,10 @@ litellm --config litellm-local.yaml --port 8082 --drop_params
 # 3. Launch Claude Code in a new terminal
 set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
 set ANTHROPIC_API_KEY=sk-dummy
-claude --model qwen3-coder:30b
+claude --model claude-sonnet-4-6
 ```
 
-`litellm-local.yaml` is gitignored. See `docs/spikes/local-model-setup.md` for VRAM budget, model selection, and benchmark results.
+`litellm-local.yaml` is gitignored. See `docs/spikes/vllm-benchmark-plan.md` for the current production model config (Qwen3.6-35B-A3B-NVFP4 via vLLM). `docs/spikes/local-model-setup.md` covers the original Ollama/qwen3-coder:30b setup (historical).
 
 ---
 

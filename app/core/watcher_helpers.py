@@ -170,18 +170,24 @@ def build_worker_cmd(
         "--strict-mcp-config",
         "--mcp-config",
         '{"mcpServers":{}}',
-        "--effort",
-        "max",
         "--verbose",
         "--output-format",
         "stream-json",
     ]
     if mode == "local":
+        # --bare strips OAuth; safe for local (dummy API key via LiteLLM).
+        # --effort normal: bounded implementation tasks don't benefit from max extended
+        #   thinking budget; normal saves tokens without quality regression.
+        # --context-window 80000: force compaction at 80K tokens instead of letting
+        #   context drift to the model max, preventing late-session turns from bloating
+        #   to 140K+ input with near-zero output (observed in WOR-216 / WOR-217).
         base.insert(2, "--bare")
+        base += ["--effort", "normal", "--context-window", "80000"]
+        base += ["--model", _LOCAL_MODEL]
+    else:
+        base += ["--effort", "max"]
     if disallowed_tools:
         base += ["--disallowed-tools", ",".join(disallowed_tools)]
-    if mode == "local":
-        return base + ["--model", _LOCAL_MODEL, "-p", prompt]
     return base + ["-p", prompt]
 
 
