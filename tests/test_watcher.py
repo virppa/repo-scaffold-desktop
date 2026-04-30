@@ -478,3 +478,57 @@ def test_startup_info_default_mode_logs_both_pool_sizes(
     assert "mode=default" in msg
     assert "max_local_workers=8" in msg
     assert "max_cloud_workers=3" in msg
+
+
+# ---------------------------------------------------------------------------
+# _enrich_with_retry_context — injects constraint when last_failure.json exists
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_with_retry_context_injects_constraint(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import json
+
+    manifest = _make_manifest(implementation_constraints=["original constraint"])
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+    artifact_dir.mkdir(parents=True)
+    failure = {
+        "failed_at": "2026-04-30T10:00:00Z",
+        "check": "pytest",
+        "stdout": (
+            "FAILED tests/test_watcher_worktrees.py"
+            "::test_cleanup_orphaned_worktrees_removes_subdirs"
+            " - AssertionError: assert 0 == 2\n"
+        ),
+        "stderr": "",
+    }
+    (artifact_dir / "last_failure.json").write_text(
+        json.dumps(failure), encoding="utf-8"
+    )
+
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    with caplog.at_level(logging.INFO, logger="app.core.watcher"):
+        enriched = w._enrich_with_retry_context(manifest)
+
+    assert enriched.implementation_constraints[0].startswith("RETRY:")
+    assert "pytest" in enriched.implementation_constraints[0]
+    assert (
+        "test_cleanup_orphaned_worktrees_removes_subdirs"
+        in (enriched.implementation_constraints[0])
+    )
+    assert enriched.implementation_constraints[1] == "original constraint"
+    assert any("retry context" in m for m in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# _enrich_with_retry_context — no-op when last_failure.json absent
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_with_retry_context_noop_without_failure_file(tmp_path: Path) -> None:
+    manifest = _make_manifest(implementation_constraints=["original constraint"])
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    enriched = w._enrich_with_retry_context(manifest)
+
+    assert enriched.implementation_constraints == ["original constraint"]
