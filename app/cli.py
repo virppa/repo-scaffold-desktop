@@ -17,6 +17,7 @@ from app.core.post_setup import (
     create_github_repo,
     fetch_skills,
     run_git_init,
+    run_initial_push,
     run_precommit_install,
 )
 from app.core.presets import _PRESETS, get_preset
@@ -108,6 +109,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     gen.add_argument(
         "--github-create", action="store_true", help="Create a GitHub repository."
+    )
+    gen.add_argument(
+        "--git-push", action="store_true", help="Push initial commit to remote."
+    )
+    gen.add_argument(
+        "--remote-url",
+        default=None,
+        help="Remote URL to push to (used with --git-push).",
     )
     github_group = gen.add_mutually_exclusive_group()
     github_group.add_argument(
@@ -293,6 +302,7 @@ def _run_generate(args: argparse.Namespace) -> int:
         include_linear_mcp = get_preset(args.preset).context_defaults.get(
             "include_linear_mcp", False
         )
+
     try:
         config = RepoConfig(
             repo_name=args.repo_name,
@@ -349,6 +359,7 @@ def _run_generate(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    clone_url: str | None = None
     if args.github_create:
         prefs = PrefsStore.load()
         github_private = not args.public
@@ -359,6 +370,16 @@ def _run_generate(args: argparse.Namespace) -> int:
                 private=github_private,
             )
             print(f"✓ Created GitHub repo: {clone_url}")
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.git_push:
+        push_url = clone_url if clone_url is not None else args.remote_url
+        prefs = PrefsStore.load()
+        try:
+            run_initial_push(args.output, push_url, prefs)
+            print(f"✓ Pushed initial commit to {push_url}")
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
@@ -381,6 +402,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 1
+
+    if args.command == "generate":
+        # --git-push implies --git-init
+        if getattr(args, "git_push", False):
+            args.git_init = True
+        # --git-push requires either --github-create or --remote-url
+        has_remote = args.github_create or getattr(args, "remote_url", None)
+        if getattr(args, "git_push", False) and not has_remote:
+            parser.error(
+                "argument --git-push: must also specify --github-create or --remote-url"
+            )
 
     if args.command == "config":
         return _run_config(args)

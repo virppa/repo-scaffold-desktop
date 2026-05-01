@@ -1,7 +1,8 @@
 import json
 import subprocess
 import urllib.error
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -9,8 +10,10 @@ from app.core.post_setup import (
     create_github_repo,
     fetch_skills,
     run_git_init,
+    run_initial_push,
     run_precommit_install,
 )
+from app.core.user_prefs import UserPreferences
 
 
 @pytest.fixture()
@@ -324,3 +327,97 @@ class TestCreateGitHubRepo:
 
         body = json.loads(mock_urlopen.call_args[0][0].data)
         assert body["private"] is False
+
+
+class TestRunInitialPush:
+    URL = "https://github.com/user/repo"
+
+    def _expected_calls(self, repo_dir, with_auth=False):
+        kw = {"cwd": repo_dir, "check": True, "capture_output": True}
+        base = [
+            call(["git", "add", "."], **kw),
+        ]
+        if with_auth:
+            base.append(
+                call(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Alice",
+                        "-c",
+                        "user.email=alice@example.com",
+                        "commit",
+                        "-m",
+                        "Initial scaffold",
+                    ],
+                    **kw,
+                )
+            )
+        else:
+            base.append(
+                call(
+                    ["git", "commit", "-m", "Initial scaffold"],
+                    **kw,
+                )
+            )
+        return base + [
+            call(
+                ["git", "remote", "add", "origin", self.URL],
+                **kw,
+            ),
+            call(
+                ["git", "branch", "-M", "main"],
+                **kw,
+            ),
+            call(
+                ["git", "push", "-u", "origin", "main"],
+                **kw,
+            ),
+        ]
+
+    def test_executes_full_command_sequence(self, repo_dir):
+        with patch("app.core.post_setup.subprocess.run") as mock_run:
+            run_initial_push(repo_dir, self.URL, UserPreferences())
+
+        expected = self._expected_calls(repo_dir, with_auth=False)
+        assert mock_run.call_args_list == expected
+
+    def test_includes_author_name_and_email_when_both_set(self, repo_dir):
+        prefs = UserPreferences(author_name="Alice", author_email="alice@example.com")
+        with patch("app.core.post_setup.subprocess.run") as mock_run:
+            run_initial_push(repo_dir, self.URL, prefs)
+
+        expected = self._expected_calls(repo_dir, with_auth=True)
+        assert mock_run.call_args_list == expected
+
+    def test_falls_back_to_git_default_when_only_name_set(self, repo_dir):
+        prefs = UserPreferences(author_name="Alice")
+        with patch("app.core.post_setup.subprocess.run") as mock_run:
+            run_initial_push(repo_dir, self.URL, prefs)
+
+        expected = self._expected_calls(repo_dir, with_auth=False)
+        assert mock_run.call_args_list == expected
+
+    def test_falls_back_to_git_default_when_only_email_set(self, repo_dir):
+        prefs = UserPreferences(author_email="alice@example.com")
+        with patch("app.core.post_setup.subprocess.run") as mock_run:
+            run_initial_push(repo_dir, self.URL, prefs)
+
+        expected = self._expected_calls(repo_dir, with_auth=False)
+        assert mock_run.call_args_list == expected
+
+    def test_raises_runtime_error_on_subprocess_failure(self):
+        err = subprocess.CalledProcessError(
+            1, "git", stderr=b"fatal: not a git repository"
+        )
+        with patch("app.core.post_setup.subprocess.run", side_effect=err):
+            with pytest.raises(RuntimeError, match="not a git repository"):
+                run_initial_push(Path("/tmp"), self.URL, UserPreferences())
+
+    def test_runtime_error_includes_stderr(self):
+        err = subprocess.CalledProcessError(
+            128, "git", stderr=b"fatal: 'origin' already exists"
+        )
+        with patch("app.core.post_setup.subprocess.run", side_effect=err):
+            with pytest.raises(RuntimeError, match="'origin' already exists"):
+                run_initial_push(Path("/tmp"), self.URL, UserPreferences())
