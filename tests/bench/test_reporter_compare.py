@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import io
+import subprocess
+import sys
 from contextlib import redirect_stdout
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+from app.core.bench_store import BenchRun, BenchStore
 from scripts.bench.reporter import (
     _metric_delta,
     print_compare_table,
@@ -237,8 +243,8 @@ class TestPrintCompareTableBasic:
         r1 = _cmp_row("s1")
         r2 = _cmp_row("s2")
         output, _ = _capture_compare([r1], [r2])
-        assert "ΔTTFT" in output
-        assert "ΔTok/s" in output
+        assert "TTFT-delta" in output
+        assert "Tok/s-delta" in output
 
     def test_header_includes_tok_columns(self) -> None:
         r1 = _cmp_row("s1")
@@ -359,3 +365,466 @@ class TestPrintCompareTableDeltaValues:
         output, result = _capture_compare([r1], [], "s1", "s2")
         assert "--" in output
         assert result is False
+
+
+# ── CLI --compare subprocess integration tests ────────────────────────────────
+
+
+class TestCLISubprocessCompare:
+    """Exercises run_bench.py --compare via subprocess with fixture bench.db.
+
+    Asserts returncode == 1 for a regression fixture and returncode == 0 for
+    a no-regression fixture. Uses tmp_path for fixture bench.db and populates
+    it with minimal synthetic rows via BenchStore.
+    """
+
+    @pytest.fixture()
+    def bench_db(self, tmp_path: Path) -> Path:
+        """Create a clean bench.db in a temp directory."""
+        db_path = tmp_path / "bench.db"
+        store = BenchStore(db_path)
+        store._ensure_schema()  # ensures table exists
+        return db_path
+
+    def test_empty_sweeps_exit_0(self, bench_db: Path) -> None:
+        """No rows in either sweep → no regression → exit 0."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[2] / "scripts" / "bench" / "run_bench.py"),
+                "--compare",
+                "nonexistent_a",
+                "nonexistent_b",
+                "--db-path",
+                str(bench_db),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+
+    def test_regenerate_bench_db_per_test(self, bench_db: Path) -> None:
+        """Confirm tmp_path isolation — each test gets a fresh DB."""
+        store = BenchStore(bench_db)
+        assert len(store.get_by_run_id("should_not_exist")) == 0
+
+    def test_ttft_regression_exits_1(self, bench_db: Path) -> None:
+        """Sweep B TTFT is >10% higher than A → exit 1."""
+        store = BenchStore(bench_db)
+        rows_a = [
+            BenchRun(
+                run_id="sweep_a::local_qwen/qwen3:30b/speed/4096/1",
+                case_id="local_qwen/qwen3:30b/speed/4096/1",
+                repeat_index=1,
+                context_size=4096,
+                concurrency=1,
+                backend_id="local_qwen",
+                model_id="qwen3:30b",
+                tier="speed",
+                ttft_s=0.100,
+                throughput_tok_s=100.0,
+                outcome="ok",
+                quality_pytest_passed=True,
+                quality_ruff_passed=True,
+                quality_mypy_passed=True,
+                quality_task_success=None,
+                gpu_driver_version="535.0",
+                cuda_version="12.1",
+                python_version="3.11",
+                os_version="linux",
+                settings_hash="abc",
+                prompt_hash="def",
+                backend_base_url="http://localhost:8000",
+                ttfut_s=0.110,
+                wall_time_s=5.0,
+                prompt_tokens=500,
+                completion_tokens=200,
+                total_tokens=700,
+            ),
+        ]
+        rows_b = [
+            BenchRun(
+                run_id="sweep_b::local_qwen/qwen3:30b/speed/4096/1",
+                case_id="local_qwen/qwen3:30b/speed/4096/1",
+                repeat_index=1,
+                context_size=4096,
+                concurrency=1,
+                backend_id="local_qwen",
+                model_id="qwen3:30b",
+                tier="speed",
+                ttft_s=0.250,  # >100% increase → regression
+                throughput_tok_s=100.0,
+                outcome="ok",
+                quality_pytest_passed=True,
+                quality_ruff_passed=True,
+                quality_mypy_passed=True,
+                quality_task_success=None,
+                gpu_driver_version="535.0",
+                cuda_version="12.1",
+                python_version="3.11",
+                os_version="linux",
+                settings_hash="abc",
+                prompt_hash="def",
+                backend_base_url="http://localhost:8000",
+                ttfut_s=0.275,
+                wall_time_s=5.0,
+                prompt_tokens=500,
+                completion_tokens=200,
+                total_tokens=700,
+            ),
+        ]
+        for r in rows_a + rows_b:
+            store.record(r)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[2] / "scripts" / "bench" / "run_bench.py"),
+                "--compare",
+                "sweep_a",
+                "sweep_b",
+                "--db-path",
+                str(bench_db),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1
+        assert "REGRESSIONS DETECTED" in result.stdout
+
+    def test_throughput_regression_exits_1(self, bench_db: Path) -> None:
+        """Sweep B throughput_tok_s is >10% lower than A → exit 1."""
+        store = BenchStore(bench_db)
+        for run_id, ttft, tok in [
+            ("sweep_a::local_qwen/qwen3:30b/speed/4096/1", 0.100, 150.0),
+            ("sweep_b::local_qwen/qwen3:30b/speed/4096/1", 0.100, 100.0),
+        ]:
+            store.record(
+                BenchRun(
+                    run_id=run_id,
+                    case_id="local_qwen/qwen3:30b/speed/4096/1",
+                    repeat_index=1,
+                    context_size=4096,
+                    concurrency=1,
+                    backend_id="local_qwen",
+                    model_id="qwen3:30b",
+                    tier="speed",
+                    ttft_s=ttft,
+                    throughput_tok_s=tok,
+                    outcome="ok",
+                    quality_pytest_passed=True,
+                    quality_ruff_passed=True,
+                    quality_mypy_passed=True,
+                    quality_task_success=None,
+                    gpu_driver_version="535.0",
+                    cuda_version="12.1",
+                    python_version="3.11",
+                    os_version="linux",
+                    settings_hash="abc",
+                    prompt_hash="def",
+                    backend_base_url="http://localhost:8000",
+                    ttfut_s=ttft * 1.1,
+                    wall_time_s=5.0,
+                    prompt_tokens=500,
+                    completion_tokens=200,
+                    total_tokens=700,
+                )
+            )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[2] / "scripts" / "bench" / "run_bench.py"),
+                "--compare",
+                "sweep_a",
+                "sweep_b",
+                "--db-path",
+                str(bench_db),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1
+        assert "REGRESSIONS DETECTED" in result.stdout
+
+    def test_combined_regression_exits_1(self, bench_db: Path) -> None:
+        """Both TTFT and throughput regress → exit 1."""
+        store = BenchStore(bench_db)
+        for run_id, ttft, tok in [
+            ("sweep_a::local_qwen/qwen3:30b/speed/4096/1", 0.100, 200.0),
+            ("sweep_b::local_qwen/qwen3:30b/speed/4096/1", 0.200, 100.0),
+        ]:
+            store.record(
+                BenchRun(
+                    run_id=run_id,
+                    case_id="local_qwen/qwen3:30b/speed/4096/1",
+                    repeat_index=1,
+                    context_size=4096,
+                    concurrency=1,
+                    backend_id="local_qwen",
+                    model_id="qwen3:30b",
+                    tier="speed",
+                    ttft_s=ttft,
+                    throughput_tok_s=tok,
+                    outcome="ok",
+                    quality_pytest_passed=True,
+                    quality_ruff_passed=True,
+                    quality_mypy_passed=True,
+                    quality_task_success=None,
+                    gpu_driver_version="535.0",
+                    cuda_version="12.1",
+                    python_version="3.11",
+                    os_version="linux",
+                    settings_hash="abc",
+                    prompt_hash="def",
+                    backend_base_url="http://localhost:8000",
+                    ttfut_s=ttft * 1.1,
+                    wall_time_s=5.0,
+                    prompt_tokens=500,
+                    completion_tokens=200,
+                    total_tokens=700,
+                )
+            )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[2] / "scripts" / "bench" / "run_bench.py"),
+                "--compare",
+                "sweep_a",
+                "sweep_b",
+                "--db-path",
+                str(bench_db),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1
+
+    def test_identical_sweeps_exit_0(self, bench_db: Path) -> None:
+        """Identical rows → no regression → exit 0."""
+        store = BenchStore(bench_db)
+        for run_id in (
+            "sweep_a::local_qwen/qwen3:30b/speed/4096/1",
+            "sweep_b::local_qwen/qwen3:30b/speed/4096/1",
+        ):
+            store.record(
+                BenchRun(
+                    run_id=run_id,
+                    case_id="local_qwen/qwen3:30b/speed/4096/1",
+                    repeat_index=1,
+                    context_size=4096,
+                    concurrency=1,
+                    backend_id="local_qwen",
+                    model_id="qwen3:30b",
+                    tier="speed",
+                    ttft_s=0.200,
+                    throughput_tok_s=120.0,
+                    outcome="ok",
+                    quality_pytest_passed=True,
+                    quality_ruff_passed=True,
+                    quality_mypy_passed=True,
+                    quality_task_success=None,
+                    gpu_driver_version="535.0",
+                    cuda_version="12.1",
+                    python_version="3.11",
+                    os_version="linux",
+                    settings_hash="abc",
+                    prompt_hash="def",
+                    backend_base_url="http://localhost:8000",
+                    ttfut_s=0.220,
+                    wall_time_s=5.0,
+                    prompt_tokens=500,
+                    completion_tokens=200,
+                    total_tokens=700,
+                )
+            )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[2] / "scripts" / "bench" / "run_bench.py"),
+                "--compare",
+                "sweep_a",
+                "sweep_b",
+                "--db-path",
+                str(bench_db),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        assert "REGRESSIONS DETECTED" not in result.stdout
+
+    def test_minor_improvement_exit_0(self, bench_db: Path) -> None:
+        """Sweep B is slightly better → no regression → exit 0."""
+        store = BenchStore(bench_db)
+        for run_id, ttft, tok in [
+            ("sweep_a::local_qwen/qwen3:30b/speed/4096/1", 0.200, 100.0),
+            ("sweep_b::local_qwen/qwen3:30b/speed/4096/1", 0.150, 110.0),
+        ]:
+            store.record(
+                BenchRun(
+                    run_id=run_id,
+                    case_id="local_qwen/qwen3:30b/speed/4096/1",
+                    repeat_index=1,
+                    context_size=4096,
+                    concurrency=1,
+                    backend_id="local_qwen",
+                    model_id="qwen3:30b",
+                    tier="speed",
+                    ttft_s=ttft,
+                    throughput_tok_s=tok,
+                    outcome="ok",
+                    quality_pytest_passed=True,
+                    quality_ruff_passed=True,
+                    quality_mypy_passed=True,
+                    quality_task_success=None,
+                    gpu_driver_version="535.0",
+                    cuda_version="12.1",
+                    python_version="3.11",
+                    os_version="linux",
+                    settings_hash="abc",
+                    prompt_hash="def",
+                    backend_base_url="http://localhost:8000",
+                    ttfut_s=ttft * 1.1,
+                    wall_time_s=5.0,
+                    prompt_tokens=500,
+                    completion_tokens=200,
+                    total_tokens=700,
+                )
+            )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[2] / "scripts" / "bench" / "run_bench.py"),
+                "--compare",
+                "sweep_a",
+                "sweep_b",
+                "--db-path",
+                str(bench_db),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+
+    def test_within_regression_threshold_exit_0(self, bench_db: Path) -> None:
+        """Changes below the default 10% threshold do not trigger regression."""
+        store = BenchStore(bench_db)
+        for run_id, ttft, tok in [
+            ("sweep_a::local_qwen/qwen3:30b/speed/4096/1", 0.100, 100.0),
+            ("sweep_b::local_qwen/qwen3:30b/speed/4096/1", 0.105, 95.0),
+        ]:
+            store.record(
+                BenchRun(
+                    run_id=run_id,
+                    case_id="local_qwen/qwen3:30b/speed/4096/1",
+                    repeat_index=1,
+                    context_size=4096,
+                    concurrency=1,
+                    backend_id="local_qwen",
+                    model_id="qwen3:30b",
+                    tier="speed",
+                    ttft_s=ttft,
+                    throughput_tok_s=tok,
+                    outcome="ok",
+                    quality_pytest_passed=True,
+                    quality_ruff_passed=True,
+                    quality_mypy_passed=True,
+                    quality_task_success=None,
+                    gpu_driver_version="535.0",
+                    cuda_version="12.1",
+                    python_version="3.11",
+                    os_version="linux",
+                    settings_hash="abc",
+                    prompt_hash="def",
+                    backend_base_url="http://localhost:8000",
+                    ttfut_s=ttft * 1.1,
+                    wall_time_s=5.0,
+                    prompt_tokens=500,
+                    completion_tokens=200,
+                    total_tokens=700,
+                )
+            )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[2] / "scripts" / "bench" / "run_bench.py"),
+                "--compare",
+                "sweep_a",
+                "sweep_b",
+                "--db-path",
+                str(bench_db),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0
+        assert "REGRESSIONS DETECTED" not in result.stdout
+
+    def test_multiple_configs_any_regression_exits_1(self, bench_db: Path) -> None:
+        """Multiple configs: if any one regresses, exit 1."""
+        store = BenchStore(bench_db)
+        for run_id, model_id, ttft, tok in [
+            ("sweep_a::local_qwen/model_a/speed/4096/1", "model_a", 0.100, 100.0),
+            ("sweep_b::local_qwen/model_a/speed/4096/1", "model_a", 0.100, 100.0),
+            ("sweep_a::local_qwen/model_b/speed/4096/1", "model_b", 0.100, 100.0),
+            ("sweep_b::local_qwen/model_b/speed/4096/1", "model_b", 0.300, 100.0),
+        ]:
+            store.record(
+                BenchRun(
+                    run_id=run_id,
+                    case_id=f"local_qwen/{model_id}/speed/4096/1",
+                    repeat_index=1,
+                    context_size=4096,
+                    concurrency=1,
+                    backend_id="local_qwen",
+                    model_id=model_id,
+                    tier="speed",
+                    ttft_s=ttft,
+                    throughput_tok_s=tok,
+                    outcome="ok",
+                    quality_pytest_passed=True,
+                    quality_ruff_passed=True,
+                    quality_mypy_passed=True,
+                    quality_task_success=None,
+                    gpu_driver_version="535.0",
+                    cuda_version="12.1",
+                    python_version="3.11",
+                    os_version="linux",
+                    settings_hash="abc",
+                    prompt_hash="def",
+                    backend_base_url="http://localhost:8000",
+                    ttfut_s=ttft * 1.1,
+                    wall_time_s=5.0,
+                    prompt_tokens=500,
+                    completion_tokens=200,
+                    total_tokens=700,
+                )
+            )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[2] / "scripts" / "bench" / "run_bench.py"),
+                "--compare",
+                "sweep_a",
+                "sweep_b",
+                "--db-path",
+                str(bench_db),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 1
