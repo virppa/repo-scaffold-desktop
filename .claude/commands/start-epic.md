@@ -149,7 +149,18 @@ git checkout main
 
 **5b. Write the execution manifest**
 
+Before writing, run these three pre-flight checks for each ticket:
+
+**A. Context snippets** — Read the key functions the worker will call or test from `related_files_hint`. If any function's behaviour depends on a constant defined in another module or a non-obvious path indirection (e.g. `repo_root.parent / _WORKTREE_BASE` where `_WORKTREE_BASE` is in `watcher_types.py`), copy those lines verbatim into `context_snippets` as `"# <file>:<start>-<end>\n<lines>"`. Rule: if you needed to read a second file to understand the first, the worker needs it too — inline it as a snippet.
+
+**B. Tool constraint (test-only manifests)** — If every glob in `allowed_paths` targets only test files (e.g. `tests/**`, `tests/test_*.py`), prepend this entry to `implementation_constraints`:
+`"Fix code by editing test files directly with Edit/Write tools. Do not use Bash to experiment with Python path logic or prototype solutions — reason from the source code, then edit."`
+
+**C. AC function name validation** — For any function or method name mentioned in `acceptance_criteria`, verify it exists in the source: `grep -rn "def <name>" app/`. Correct any mismatch before writing — this prevents the worker from testing non-existent symbols.
+
 Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
+
+> **`linear_id` field:** For Batch 1 (ReadyForLocal) manifests, set `null` — the watcher resolves the Linear UUID at dispatch time from its poll response. For WaitingForDeps manifests, set the WOR-NNN identifier string (e.g. `"WOR-45"`). Linear's GraphQL `issueUpdate` accepts both UUID and identifier, so WOR-NNN is correct and sufficient. **Do not attempt to look up the internal UUID** — it is not needed. If `linear_id` is null on a WaitingForDeps manifest, `_notify_promotion()` silently skips the Linear state update and the ticket is permanently stuck after its blockers merge.
 
 ```json
 {
@@ -208,8 +219,8 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
 
 Write to `.claude/artifacts/<ticket_id_lower>/manifest.json` with these key differences:
 - `"status": "WaitingForDeps"` — watcher will promote once blockers merge
-- `"linear_id": "<UUID from get_issue — NOT the WOR-XX identifier>"` — required for the watcher to call set_state when promoting
-- `"blocked_by_tickets": ["WOR-45"]` — list the Batch 1 ticket(s) whose file sets conflict with this ticket
+- `"linear_id": "WOR-45"` — use the WOR-NNN identifier directly (Linear's GraphQL `issueUpdate` accepts both UUID and identifier). **Required** for WaitingForDeps: `_notify_promotion()` uses this to set state to ReadyForLocal in Linear; if null, the manifest transitions locally but Linear is never updated and the watcher never picks the ticket up.
+- `"blocked_by_tickets": ["WOR-45"]` — list the Batch 1 ticket(s) whose file sets conflict with this ticket; also use WOR-NNN identifiers
 - `"parallel_safe": false`
 
 All other fields the same as the Batch 1 template above.

@@ -10,13 +10,14 @@ Usage (via CLI):
 Worker modes:
     cloud   — spawn claude with clean env (no ANTHROPIC_BASE_URL); routes to
               Anthropic API unmodified.
-    local   — spawn claude --model qwen3-coder:30b via LiteLLM proxy on
+    local   — spawn claude --model claude-sonnet-4-6 via LiteLLM proxy on
               localhost:8082; auto-starts proxy if not already running.
     default — respect manifest.implementation_mode per ticket.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -55,6 +56,7 @@ class _ProcessedTicket(NamedTuple):
     epic_id: str | None
     worker_branch: str
     elapsed: float
+    succeeded: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +67,7 @@ class _ProcessedTicket(NamedTuple):
 class Watcher:
     """Orchestrates local worker sessions end-to-end."""
 
-    _POLL_INTERVAL = 30  # seconds between Linear polls
+    _POLL_INTERVAL = 10  # seconds between Linear polls
 
     def __init__(
         self,
@@ -115,12 +117,7 @@ class Watcher:
         if self._mode == "local":
             self._services.ensure_litellm_running()
 
-        logger.info(
-            "Watcher started (mode=%s, max_local_workers=%d, max_cloud_workers=%d)",
-            self._mode,
-            self._max_local_workers,
-            self._max_cloud_workers,
-        )
+        self._log_startup_info()
 
         try:
             while self._running:
@@ -139,6 +136,28 @@ class Watcher:
             self._services.stop()
             self._remove_pid_file()
             logger.info("Watcher stopped cleanly")
+
+    def _log_startup_info(self) -> None:
+        """Log startup pool sizes, omitting irrelevant entries per mode."""
+        if self._mode == "cloud":
+            logger.info(
+                "Watcher started (mode=%s, max_cloud_workers=%d)",
+                self._mode,
+                self._max_cloud_workers,
+            )
+        elif self._mode == "local":
+            logger.info(
+                "Watcher started (mode=%s, max_local_workers=%d)",
+                self._mode,
+                self._max_local_workers,
+            )
+        else:
+            logger.info(
+                "Watcher started (mode=%s, max_local_workers=%d, max_cloud_workers=%d)",
+                self._mode,
+                self._max_local_workers,
+                self._max_cloud_workers,
+            )
 
     def _cleanup_orphaned_worktrees(self) -> None:
         from app.core.watcher_types import _WORKTREE_BASE
@@ -343,6 +362,7 @@ class Watcher:
 
     def _start_ticket(self, ticket_id: str, linear_id: str) -> None:
         manifest = self._load_manifest(ticket_id)
+        manifest = self._enrich_with_retry_context(manifest)
 
         # Prerequisite checks
         open_blockers = self._linear.get_open_blockers(linear_id)
@@ -383,6 +403,12 @@ class Watcher:
                 )
                 return
 
+        if effective_mode == "local":
+            if not self._services.probe_vllm_health():
+                logger.warning("Deferring %s — vLLM not ready yet", ticket_id)
+                return
+            self._services.ensure_litellm_running()
+
         worktree_path = create_worktree(self._repo_root, manifest)
         copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)
         write_worker_pytest_config(worktree_path)
@@ -394,10 +420,6 @@ class Watcher:
             ticket_id,
         )
         logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
-
-        if effective_mode == "local":
-            self._services.probe_vllm_health()
-            self._services.ensure_litellm_running()
 
         backed_up_plans = backup_plan_files()
         process = launch_worker(
@@ -451,6 +473,7 @@ class Watcher:
                     epic_id=worker.manifest.epic_id,
                     worker_branch=worker.manifest.worker_branch,
                     elapsed=elapsed,
+                    succeeded=rc == 0,
                 )
             )
         return still_running
@@ -516,15 +539,26 @@ class Watcher:
             return
 
         if self._processed_tickets:
+            failed = [t for t in self._processed_tickets if not t.succeeded]
+            succeeded = [t for t in self._processed_tickets if t.succeeded]
             epic_id = next(
                 (t.epic_id for t in self._processed_tickets if t.epic_id), None
             )
-            logger.info("All sub-tickets processed — epic complete")
+            if failed:
+                logger.warning(
+                    "All tickets processed — %d failed, %d succeeded",
+                    len(failed),
+                    len(succeeded),
+                )
+            else:
+                logger.info("All sub-tickets processed — epic complete")
             logger.info("%-15s  %-55s  %s", "Ticket", "PR URL", "Elapsed")
             for t in self._processed_tickets:
-                pr_url = self._lookup_pr_url(t.worker_branch)
+                pr_url = (
+                    self._lookup_pr_url(t.worker_branch) if t.succeeded else "(failed)"
+                )
                 logger.info("%-15s  %-55s  %.0fs", t.ticket_id, pr_url, t.elapsed)
-            if epic_id:
+            if epic_id and not failed:
                 try:
                     self._linear.post_comment(
                         epic_id,
@@ -540,6 +574,56 @@ class Watcher:
     # ------------------------------------------------------------------
     # Manifest loading
     # ------------------------------------------------------------------
+
+    def _enrich_with_retry_context(
+        self, manifest: ExecutionManifest
+    ) -> ExecutionManifest:
+        """Prepend last_failure.json content to implementation_constraints on retry.
+
+        Promotes the failure context from a file the worker must discover into an
+        explicit directive at the top of the task list, so the worker addresses the
+        specific failure immediately rather than re-running the full suite blind.
+        """
+        artifact_dir = (self._repo_root / manifest.artifact_paths.result_json).parent
+        failure_path = artifact_dir / "last_failure.json"
+        if not failure_path.exists():
+            return manifest
+
+        try:
+            data = json.loads(failure_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(
+                "Could not read last_failure.json for %s: %s", manifest.ticket_id, exc
+            )
+            return manifest
+
+        check = data.get("check", "unknown")
+        stdout = data.get("stdout", "")
+        failure_line = next(
+            (
+                line.strip()
+                for line in stdout.splitlines()
+                if line.strip().startswith("FAILED")
+            ),
+            stdout[:200].strip(),
+        )
+        constraint = (
+            f"RETRY: Previous run failed check `{check}`. "
+            f"Fix this specific failure first: {failure_line}"
+        )
+        logger.info(
+            "Enriching %s manifest with retry context: %s",
+            manifest.ticket_id,
+            failure_line,
+        )
+        return manifest.model_copy(
+            update={
+                "implementation_constraints": [
+                    constraint,
+                    *manifest.implementation_constraints,
+                ]
+            }
+        )
 
     def _load_manifest(self, ticket_id: str) -> ExecutionManifest:
         from app.core.manifest import ArtifactPaths

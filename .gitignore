@@ -18,6 +18,7 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+pytest.ini
 
 # Ruff
 .ruff_cache/
@@ -66,3 +67,4 @@ bench_results.db
 
 # Benchmark config backups
 config/*.toml.bak
+bench.db

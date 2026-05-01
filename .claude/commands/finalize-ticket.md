@@ -20,12 +20,12 @@ Only update docs if the change is meaningful — do not document implementation 
 
 ### 2.5. File-size gate
 
-Thresholds derived from local model context window (qwen3-coder:30b, 32k tokens, ~9.7 tokens/LOC):
+Thresholds anchored to cloud API token cost and single-responsibility for parallel worker isolation (not local model context — vLLM FP8 throughput is flat 16K→262K, so file size has no throughput impact). See `docs/spikes/vllm-context-thresholds.md`.
 
 ```
-ADVISORY_LOC = 500   # ~22% of working context (21,600 tokens available)
-RECOMMEND_LOC = 700  # ~31% of working context
-BLOCK_LOC = 1000     # ~45% of working context — local model effectiveness degrades sharply
+ADVISORY_LOC = 500    # worth planning a split
+RECOMMEND_LOC = 700   # real split needed soon; include recommendation in PR description
+BLOCK_LOC = 1200      # cloud token cost + mixed responsibility — split before this PR
 ```
 
 Determine the base branch (epic branch or `main`) from the PR target established in step 1. Find every modified `.py` file in this branch's diff:
@@ -53,16 +53,14 @@ Continue — non-blocking.
 
 **Recommend (≥ 700 LOC):**
 ```
-Warning: <filename> is <N> LOC (≥ 700 — recommend). Large enough to reduce local model effectiveness.
-Include a splitting recommendation in the PR description.
+Warning: <filename> is <N> LOC (≥ 700 — recommend). Split soon; include a recommendation in the PR description.
 ```
 Continue — but flag the file in the PR body.
 
-**Block (≥ 1,000 LOC):**
+**Block (≥ 1,200 LOC):**
 ```
-BLOCKED: <filename> is <N> LOC (≥ 1,000 — block threshold).
-This file consumes ~45% of the local model's working context budget.
-Split <filename> before creating this PR.
+BLOCKED: <filename> is <N> LOC (≥ 1,200 — block threshold).
+Cloud token cost and mixed responsibility — split <filename> before creating this PR.
 ```
 **Stop here. Do not proceed to step 3 or create a PR.** Ask the user how to proceed.
 
