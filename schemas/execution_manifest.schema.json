@@ -143,6 +143,25 @@
       "title": "Review Mode",
       "type": "string"
     },
+    "effort": {
+      "anyOf": [
+        {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effort"
+    },
     "base_branch": {
       "title": "Base Branch",
       "type": "string"

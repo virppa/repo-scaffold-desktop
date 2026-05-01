@@ -114,6 +114,7 @@ If no siblings are In Progress, skip this block silently.
 - Flag any security surface introduced: new I/O, user input handling, file operations, subprocess calls
 - Note edge cases and overwrite behavior to consider
 - Assess local-model suitability: is the scope bounded (≤3 small/medium files, straightforward wiring)? Or does it touch large/complex modules (e.g. watcher.py, generator.py) requiring multi-step reasoning across many dependencies? Record your conclusion — it determines `implementation_mode` in the manifest.
+- Classify the ticket's effort level using this rule: simple/additive work touching ≤2 files → 'high'; bounded multi-file work → 'xhigh'; complex/large modules or deep cross-file reasoning → 'max'. Record your classification in the manifest.
 
 ### 3. Create the branch and update Linear
 Using the branch name from Linear's "Copy branch name" format (usually `WOR-NNN-short-description`):
@@ -211,6 +212,7 @@ Construct the manifest from the planning context gathered in steps 1–4:
   "risk_level": "<low|medium|high — from security surface assessment>",
   "risk_flags": ["<any specific risk notes>"],
   "implementation_mode": "<local if ticket has local-ready label, otherwise cloud>",
+  "effort": "<high|xhigh|max — effort classification from architect phase>",
   "review_mode": "auto",
   "base_branch": "<epic-branch or main>",
   "worker_branch": "<sub-ticket-branch>",
