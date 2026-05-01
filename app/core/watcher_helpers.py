@@ -162,13 +162,8 @@ def build_worker_cmd(
     """
     if prompt is None:
         prompt = f"/implement-ticket {ticket_id}"
-    # --bare strips auto-memory, hooks, and CLAUDE.md auto-discovery, keeping
-    # the system prompt lean. --add-dir re-adds the worktree CLAUDE.md.
     # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
     # from blocking ~180s on OAuth in non-interactive mode.
-    # NOTE: --bare also strips OAuth credential loading, so it must NOT be used
-    # for cloud mode where the worker authenticates via OAuth (Claude Max).
-    # Local mode uses a dummy API key via LiteLLM, so --bare is safe there.
     base = [
         "claude",
         "--dangerously-skip-permissions",
@@ -182,10 +177,8 @@ def build_worker_cmd(
         "stream-json",
     ]
     if mode == "local":
-        # --bare strips OAuth; safe for local (dummy API key via LiteLLM).
         # --effort high: bounded tasks don't need max thinking budget; saves tokens.
         # (CLI values: low|medium|high|xhigh|max — "normal" was removed)
-        base.insert(2, "--bare")
         base += ["--effort", "high"]
         base += ["--model", _LOCAL_MODEL]
     else:
