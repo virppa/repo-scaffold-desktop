@@ -840,6 +840,8 @@ def test_dispatch_proceeds_when_manifest_blocked_by_tickets_is_empty(
             "app.core.watcher.watcher.launch_worker",
             return_value=fake_process,
         ),
+        patch.object(w._services, "ensure_ollama_running"),
+        patch.object(w._services, "ensure_litellm_running"),
         patch.object(w._services, "probe_vllm_health"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")
@@ -878,6 +880,8 @@ def test_dispatch_proceeds_when_all_manifest_blockers_are_merged(
             "app.core.watcher.watcher.launch_worker",
             return_value=fake_process,
         ),
+        patch.object(w._services, "ensure_ollama_running"),
+        patch.object(w._services, "ensure_litellm_running"),
         patch.object(w._services, "probe_vllm_health"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")
