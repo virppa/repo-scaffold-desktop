@@ -26,6 +26,24 @@ a pre-loaded code excerpt — do NOT re-read these sections from disk unless you
 need context beyond what is shown. The snippets are verbatim source with file
 path and line numbers in the header comment.
 
+### 0.1. Inspect last_failure.json for WIP state (WOR-258)
+
+If `.claude/artifacts/<ticket_id_lower>/last_failure.json` exists in the
+worktree, read it for a `wip_commit_sha` value. When present:
+
+```bash
+git log --oneline -5   # see recent commits, including wip(failed) commits
+git show --stat <wip_commit_sha>  # diff of that commit
+```
+
+If the worktree contains a commit whose message matches `wip(failed): <ticket_id>`:
+- Inspect what code was already written by that commit.
+- **Resume from the WIP commit state** without redoing completed work.
+- If the WIP commit has conflicts with the current branch tip, resolve them
+  before continuing.
+
+This allows retry workers to pick up where the previous worker left off.
+
 ### 1. Verify branch
 
 Confirm the current git branch matches `worker_branch` from the manifest:

@@ -15,6 +15,7 @@ from app.core.watcher.watcher_worktrees import (
     backup_plan_files,
     cleanup_orphaned_worktrees,
     cleanup_worktree,
+    commit_wip_state,
     copy_manifest_to_worktree,
     create_worktree,
     preserve_worker_artifacts,
@@ -497,3 +498,193 @@ def test_cleanup_orphaned_worktrees_no_op_when_base_absent(
         cleanup_orphaned_worktrees(tmp_path)
 
     mock_cleanup.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# commit_wip_state
+# ---------------------------------------------------------------------------
+
+
+def _completed_process(
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+) -> subprocess.CompletedProcess:
+    """Return a CompletedProcess matching subprocess.run output."""
+    return subprocess.CompletedProcess(
+        args="", returncode=returncode, stdout=stdout, stderr=stderr
+    )
+
+
+def test_commit_wip_state_creates_and_pushes_on_dirty_tree(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Create a dummy file so the tree is dirty
+    (tmp_path / "test.txt").write_text("dirty content")
+
+    # status --porcelain → non-empty (tree is dirty)
+    # add -A → success
+    # commit → success
+    # push → success
+    # rev-parse HEAD → returns short SHA
+    sha = "a1b2c3d4"
+    mock_results = [
+        _completed_process(stdout="M test.txt\n"),  # status --porcelain
+        _completed_process(),  # add -A
+        _completed_process(),  # commit
+        _completed_process(),  # push
+        _completed_process(stdout=sha + "\n"),  # rev-parse HEAD
+    ]
+    call_count = [0]
+
+    def _side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        idx = call_count[0]
+        call_count[0] += 1
+        return mock_results[idx]
+
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+            side_effect=_side_effect,
+        ),
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
+
+    assert result == sha
+    assert call_count[0] == 5
+    assert any("WIP commit" in r.message for r in caplog.records)
+    assert any("a1b2c3d4" in r.message for r in caplog.records)
+
+
+def test_commit_wip_state_no_op_on_clean_tree(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        patch("app.core.watcher.watcher_worktrees.subprocess.run") as mock_run,
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args="", returncode=0, stdout="", stderr=""
+        )
+        result = commit_wip_state(Path("/tmp"), "WOR-10", "wor-10-test")
+
+    assert result is None
+    assert any("no wip commit needed" in r.message for r in caplog.records)
+
+
+def test_commit_wip_state_returns_none_on_git_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # status → dirty, add → ok, commit → fails (check=True raises)
+    # The mock must raise CalledProcessError because check=True only raises
+    # for actual exceptions, not for returncode being set on a CompletedProcess.
+    commit_raises = [False]
+    call_count = [0]
+
+    def _side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        # 1st call: status --porcelain → dirty (check=False, no raise)
+        # 2nd call: add -A → success
+        # 3rd call: commit → raises CalledProcessError (check=True)
+        idx = call_count[0]
+        call_count[0] += 1
+        if idx == 0:
+            return _completed_process(stdout="M test.txt\n")
+        if idx == 2 and not commit_raises[0]:
+            commit_raises[0] = True
+            raise subprocess.CalledProcessError(
+                1, "git commit", stderr="fatal: not a git repo"
+            )
+        return _completed_process()
+
+    caplog.set_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees")
+    with patch(
+        "app.core.watcher.watcher_worktrees.subprocess.run",
+        side_effect=_side_effect,
+    ):
+        result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
+
+    assert result is None
+    assert any("WIP commit failed" in r.message for r in caplog.records)
+
+
+def test_commit_wip_state_returns_none_on_push_failure(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # status → dirty, add → ok, commit → ok, push → fail
+    mock_results = [
+        _completed_process(stdout="M test.txt\n"),  # status
+        _completed_process(),  # add
+        _completed_process(),  # commit
+        _completed_process(
+            returncode=1, stderr="remote: Authentication failed"
+        ),  # push
+    ]
+    call_count = [0]
+
+    def _side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        idx = call_count[0]
+        call_count[0] += 1
+        return mock_results[idx]
+
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+            side_effect=_side_effect,
+        ),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
+
+    assert result is None
+    assert any("wip commit not pushed" in r.message for r in caplog.records)
+
+
+def test_commit_wip_state_skips_commit_when_staged_but_not_committed(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # git status --porcelain returns empty output but tree actually has
+    # untracked files that are already ignored.  We simulate: status returns
+    # empty → no-op.  The function never reaches git add/commit.
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+        ) as mock_run,
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        mock_run.return_value = subprocess.CompletedProcess(
+            args="", returncode=0, stdout="", stderr=""
+        )
+        result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
+
+    assert result is None
+    assert any("no wip commit needed" in r.message for r in caplog.records)
+
+
+def test_commit_wip_state_handles_status_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # git status fails (non-zero returncode) → log warning and return None
+    # status uses check=False so it returns a CompletedProcess, not a
+    # CalledProcessError — the error is handled manually in the function.
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args="git status",
+                returncode=1,
+                stderr="error: invalid option",
+                stdout="",
+            ),
+        ),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
+
+    assert result is None
+    assert any("git status failed" in r.message for r in caplog.records)

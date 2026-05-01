@@ -1039,3 +1039,153 @@ def test_finalize_worker_token_fields_none_when_no_log(
     assert m.local_output_tokens is None
     assert m.local_tokens is None
     assert m.local_output_tokens_per_second is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-258 — commit_wip_state integration
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_calls_commit_wip_state_on_check_failure(
+    tmp_path: Path,
+) -> None:
+    """commit_wip_state is called when checks fail with abort policy."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        failure_policy=FailurePolicy(on_check_failure="abort"),
+    )
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=False),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value="a1b2c3d4",
+        ) as mock_commit,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    mock_commit.assert_called_once_with(
+        tmp_path,
+        "WOR-10",
+        "wor-10-test-ticket",
+    )
+
+
+def test_finalize_worker_writes_last_failure_json_on_wip_commit(
+    tmp_path: Path,
+) -> None:
+    """last_failure.json in the worktree is updated with wip_commit_sha."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        failure_policy=FailurePolicy(on_check_failure="abort"),
+    )
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    # Create an existing last_failure.json in the worktree
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    failure_file = artifact_dir / "last_failure.json"
+    failure_file.write_text('{"failed_at": "2026-01-01"}', encoding="utf-8")
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=False),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value="a1b2c3d4",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    data = json.loads(failure_file.read_text(encoding="utf-8"))
+    assert data["failed_at"] == "2026-01-01"
+    assert data["wip_commit_sha"] == "a1b2c3d4"
+
+
+def test_finalize_worker_last_failure_json_created_when_absent(
+    tmp_path: Path,
+) -> None:
+    """last_failure.json is created if it does not exist yet."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        failure_policy=FailurePolicy(on_check_failure="abort"),
+    )
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    # No last_failure.json exists
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=False),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value="a1b2c3d4",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    failure_file = artifact_dir / "last_failure.json"
+    assert failure_file.exists()
+    data = json.loads(failure_file.read_text(encoding="utf-8"))
+    assert data["wip_commit_sha"] == "a1b2c3d4"
+
+
+def test_finalize_worker_skips_commit_wip_when_no_sha(tmp_path: Path) -> None:
+    """When commit_wip_state returns None, no last_failure.json update."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        failure_policy=FailurePolicy(on_check_failure="abort"),
+    )
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=False),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value=None,
+        ) as mock_commit,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    mock_commit.assert_called_once()
+    # No last_failure.json should be created or modified
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+    failure_file = artifact_dir / "last_failure.json"
+    assert not failure_file.exists()

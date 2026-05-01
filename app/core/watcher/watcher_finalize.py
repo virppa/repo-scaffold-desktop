@@ -6,6 +6,7 @@ Extracted from Watcher._finalize_worker to reduce watcher.py LOC toward the
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess  # nosec B404
 from pathlib import Path
@@ -34,6 +35,7 @@ from .watcher_types import (
 )
 from .watcher_worktrees import (
     cleanup_worktree,
+    commit_wip_state,
     preserve_worker_artifacts,
     restore_plan_files,
 )
@@ -137,6 +139,14 @@ def finalize_worker(
 
     restore_plan_files(worker.backed_up_plans)
     if not artifacts_preserved:
+        # Preserve work-in-progress state for retry workers (WOR-258)
+        wip_sha = commit_wip_state(
+            worker.worktree_path,
+            worker.ticket_id,
+            worker.manifest.worker_branch,
+        )
+        if wip_sha is not None:
+            _write_wip_sha_to_last_failure(worker, wip_sha)
         preserve_worker_artifacts(repo_root, worker)
     cleanup_worktree(repo_root, worker.worktree_path)
 
@@ -283,6 +293,38 @@ def _sonar_requires_escalation(
             "Sonar finding for %s: severity=%s — fix_locally", ticket_id, severity
         )
     return False
+
+
+def _write_wip_sha_to_last_failure(
+    worker: ActiveWorker,
+    wip_sha: str,
+) -> None:
+    """Add wip_commit_sha to last_failure.json in the worktree artifact dir."""
+    artifact_dir = (
+        worker.worktree_path / worker.manifest.artifact_paths.result_json
+    ).parent
+    failure_file = artifact_dir / "last_failure.json"
+    try:
+        data: dict[str, object] = {}
+        if failure_file.exists():
+            data.update(json.loads(failure_file.read_text(encoding="utf-8")))
+        data["wip_commit_sha"] = wip_sha
+        failure_file.write_text(
+            json.dumps(data, indent=2),
+            encoding="utf-8",
+        )
+        logger.debug(
+            "WIP commit SHA written to %s for %s",
+            failure_file,
+            worker.ticket_id,
+        )
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(
+            "Could not write wip_commit_sha to %s for %s: %s",
+            failure_file,
+            worker.ticket_id,
+            exc,
+        )
 
 
 def _try_post_comment(
