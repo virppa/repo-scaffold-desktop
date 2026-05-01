@@ -175,7 +175,11 @@ def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
 
 
 def create_pr(manifest: ExecutionManifest, worktree_path: Path) -> str:
-    """Push the worker branch and open a GitHub PR, enabling auto-merge."""
+    """Push the worker branch and open a GitHub PR.
+
+    Auto-merge is enabled only when targeting an epic branch. PRs targeting
+    main are left open for human review — auto-merging to main is forbidden.
+    """
     subprocess.run(  # nosec B603 B607
         ["git", "push", "-u", "origin", manifest.worker_branch],
         cwd=str(worktree_path),
@@ -224,6 +228,14 @@ def create_pr(manifest: ExecutionManifest, worktree_path: Path) -> str:
         check=True,
     )
     pr_url = result.stdout.strip()
+
+    if manifest.base_branch == "main":
+        logger.info(
+            "PR %s targets main — leaving open for human review (no auto-merge)",
+            pr_url,
+        )
+        return pr_url
+
     merge_result = subprocess.run(  # nosec B603 B607
         ["gh", "pr", "merge", "--auto", "--squash", pr_url],
         cwd=str(worktree_path),
@@ -233,7 +245,7 @@ def create_pr(manifest: ExecutionManifest, worktree_path: Path) -> str:
     )
     if merge_result.returncode != 0:
         output = (merge_result.stderr or merge_result.stdout).strip()
-        # "clean status" means no required checks on the target branch (e.g. epic
+        # "clean status" means no required checks on the target branch (epic
         # branches) — PR is already mergeable, so fall back to immediate merge.
         if "enablePullRequestAutoMerge" in output or "clean status" in output:
             logger.info(

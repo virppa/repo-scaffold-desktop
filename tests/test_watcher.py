@@ -409,3 +409,306 @@ def test_handle_signal_sigterm_terminates_litellm_proc_and_stops_running() -> No
     mock_proc.terminate.assert_called_once()
     assert w._services._litellm_proc is None
     assert w._running is False
+
+
+# ---------------------------------------------------------------------------
+# _log_startup_info — cloud mode omits max_local_workers
+# ---------------------------------------------------------------------------
+
+
+def test_startup_info_cloud_mode_omits_max_local_workers(
+    tmp_path: Path, caplog: pytest.LogCaptureContext
+) -> None:
+    w = Watcher(
+        linear_client=MagicMock(),
+        worker_mode="cloud",
+        max_local_workers=8,
+        max_cloud_workers=3,
+        repo_root=tmp_path,
+    )
+    with caplog.at_level(logging.INFO, logger="app.core.watcher"):
+        w._log_startup_info()
+    msg = caplog.text
+    assert "mode=cloud" in msg
+    assert "max_cloud_workers=3" in msg
+    assert "max_local_workers" not in msg
+
+
+# ---------------------------------------------------------------------------
+# _log_startup_info — local mode omits max_cloud_workers
+# ---------------------------------------------------------------------------
+
+
+def test_startup_info_local_mode_omits_max_cloud_workers(
+    tmp_path: Path, caplog: pytest.LogCaptureContext
+) -> None:
+    w = Watcher(
+        linear_client=MagicMock(),
+        worker_mode="local",
+        max_local_workers=8,
+        max_cloud_workers=3,
+        repo_root=tmp_path,
+    )
+    with caplog.at_level(logging.INFO, logger="app.core.watcher"):
+        w._log_startup_info()
+    msg = caplog.text
+    assert "mode=local" in msg
+    assert "max_local_workers=8" in msg
+    assert "max_cloud_workers" not in msg
+
+
+# ---------------------------------------------------------------------------
+# _log_startup_info — default mode logs both pool sizes
+# ---------------------------------------------------------------------------
+
+
+def test_startup_info_default_mode_logs_both_pool_sizes(
+    tmp_path: Path, caplog: pytest.LogCaptureContext
+) -> None:
+    w = Watcher(
+        linear_client=MagicMock(),
+        worker_mode="default",
+        max_local_workers=8,
+        max_cloud_workers=3,
+        repo_root=tmp_path,
+    )
+    with caplog.at_level(logging.INFO, logger="app.core.watcher"):
+        w._log_startup_info()
+    msg = caplog.text
+    assert "mode=default" in msg
+    assert "max_local_workers=8" in msg
+    assert "max_cloud_workers=3" in msg
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_next_ticket — vLLM readiness gate: health probe blocks dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_deferred_when_vllm_not_ready(tmp_path: Path) -> None:
+    """When probe_vllm_health() returns False, _dispatch_next_ticket must return
+    without calling create_worktree, copy_manifest_to_worktree,
+    write_worker_pytest_config, safe_set_state, or launch_worker.
+    The ticket stays in ReadyForLocal."""
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        implementation_mode="local",
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.list_ready_for_local.return_value = [
+        {
+            "identifier": "WOR-10",
+            "id": "fake-linear-id",
+            "labels": {"nodes": []},
+        }
+    ]
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path, worker_mode="default")
+    fake_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch("app.core.watcher.create_worktree") as mock_create,
+        patch("app.core.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.safe_set_state") as mock_set_state,
+        patch("app.core.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch.object(w._services, "probe_vllm_health", return_value=False),
+    ):
+        w._dispatch_next_ticket()
+
+    # Nothing should have been created — the ticket stays in ReadyForLocal
+    mock_create.assert_not_called()
+    mock_set_state.assert_not_called()
+    # launch_worker should not have been called either
+    fake_process.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_next_ticket — vLLM readiness gate: health probe passes → dispatch proceeds
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_proceeds_when_vllm_ready(tmp_path: Path) -> None:
+    """When probe_vllm_health() returns True, dispatch proceeds normally
+    (create_worktree is called, state is set, worker is launched)."""
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        implementation_mode="local",
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.list_ready_for_local.return_value = [
+        {
+            "identifier": "WOR-10",
+            "id": "fake-linear-id",
+            "labels": {"nodes": []},
+        }
+    ]
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path, worker_mode="default")
+    fake_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch("app.core.watcher.create_worktree", return_value=tmp_path) as mock_create,
+        patch("app.core.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.safe_set_state"),
+        patch("app.core.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch.object(w._services, "probe_vllm_health", return_value=True),
+        patch.object(w._services, "ensure_ollama_running"),
+        patch.object(w._services, "ensure_litellm_running"),
+    ):
+        w._dispatch_next_ticket()
+
+    # create_worktree must be called — dispatch proceeded
+    mock_create.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_next_ticket — cloud mode skips vLLM probe entirely
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_mode_skips_vllm_probe(tmp_path: Path) -> None:
+    """When effective mode is cloud, probe_vllm_health() must NOT be called.
+    Dispatch proceeds directly to create_worktree."""
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        implementation_mode="cloud",
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.list_ready_for_local.return_value = [
+        {
+            "identifier": "WOR-10",
+            "id": "fake-linear-id",
+            "labels": {"nodes": []},
+        }
+    ]
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path, worker_mode="default")
+    fake_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch("app.core.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.safe_set_state"),
+        patch("app.core.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch.object(
+            w._services, "probe_vllm_health", return_value=False
+        ) as mock_probe,
+    ):
+        w._dispatch_next_ticket()
+
+    # probe_vllm_health must not have been called for cloud mode
+    mock_probe.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _check_epic_completion — partial failure: at least one succeeded=False
+# ---------------------------------------------------------------------------
+
+
+def test_epic_completion_partial_failure_skips_comment(
+    tmp_path: Path, caplog: pytest.LogCaptureContext
+) -> None:
+    """When _processed_tickets contains at least one entry with succeeded=False,
+    _check_epic_completion must log a WARNING and NOT call linear.post_comment.
+    The watcher must not set _running=False."""
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+    w._processed_tickets = [
+        _ProcessedTicket(
+            ticket_id="WOR-10",
+            epic_id="WOR-96",
+            worker_branch="wor-10-test-ticket",
+            elapsed=120.0,
+            succeeded=True,
+        ),
+        _ProcessedTicket(
+            ticket_id="WOR-11",
+            epic_id="WOR-96",
+            worker_branch="wor-11-test-ticket",
+            elapsed=60.0,
+            succeeded=False,
+        ),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher"):
+        w._check_epic_completion()
+
+    # The epic-complete comment must NOT be posted when there's a failure
+    linear_mock.post_comment.assert_not_called()
+    # watcher still exits — _running is set to False regardless of success/failure
+    assert w._running is False
+    # A warning must be logged about the failure
+    assert any(
+        "failed" in msg.lower() and "succeeded" in msg.lower()
+        for msg in caplog.messages
+    )
+
+
+# ---------------------------------------------------------------------------
+# _enrich_with_retry_context — injects constraint when last_failure.json exists
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_with_retry_context_injects_constraint(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import json
+
+    manifest = _make_manifest(implementation_constraints=["original constraint"])
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+    artifact_dir.mkdir(parents=True)
+    failure = {
+        "failed_at": "2026-04-30T10:00:00Z",
+        "check": "pytest",
+        "stdout": (
+            "FAILED tests/test_watcher_worktrees.py"
+            "::test_cleanup_orphaned_worktrees_removes_subdirs"
+            " - AssertionError: assert 0 == 2\n"
+        ),
+        "stderr": "",
+    }
+    (artifact_dir / "last_failure.json").write_text(
+        json.dumps(failure), encoding="utf-8"
+    )
+
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    with caplog.at_level(logging.INFO, logger="app.core.watcher"):
+        enriched = w._enrich_with_retry_context(manifest)
+
+    assert enriched.implementation_constraints[0].startswith("RETRY:")
+    assert "pytest" in enriched.implementation_constraints[0]
+    assert (
+        "test_cleanup_orphaned_worktrees_removes_subdirs"
+        in (enriched.implementation_constraints[0])
+    )
+    assert enriched.implementation_constraints[1] == "original constraint"
+    assert any("retry context" in m for m in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# _enrich_with_retry_context — no-op when last_failure.json absent
+# ---------------------------------------------------------------------------
+
+
+def test_enrich_with_retry_context_noop_without_failure_file(tmp_path: Path) -> None:
+    manifest = _make_manifest(implementation_constraints=["original constraint"])
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    enriched = w._enrich_with_retry_context(manifest)
+
+    assert enriched.implementation_constraints == ["original constraint"]

@@ -63,7 +63,7 @@ class ServiceManager:
             conn.request("GET", "/v1/models")
             resp = conn.getresponse()
             if resp.status == 200:
-                logger.info("vLLM ready (port %d)", _VLLM_PORT)
+                logger.debug("vLLM ready (port %d)", _VLLM_PORT)
                 return True
         except (OSError, http.client.HTTPException):
             pass
@@ -197,7 +197,7 @@ class ServiceManager:
     def ensure_litellm_running(self) -> None:
         """Start the LiteLLM proxy if not already listening on _LITELLM_PORT."""
         if self._litellm_serving():
-            logger.info("LiteLLM proxy already running on port %d", _LITELLM_PORT)
+            logger.debug("LiteLLM proxy already running on port %d", _LITELLM_PORT)
             return
 
         config_path = self._repo_root / _LITELLM_CONFIG
