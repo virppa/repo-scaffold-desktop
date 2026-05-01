@@ -154,8 +154,6 @@ def build_worker_cmd(
 
     prompt — pre-expanded skill content; defaults to the /implement-ticket
     slash-command shortcut (requires commands to be loaded by Claude Code).
-    In --bare mode the shortcut is unavailable, so callers should pass the
-    expanded implement-ticket.md content with $ARGUMENTS substituted.
 
     disallowed_tools — list of tool-call patterns passed to --disallowed-tools
     (e.g. ["Read(*watcher.py)", "Read(*metrics.py)"]) to enforce context_snippets.
