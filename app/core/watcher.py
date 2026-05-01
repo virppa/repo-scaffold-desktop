@@ -17,6 +17,7 @@ Worker modes:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -361,6 +362,7 @@ class Watcher:
 
     def _start_ticket(self, ticket_id: str, linear_id: str) -> None:
         manifest = self._load_manifest(ticket_id)
+        manifest = self._enrich_with_retry_context(manifest)
 
         # Prerequisite checks
         open_blockers = self._linear.get_open_blockers(linear_id)
@@ -572,6 +574,56 @@ class Watcher:
     # ------------------------------------------------------------------
     # Manifest loading
     # ------------------------------------------------------------------
+
+    def _enrich_with_retry_context(
+        self, manifest: ExecutionManifest
+    ) -> ExecutionManifest:
+        """Prepend last_failure.json content to implementation_constraints on retry.
+
+        Promotes the failure context from a file the worker must discover into an
+        explicit directive at the top of the task list, so the worker addresses the
+        specific failure immediately rather than re-running the full suite blind.
+        """
+        artifact_dir = (self._repo_root / manifest.artifact_paths.result_json).parent
+        failure_path = artifact_dir / "last_failure.json"
+        if not failure_path.exists():
+            return manifest
+
+        try:
+            data = json.loads(failure_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(
+                "Could not read last_failure.json for %s: %s", manifest.ticket_id, exc
+            )
+            return manifest
+
+        check = data.get("check", "unknown")
+        stdout = data.get("stdout", "")
+        failure_line = next(
+            (
+                line.strip()
+                for line in stdout.splitlines()
+                if line.strip().startswith("FAILED")
+            ),
+            stdout[:200].strip(),
+        )
+        constraint = (
+            f"RETRY: Previous run failed check `{check}`. "
+            f"Fix this specific failure first: {failure_line}"
+        )
+        logger.info(
+            "Enriching %s manifest with retry context: %s",
+            manifest.ticket_id,
+            failure_line,
+        )
+        return manifest.model_copy(
+            update={
+                "implementation_constraints": [
+                    constraint,
+                    *manifest.implementation_constraints,
+                ]
+            }
+        )
 
     def _load_manifest(self, ticket_id: str) -> ExecutionManifest:
         from app.core.manifest import ArtifactPaths

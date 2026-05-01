@@ -24,8 +24,14 @@ from app.core.watcher_types import (
 # ---------------------------------------------------------------------------
 
 
-def _parse_worker_usage(log_path: Path) -> tuple[int | None, int | None]:
-    """Read stream-json worker log and return (local_tokens, context_compactions)."""
+def _parse_worker_usage(
+    log_path: Path,
+) -> tuple[int | None, int | None, int | None]:
+    """Read stream-json worker log and return (input_tokens, output_tokens,
+
+    context_compactions).  Returns three-tuple to separate prefill tokens
+    from generation tokens, enabling per-second throughput tracking.
+    """
     try:
         with log_path.open(encoding="utf-8") as f:
             for raw in f:
@@ -38,14 +44,17 @@ def _parse_worker_usage(log_path: Path) -> tuple[int | None, int | None]:
                     continue
                 if obj.get("type") == "result":
                     usage = obj.get("usage") or {}
-                    local_tokens = (usage.get("input_tokens") or 0) + (
-                        usage.get("output_tokens") or 0
-                    )
+                    input_tokens = usage.get("input_tokens")
+                    output_tokens = usage.get("output_tokens")
                     context_compactions = obj.get("context_compactions")
-                    return local_tokens, context_compactions
+                    # Return None when either token field is missing so the
+                    # caller can decide whether to compute a sum.
+                    if input_tokens is None or output_tokens is None:
+                        return None, None, context_compactions
+                    return int(input_tokens), int(output_tokens), context_compactions
     except Exception:
-        return None, None
-    return None, None
+        return None, None, None
+    return None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +133,13 @@ def build_worker_env(
     elif mode == "local":
         env["ANTHROPIC_BASE_URL"] = _LITELLM_BASE_URL
         env.setdefault("ANTHROPIC_API_KEY", "sk-dummy")
+        # Compact at ~180K tokens: 240K window × 75% PCT trigger.
+        # vLLM FP8 throughput is flat 16K→262K (WOR-234/WOR-118), so there is no
+        # throughput cliff to avoid — 240K gives generous context while leaving 80K
+        # headroom before the 262K hard limit. 75% fires compaction early enough to
+        # prevent late-session drift observed in WOR-216/WOR-217/WOR-212 (163K peak).
+        env.setdefault("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "240000")
+        env.setdefault("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "75")
     return env
 
 
@@ -138,21 +154,14 @@ def build_worker_cmd(
 
     prompt — pre-expanded skill content; defaults to the /implement-ticket
     slash-command shortcut (requires commands to be loaded by Claude Code).
-    In --bare mode the shortcut is unavailable, so callers should pass the
-    expanded implement-ticket.md content with $ARGUMENTS substituted.
 
     disallowed_tools — list of tool-call patterns passed to --disallowed-tools
     (e.g. ["Read(*watcher.py)", "Read(*metrics.py)"]) to enforce context_snippets.
     """
     if prompt is None:
         prompt = f"/implement-ticket {ticket_id}"
-    # --bare strips auto-memory, hooks, and CLAUDE.md auto-discovery, keeping
-    # the system prompt lean. --add-dir re-adds the worktree CLAUDE.md.
     # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
     # from blocking ~180s on OAuth in non-interactive mode.
-    # NOTE: --bare also strips OAuth credential loading, so it must NOT be used
-    # for cloud mode where the worker authenticates via OAuth (Claude Max).
-    # Local mode uses a dummy API key via LiteLLM, so --bare is safe there.
     base = [
         "claude",
         "--dangerously-skip-permissions",
@@ -161,18 +170,19 @@ def build_worker_cmd(
         "--strict-mcp-config",
         "--mcp-config",
         '{"mcpServers":{}}',
-        "--effort",
-        "max",
         "--verbose",
         "--output-format",
         "stream-json",
     ]
     if mode == "local":
-        base.insert(2, "--bare")
+        # --effort xhigh: interim default pending WOR-265 adaptive effort scaling.
+        # (CLI values: low|medium|high|xhigh|max — "normal" was removed)
+        base += ["--effort", "xhigh"]
+        base += ["--model", _LOCAL_MODEL]
+    else:
+        base += ["--effort", "max"]
     if disallowed_tools:
         base += ["--disallowed-tools", ",".join(disallowed_tools)]
-    if mode == "local":
-        return base + ["--model", _LOCAL_MODEL, "-p", prompt]
     return base + ["-p", prompt]
 
 

@@ -15,6 +15,7 @@ python -m app.main
 # CLI — scaffold
 python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out
 # With optional toggles: --pre-commit --ci --pr-template --issue-templates --codeowners --claude-files
+#                        --playwright (full_agentic only) --linear-mcp / --no-linear-mcp
 # With post-setup:       --git-init --install-precommit
 
 # CLI — user preferences
@@ -31,7 +32,14 @@ python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy + 
 python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concurrency
 python -m app.cli watcher --max-cloud-workers 3  # default 3; parallelisable
 python -m app.cli watcher --max-workers 2        # backward-compat alias: sets both to 2
+python -m app.cli watcher --verbose              # stream worker stdout/stderr live, prefixed with [WOR-NN]
 
+# Benchmark runner (do not run without explicit instruction)
+python scripts/bench/run_bench.py --tier speed
+python scripts/bench/run_bench.py --resume run_20240101_120000
+python scripts/bench/run_bench.py --compare run_20240101 run_20240102
+python scripts/bench/run_bench.py --generate-fixtures
+python scripts/bench/run_bench.py --browse       # open bench.db in Datasette
 
 # CLI — metrics
 python -m app.cli metrics browse   # open metrics DB in Datasette browser UI
@@ -63,6 +71,8 @@ templates/     # Jinja2 template files for scaffold output
 tests/         # Tests against core only
 schemas/       # Exported JSON Schemas for non-Python consumers
 docs/spikes/   # Spike investigation docs
+config/        # escalation_policy.toml + bench-*.toml run configs
+scripts/bench/ # run_bench.py CLI entry point + runner/fixtures helpers
 ```
 
 Module responsibilities:
@@ -80,6 +90,8 @@ Module responsibilities:
 - `watcher_subprocess.py` — worker subprocess lifecycle: `launch_worker`, `run_checks`, `fetch_sonar_findings`, `create_pr`, `build_snippet_tool_restrictions`
 - `watcher_worktrees.py` — git worktree lifecycle: `setup_worktree`, `teardown_worktree`, `rebase_worktree_from_base`, `preserve_worker_artifacts`
 - `watcher_services.py` — `ServiceManager` class: LiteLLM proxy and Ollama process management
+- `watcher_finalize.py` — worker finalization logic: `finalize_worker`, `attempt_pr`, `safe_set_state`; extracted from watcher to keep watcher.py below SonarCloud cognitive-complexity threshold
+- `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records (`bench.db`); mirrors `metrics.py` structure but stores hardware/timing/quality columns per run
 - `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
 - `main.py` — PySide6 `QApplication` entry point
 
@@ -202,10 +214,10 @@ The informational scan runs on `github.base_ref != 'main'`; the blocking scan ru
 `.claude/settings.json` ships with hooks that run automatically:
 
 - **PostToolUse** — ruff lint + format after any Python file edit
+- **PostToolUse** — mypy type-check on the edited file after any Python file edit
 - **PostToolUse** — bandit security scan after any Python file edit (if bandit is installed)
 - **PostToolUse** — `lint-imports` architecture contract check after any Python file edit
-- **PostToolUse** — pytest with coverage after changes to `app/` or `tests/`
-- **Stop** — `pre-commit run --all-files` at the end of every turn
+- **PostToolUse** — pytest (no coverage) on the edited test file after changes to `tests/` files only
 - **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)
 
 No setup needed — hooks activate as soon as Claude Code loads the project.
@@ -232,10 +244,10 @@ litellm --config litellm-local.yaml --port 8082 --drop_params
 # 3. Launch Claude Code in a new terminal
 set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
 set ANTHROPIC_API_KEY=sk-dummy
-claude --model qwen3-coder:30b
+claude --model claude-sonnet-4-6
 ```
 
-`litellm-local.yaml` is gitignored. See `docs/spikes/local-model-setup.md` for VRAM budget, model selection, and benchmark results.
+`litellm-local.yaml` is gitignored. See `docs/spikes/vllm-benchmark-plan.md` for the current production model config (Qwen3.6-35B-A3B-NVFP4 via vLLM). `docs/spikes/local-model-setup.md` covers the original Ollama/qwen3-coder:30b setup (historical).
 
 ---
 
@@ -263,6 +275,55 @@ Only interact with the **repo-scaffold-desktop** project in Linear unless explic
 ## Testing
 
 Test core logic only. Priority: config validation, preset selection, file generation, option toggles, overwrite behavior. Skip UI tests unless the UI contains meaningful logic.
+
+---
+
+## Worker efficiency
+
+Rules for local worker sessions (watcher-spawned `claude` processes). Each tool call is a ~40s round-trip — minimising call count directly reduces wall time.
+
+**No standalone `cd` commands.** Every `cd` is a wasted round-trip. Use absolute paths or chain with the actual command:
+```bash
+# bad  — two round-trips
+cd /path/to/dir
+ruff check .
+
+# good — one round-trip
+cd /path/to/dir && ruff check .
+# or use absolute path directly
+ruff check /path/to/dir
+```
+
+**Batch file reads.** When you need the contents of multiple related files, read them in one round-trip with a shell one-liner rather than issuing individual Read calls:
+```bash
+# reads 5 files in one tool call instead of 5
+python3 -c "
+import sys
+for f in ['app/core/watcher.py', 'app/core/watcher_types.py', ...]:
+    print(f'=== {f} ==='); print(open(f).read())
+"
+```
+
+**Update mock patch paths after any module move.** `unittest.mock.patch()` targets are string literals — they are not updated by import fixers and will silently break tests. After moving or renaming any module, run two greps — one for mock strings, one for bare from-imports (conftest.py and fixture files use these and they are missed by the patch grep):
+```bash
+grep -rn 'patch("' tests/ | grep '<old.module.path>'
+grep -rn 'from <old.module.path> import' tests/ app/
+```
+and update every match to the new path before running pytest. Missing the from-import grep causes `ModuleNotFoundError` in conftest.py that fires before any test runs — all tests fail even though the implementation is correct.
+
+**Convert `patch.object` when extracting instance methods to module-level functions.** `patch.object(instance, "method")` patches the method on the class; once the function is module-level it no longer exists on the class and the patch silently does nothing. After extracting any method from a class, run:
+```bash
+grep -rn 'patch\.object' tests/ | grep '<ClassName>'
+```
+and convert every match to `patch("new.module.path.function_name")`.
+
+**Create new files with the Write tool, not Bash heredocs.** Heredocs containing Python source break on Windows when the file body contains single quotes — the shell misinterprets them as closing the delimiter. The Write tool handles any content without escaping and avoids the multi-attempt retry loop. If the Write tool is unavailable (local model sessions), fall back to a single-quoted Bash heredoc: `python3 << 'PYEOF'` with the closing `PYEOF` at column 0 — the single-quoted delimiter prevents the shell from interpreting anything inside, including single quotes in Python source.
+
+**Run mypy on each new Python file immediately after creating it.** Do not defer to the final `mypy app/` check — type errors in new files compound across the session and each late fix costs a full tool round-trip. Read the type signatures of the source functions *before* writing the new file so annotations are correct on the first attempt.
+
+**Package reorganizations: move all files first, __init__.py last.** When moving multiple files into a new subpackage: (1) move all source files, (2) update all imports in every consumer, (3) write `__init__.py` last. Do not run pytest at any intermediate step — the package is invalid mid-move and pytest will always fail with `ModuleNotFoundError` until every file is in place. After all files are moved and imports updated (but before `__init__.py`), make a WIP commit: `git add -A && git commit -m "WIP: ..."` — preserves structural work if the session ends before checks pass.
+
+**Use `replace_all=True` for bulk patch string migrations.** When updating `unittest.mock.patch()` strings after a module rename, use `Edit(old_string="app.core.old_module", new_string="app.core.new.module", replace_all=True)` rather than replacing each occurrence individually. One Edit call per (file, module-name) pair covers the entire migration in a single round-trip.
 
 ---
 

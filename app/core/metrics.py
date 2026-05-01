@@ -47,8 +47,11 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     cloud_cost_estimate   REAL,
     local_used            INTEGER NOT NULL DEFAULT 0,
     local_model           TEXT,
+    local_input_tokens    INTEGER,
+    local_output_tokens   INTEGER,
     local_tokens          INTEGER,
     local_wall_time       REAL,
+    local_output_tokens_per_second REAL,
     escalated_to_cloud    INTEGER NOT NULL DEFAULT 0,
     outcome               TEXT NOT NULL,
     retry_count           INTEGER NOT NULL DEFAULT 0,
@@ -78,7 +81,12 @@ class TicketMetrics(BaseModel):
     cloud_cost_estimate: float | None = None
     local_used: bool = False
     local_model: str | None = None
+    local_input_tokens: int | None = None
+    local_output_tokens: int | None = None
     local_tokens: int | None = None
+    local_output_tokens_per_second: float | None = Field(
+        default=None, description="output_tokens / wall_time when both present"
+    )
     local_wall_time: float | None = Field(default=None, description="Seconds")
     escalated_to_cloud: bool = False
     outcome: Outcome
@@ -169,6 +177,27 @@ class MetricsStore:
         with self._connect() as conn:
             conn.execute(_CREATE_TABLE)
             conn.execute(_CREATE_CHECK_RUN_LOG)
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Add new columns to existing databases using PRAGMA table_info."""
+        existing = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ticket_metrics)").fetchall()
+        }
+        if "local_input_tokens" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN local_input_tokens INTEGER"
+            )
+        if "local_output_tokens" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN local_output_tokens INTEGER"
+            )
+        if "local_output_tokens_per_second" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics "
+                "ADD COLUMN local_output_tokens_per_second REAL"
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -188,7 +217,8 @@ class MetricsStore:
                 INSERT OR REPLACE INTO ticket_metrics (
                     ticket_id, project_id, epic_id, implementation_mode,
                     cloud_used, cloud_model, cloud_tokens, cloud_cost_estimate,
-                    local_used, local_model, local_tokens, local_wall_time,
+                    local_used, local_model, local_input_tokens, local_output_tokens,
+                    local_tokens, local_wall_time, local_output_tokens_per_second,
                     escalated_to_cloud, outcome,
                     retry_count, check_failures_json,
                     lines_changed, files_changed,
@@ -196,7 +226,10 @@ class MetricsStore:
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
-                    :local_used, :local_model, :local_tokens, :local_wall_time,
+                    :local_used, :local_model,
+                    :local_input_tokens, :local_output_tokens,
+                    :local_tokens, :local_wall_time,
+                    :local_output_tokens_per_second,
                     :escalated_to_cloud, :outcome,
                     :retry_count, :check_failures_json,
                     :lines_changed, :files_changed,
