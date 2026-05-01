@@ -96,8 +96,8 @@ def finalize_worker(
     mode: str,
     project_id: str,
 ) -> None:
-    outcome, escalated, artifacts_preserved, sonar_findings = _execute_finalization(
-        worker, returncode, linear, escalation_policy, repo_root
+    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks = (
+        _execute_finalization(worker, returncode, linear, escalation_policy, repo_root)
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
@@ -113,6 +113,13 @@ def finalize_worker(
     if output_tokens is not None and wall_time and wall_time > 0:
         local_output_tokens_per_second = output_tokens / wall_time
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
+    # Derive the first failed check name for TicketRunLog (WOR-261)
+    first_failed_check: str | None = (
+        str(failed_checks[0]["check"]) if failed_checks else None
+    )
+    # check_failures: store the list when non-empty, else None
+    check_failures = failed_checks if failed_checks else None
+
     metrics.record(
         TicketMetrics(
             ticket_id=worker.ticket_id,
@@ -131,6 +138,7 @@ def finalize_worker(
             outcome=outcome,
             retry_count=worker.retry_count,
             context_compactions=context_compactions,
+            check_failures=check_failures,
             sonar_findings_count=(
                 len(sonar_findings) if sonar_findings is not None else None
             ),
@@ -142,7 +150,7 @@ def finalize_worker(
             attempt=worker.retry_count + 1,
             implementation_mode=_to_metrics_mode(eff),
             outcome=outcome,
-            failed_check=None,
+            failed_check=first_failed_check,
             wall_time_s=wall_time,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -176,10 +184,11 @@ def _execute_finalization(
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
     repo_root: Path,
-) -> tuple[Outcome, bool, bool, list[str] | None]:
+) -> tuple[Outcome, bool, bool, list[str] | None, list[dict[str, int | str]]]:
     """Determine outcome, escalation status, and artifact state.
 
-    Returns (outcome, escalated, artifacts_preserved, sonar_findings).
+    Returns (outcome, escalated, artifacts_preserved, sonar_findings,
+             failed_checks).
     """
     manifest = worker.manifest
     ticket_id = worker.ticket_id
@@ -202,9 +211,9 @@ def _execute_finalization(
             safe_set_state(
                 linear, linear_id, manifest.ticket_state_map.failed, ticket_id
             )
-        return "failure", escalated, False, None
+        return "failure", escalated, False, None, []
 
-    checks_ok = run_checks(manifest, worker.worktree_path)
+    checks_ok, failed_checks = run_checks(manifest, worker.worktree_path)
     if not checks_ok:
         worker.retry_count += 1
     if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
@@ -223,7 +232,7 @@ def _execute_finalization(
             safe_set_state(
                 linear, linear_id, manifest.ticket_state_map.failed, ticket_id
             )
-        return "failure", escalated, False, None
+        return "failure", escalated, False, None, failed_checks
 
     preserve_worker_artifacts(repo_root, worker)
     flags = _read_result_flags(repo_root / manifest.artifact_paths.result_json)
@@ -232,7 +241,7 @@ def _execute_finalization(
     outcome, escalated, sonar_findings = _handle_policy_outcome(
         action, flags, worker, linear, escalation_policy
     )
-    return outcome, escalated, True, sonar_findings
+    return outcome, escalated, True, sonar_findings, []
 
 
 def _handle_policy_outcome(

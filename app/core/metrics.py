@@ -108,9 +108,10 @@ class TicketMetrics(BaseModel):
     escalated_to_cloud: bool = False
     outcome: Outcome
     retry_count: int = 0
-    check_failures: dict[str, int] | None = Field(
+    check_failures: list[dict[str, int | str]] | None = Field(
         default=None,
-        description="Per-check failure counts, e.g. {'mypy': 2, 'pytest': 1}",
+        description="Per-check failures from run_checks, e.g. "
+        "[{'check': 'mypy', 'exit_code': 1}]",
     )
     lines_changed: int | None = Field(
         default=None, description="Lines added + removed in the PR diff"
