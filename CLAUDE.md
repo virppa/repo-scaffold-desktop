@@ -319,6 +319,8 @@ and convert every match to `patch("new.module.path.function_name")`.
 
 **Run mypy on each new Python file immediately after creating it.** Do not defer to the final `mypy app/` check — type errors in new files compound across the session and each late fix costs a full tool round-trip. Read the type signatures of the source functions *before* writing the new file so annotations are correct on the first attempt.
 
+**Package reorganizations: move all files first, __init__.py last.** When moving multiple files into a new subpackage: (1) move all source files, (2) update all imports in every consumer, (3) write `__init__.py` last. Do not run pytest at any intermediate step — the package is invalid mid-move and pytest will always fail with `ModuleNotFoundError` until every file is in place.
+
 ---
 
 ## Escalation policy
