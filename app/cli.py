@@ -141,6 +141,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "prefixed with [WOR-NN]. Output is still written to the log file."
         ),
     )
+    watcher.add_argument(
+        "--no-epic-shutdown",
+        action="store_true",
+        default=False,
+        help=(
+            "Keep the watcher running after all current sub-tickets are "
+            "processed instead of exiting. Useful for watching new tickets "
+            "get added to the epic."
+        ),
+    )
 
     return parser
 
@@ -166,6 +176,7 @@ def _run_watcher(args: argparse.Namespace) -> int:
         max_local_workers=max_local,
         max_cloud_workers=max_cloud,
         verbose=args.verbose,
+        no_epic_shutdown=args.no_epic_shutdown,
     )
     try:
         watcher.run()
