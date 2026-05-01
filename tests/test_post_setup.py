@@ -5,7 +5,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.core.post_setup import fetch_skills, run_git_init, run_precommit_install
+from app.core.post_setup import (
+    create_github_repo,
+    fetch_skills,
+    run_git_init,
+    run_precommit_install,
+)
 
 
 @pytest.fixture()
@@ -228,3 +233,94 @@ class TestRunPrecommitInstall:
         with patch("app.core.post_setup.subprocess.run", side_effect=FileNotFoundError):
             with pytest.raises(RuntimeError, match="pre-commit not found on PATH"):
                 run_precommit_install(repo_dir)
+
+
+class TestCreateGitHubRepo:
+    def _make_prefs(self, github_username: str = "testuser") -> MagicMock:
+        prefs = MagicMock()
+        prefs.github_username = github_username
+        return prefs
+
+    def test_creates_repo_and_returns_clone_url(self):
+        prefs = self._make_prefs()
+        response = MagicMock()
+        response.__enter__ = lambda s: s
+        response.__exit__ = MagicMock(return_value=False)
+        response.read = MagicMock(
+            return_value=b'{"html_url": "https://github.com/testuser/myrepo"}'
+        )
+
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                return_value=response,
+            ) as mock_urlopen,
+            patch("app.core.post_setup.get_token", return_value="ghp_fake_token"),
+        ):
+            result = create_github_repo(
+                "myrepo", prefs, private=True, description="A test repo"
+            )
+
+        assert result == "https://github.com/testuser/myrepo"
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://api.github.com/user/repos"
+        assert req.get_method() == "POST"
+        body = json.loads(req.data)
+        assert body == {
+            "name": "myrepo",
+            "private": True,
+            "description": "A test repo",
+            "auto_init": False,
+        }
+
+    def test_raises_runtime_error_when_no_token(self):
+        prefs = self._make_prefs()
+        with patch("app.core.post_setup.get_token", return_value=None):
+            with pytest.raises(RuntimeError, match="No GitHub token configured"):
+                create_github_repo("myrepo", prefs)
+
+    def test_raises_runtime_error_on_422_conflict(self):
+        prefs = self._make_prefs()
+        response = MagicMock()
+        response.code = 422
+        response.read = MagicMock(
+            return_value=b'{"message": "Repository already exists"}'
+        )
+        exc = urllib.error.HTTPError(
+            "https://api.github.com/user/repos",
+            422,
+            "Unprocessable Entity",
+            {},
+            response,
+        )
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                side_effect=exc,
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake_token"),
+        ):
+            with pytest.raises(RuntimeError, match="already exists"):
+                create_github_repo("myrepo", prefs)
+
+    def test_public_flag_sets_private_false(self):
+        prefs = self._make_prefs()
+        response = MagicMock()
+        response.__enter__ = lambda s: s
+        response.__exit__ = MagicMock(return_value=False)
+        response.read = MagicMock(
+            return_value=b'{"html_url": "https://github.com/testuser/myrepo"}'
+        )
+
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                return_value=response,
+            ) as mock_urlopen,
+            patch("app.core.post_setup.get_token", return_value="ghp_fake_token"),
+        ):
+            create_github_repo("myrepo", prefs, private=False)
+
+        body = json.loads(mock_urlopen.call_args[0][0].data)
+        assert body["private"] is False
