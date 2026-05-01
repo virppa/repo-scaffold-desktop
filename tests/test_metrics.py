@@ -10,6 +10,7 @@ from app.core.metrics import (
     EpicSummary,
     MetricsStore,
     TicketMetrics,
+    TicketRunLog,
 )
 
 
@@ -358,3 +359,87 @@ class TestMigration:
         assert result.local_tokens == 10500
         assert result.local_input_tokens == 10000
         assert result.local_output_tokens == 500
+
+
+def _run_log(**kwargs) -> TicketRunLog:
+    defaults: dict = {
+        "ticket_id": "WOR-1",
+        "attempt": 1,
+        "implementation_mode": "local",
+        "outcome": "success",
+        "wall_time_s": 120.5,
+        "input_tokens": 10000,
+        "output_tokens": 500,
+        "output_tok_per_s": 4.17,
+    }
+    defaults.update(kwargs)
+    return TicketRunLog(**defaults)
+
+
+class TestTicketRunLog:
+    def test_multi_attempt_produces_two_rows(self, tmp_path):
+        """Two finalize calls for the same ticket produce two run_log rows
+        with attempt=1 and attempt=2 (WOR-259)."""
+        store = _store(tmp_path)
+        store.record_run(_run_log(attempt=1, wall_time_s=100.0))
+        store.record_run(_run_log(attempt=2, wall_time_s=150.0))
+        with store._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, attempt, wall_time_s FROM ticket_run_log ORDER BY attempt"
+            ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["attempt"] == 1
+        assert rows[0]["wall_time_s"] == 100.0
+        assert rows[1]["attempt"] == 2
+        assert rows[1]["wall_time_s"] == 150.0
+
+    def test_append_only_no_overwrite(self, tmp_path):
+        """Same attempt appended again — does not replace existing row."""
+        store = _store(tmp_path)
+        store.record_run(_run_log(attempt=1, output_tokens=500))
+        store.record_run(_run_log(attempt=1, output_tokens=600))
+        with store._connect() as conn:
+            rows = conn.execute(
+                "SELECT output_tokens FROM ticket_run_log WHERE attempt = 1"
+            ).fetchall()
+        assert len(rows) == 2
+        assert rows[0]["output_tokens"] == 500
+        assert rows[1]["output_tokens"] == 600
+
+    def test_same_ticket_different_attempts(self, tmp_path):
+        """Multiple tickets can each have multi-attempt rows."""
+        store = _store(tmp_path)
+        store.record_run(_run_log(ticket_id="WOR-1", attempt=1))
+        store.record_run(_run_log(ticket_id="WOR-1", attempt=2))
+        store.record_run(_run_log(ticket_id="WOR-2", attempt=1))
+        with store._connect() as conn:
+            w1 = conn.execute(
+                "SELECT COUNT(*) AS c FROM ticket_run_log WHERE ticket_id = 'WOR-1'"
+            ).fetchone()
+            w2 = conn.execute(
+                "SELECT COUNT(*) AS c FROM ticket_run_log WHERE ticket_id = 'WOR-2'"
+            ).fetchone()
+        assert w1["c"] == 2
+        assert w2["c"] == 1
+
+    def test_null_fields_round_trip(self, tmp_path):
+        """Nullable fields stored as NULL in SQLite."""
+        store = _store(tmp_path)
+        store.record_run(
+            _run_log(
+                failed_check=None,
+                wall_time_s=None,
+                input_tokens=None,
+                output_tokens=None,
+                output_tok_per_s=None,
+                context_compactions=None,
+            )
+        )
+        with store._connect() as conn:
+            row = conn.execute("SELECT * FROM ticket_run_log").fetchone()
+        assert row["failed_check"] is None
+        assert row["wall_time_s"] is None
+        assert row["input_tokens"] is None
+        assert row["output_tokens"] is None
+        assert row["output_tok_per_s"] is None
+        assert row["context_compactions"] is None

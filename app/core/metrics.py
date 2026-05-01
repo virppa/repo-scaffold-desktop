@@ -35,6 +35,23 @@ CREATE TABLE IF NOT EXISTS check_run_log (
 )
 """
 
+_CREATE_RUN_LOG = """
+CREATE TABLE IF NOT EXISTS ticket_run_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id       TEXT NOT NULL,
+    attempt         INTEGER NOT NULL,
+    implementation_mode TEXT NOT NULL,
+    outcome         TEXT NOT NULL,
+    failed_check    TEXT,
+    wall_time_s     REAL,
+    input_tokens    INTEGER,
+    output_tokens   INTEGER,
+    output_tok_per_s REAL,
+    context_compactions INTEGER,
+    recorded_at     TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS ticket_metrics (
     ticket_id             TEXT NOT NULL,
@@ -129,6 +146,28 @@ class EpicSummary(BaseModel):
     sonar_findings_total: int
 
 
+class TicketRunLog(BaseModel):
+    """Per-attempt run log for a single ticket execution."""
+
+    model_config = {"extra": "forbid"}
+
+    ticket_id: str
+    attempt: int = Field(description="1-based attempt number (retry_count + 1)")
+    implementation_mode: ImplementationMode
+    outcome: Outcome
+    failed_check: str | None = None
+    wall_time_s: float | None = Field(default=None, description="Wall time in seconds")
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    output_tok_per_s: float | None = Field(
+        default=None, description="output_tokens / wall_time when both present"
+    )
+    context_compactions: int | None = Field(
+        default=None,
+        description="Claude Code context compaction count during the session",
+    )
+
+
 class CheckRunEntry(BaseModel):
     """A single execution of one required_check command."""
 
@@ -177,6 +216,7 @@ class MetricsStore:
         with self._connect() as conn:
             conn.execute(_CREATE_TABLE)
             conn.execute(_CREATE_CHECK_RUN_LOG)
+            conn.execute(_CREATE_RUN_LOG)
             self._migrate(conn)
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
@@ -304,6 +344,23 @@ class MetricsStore:
             files_changed_total=row["files_changed_total"],
             sonar_findings_total=row["sonar_findings_total"],
         )
+
+    def record_run(self, entry: TicketRunLog) -> None:
+        """Append a single run-log row per attempt (append-only, not upsert)."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO ticket_run_log
+                    (ticket_id, attempt, implementation_mode, outcome,
+                     failed_check, wall_time_s, input_tokens, output_tokens,
+                     output_tok_per_s, context_compactions)
+                VALUES
+                    (:ticket_id, :attempt, :implementation_mode, :outcome,
+                     :failed_check, :wall_time_s, :input_tokens, :output_tokens,
+                     :output_tok_per_s, :context_compactions)
+                """,
+                entry.model_dump(),
+            )
 
     def record_check_run(self, entry: CheckRunEntry) -> None:
         """Append a single check execution row to check_run_log."""
