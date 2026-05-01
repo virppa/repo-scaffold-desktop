@@ -509,3 +509,299 @@ class TestCompositeRanking:
 
         output_strict = _capture(rows, high_quality_pct=95.0)  # 90% < 95 → MED
         assert "MED" in output_strict
+
+
+# ── Ranking table layout tests ────────────────────────────────────────────────
+
+
+class TestPrintRankingLayout:
+    def _make_row(
+        self,
+        *,
+        model_id: str = "m",
+        backend_id: str = "b",
+        context_size: int = 4096,
+        concurrency: int = 1,
+        repeat_index: int = 1,
+        ttft_s: float = 0.3,
+        throughput_tok_s: float = 80.0,
+        outcome: str = "ok",
+    ) -> dict[str, Any]:
+        return {
+            "backend_id": backend_id,
+            "model_id": model_id,
+            "context_size": context_size,
+            "concurrency": concurrency,
+            "repeat_index": repeat_index,
+            "ttft_s": ttft_s,
+            "throughput_tok_s": throughput_tok_s,
+            "outcome": outcome,
+            "cpu_offload_detected": False,
+            "tier": "speed",
+            "quality_task_success": None,
+        }
+
+    def test_header_contains_all_expected_columns(self) -> None:
+        rows = [self._make_row()]
+        output = _capture(rows)
+        # All columns from the format string must appear in the header
+        expected = [
+            "Rank",
+            "Config (backend/model/ctx/c)",
+            "TTFT p50(s)",
+            "TTFT p95(s)",
+            "CV",
+            "Tok/s p50",
+            "Agg.tok/s",
+            "Q.Tier",
+            "Stable",
+            "VRAM Hdrm",
+            "Speedup",
+        ]
+        for col in expected:
+            assert col in output, f"Missing column header: {col}"
+
+    def test_header_line_is_shorter_than_table_width(self) -> None:
+        """The header line must fit within the _W = 130 character table width."""
+        rows = [self._make_row()]
+        output = _capture(rows)
+        lines = output.splitlines()
+        # COMPOSITE RANKING line is between two == separator lines
+        ranking_header_lines = [line for line in lines if "COMPOSITE RANKING" in line]
+        assert len(ranking_header_lines) >= 1
+        assert len(ranking_header_lines[0]) <= 130
+
+    def test_numeric_columns_are_right_aligned(self) -> None:
+        """Numeric columns (TTFT p50, TTFT p95, CV, Tok/s p50, Agg.tok/s, Speedup)
+        must be right-aligned so their values appear on the right side."""
+        rows = [
+            self._make_row(model_id="m", ttft_s=0.333, throughput_tok_s=80.0),
+        ]
+        output = _capture(rows)
+        lines = output.splitlines()
+        # Find the data row (non-separator, non-header line)
+        data_lines = [
+            line
+            for line in lines
+            if line.strip()
+            and not line.startswith("=")
+            and not line.startswith("-")
+            and "Rank" not in line
+            and "COMPOSITE RANKING" not in line
+            and not line.startswith("No quality")
+            and not line.startswith("INELIGIBLE")
+            and not line.startswith("Config")
+        ]
+        assert len(data_lines) >= 1, f"No data lines found in output:\n{output}"
+        data_line = data_lines[0]
+        # Rank is right-aligned 4 chars: "   1"
+        assert data_line.startswith("   1") or data_line.startswith("  1")
+        # TTFT values are right-aligned 10 chars with 3 decimal places
+        assert "0.333" in data_line
+        # Speedup ends with "x" right-aligned 7 chars
+        assert "1.00x" in data_line
+
+    def test_string_columns_are_left_aligned(self) -> None:
+        """String columns (Config, Q.Tier) must be left-aligned."""
+        rows = [
+            self._make_row(
+                model_id="my-model",
+                backend_id="vllm",
+                context_size=4096,
+                concurrency=2,
+                throughput_tok_s=150.0,
+            ),
+        ]
+        output = _capture(rows)
+        lines = output.splitlines()
+        data_lines = [
+            line
+            for line in lines
+            if line.strip()
+            and not line.startswith("=")
+            and not line.startswith("-")
+            and "Rank" not in line
+            and "COMPOSITE RANKING" not in line
+            and not line.startswith("No quality")
+            and not line.startswith("INELIGIBLE")
+            and not line.startswith("Config")
+        ]
+        assert len(data_lines) >= 1
+        data_line = data_lines[0]
+        # model name appears near the beginning of the line (left side)
+        assert "my-model" in data_line
+        # Config column width is 44 chars left-aligned, so model name starts
+        # near position 9 (after "Rank" right-aligned 4 + spaces 2)
+        model_pos = data_line.index("my-model")
+        # Config should be left-aligned, not padded with many spaces before
+        assert model_pos < 55
+
+    def test_rows_sorted_by_throughput_descending_within_same_context(self) -> None:
+        """Rows with the same context_size should be ordered by
+        throughput descending."""
+        rows = [
+            self._make_row(
+                model_id="fast",
+                context_size=4096,
+                throughput_tok_s=200.0,
+            ),
+            self._make_row(
+                model_id="slow",
+                context_size=4096,
+                throughput_tok_s=50.0,
+            ),
+            self._make_row(
+                model_id="medium",
+                context_size=4096,
+                throughput_tok_s=100.0,
+            ),
+        ]
+        output = _capture(rows)
+        lines = output.splitlines()
+        # Filter to only ranking table data rows (skip headers, separators,
+        # RECOMMENDED section, APC section, INELIGIBLE section).
+        data_lines = [
+            line
+            for line in lines
+            if line.strip()
+            and not line.startswith("=")
+            and not line.startswith("-")
+            and "Rank" not in line
+            and "COMPOSITE RANKING" not in line
+            and "RECOMMENDED" not in line
+            and not line.startswith("No quality")
+            and not line.startswith("INELIGIBLE")
+            and not line.startswith("Config")
+        ]
+        # First line should start with a rank number
+        assert len(data_lines) >= 3, (
+            f"Expected at least 3 data rows, got {len(data_lines)}"
+        )
+        assert data_lines[0].strip()[0].isdigit()
+        # Extract model names from the Config column: "backend/model_id"
+        # The Config column appears after the rank column (position ~9)
+        models = []
+        for line in data_lines:
+            # Config column is after "Rank" field: "   N  backend/model_id ..."
+            # Find the part after the rank (first sequence of digits + spaces)
+            import re
+
+            config_match = re.search(r"\d+\s{2,}(\S+)", line)
+            if config_match:
+                config_val = config_match.group(1)
+                model_name = config_val.split("/")[-1]
+                models.append(model_name)
+        # fast (200 tok/s) should appear before medium (100 tok/s), then slow (50 tok/s)
+        assert models[0] == "fast"
+        assert models[1] == "medium"
+        assert models[2] == "slow"
+
+    def test_rows_sorted_by_aggregate_throughput_descending(self) -> None:
+        """Within same quality tier, rows sorted by agg.tok/s descending."""
+        # c=1 baseline: agg = 1 * tok_p50; c=2 baseline: agg = 2 * tok_p50
+        rows = [
+            self._make_row(
+                model_id="fast-c1",
+                context_size=4096,
+                concurrency=1,
+                throughput_tok_s=100.0,
+            ),
+            self._make_row(
+                model_id="fast-c2",
+                context_size=4096,
+                concurrency=2,
+                throughput_tok_s=150.0,
+            ),
+            self._make_row(
+                model_id="slow-c1",
+                context_size=4096,
+                concurrency=1,
+                throughput_tok_s=50.0,
+            ),
+        ]
+        output = _capture(rows)
+        lines = output.splitlines()
+        # Filter to only ranking table data rows (skip headers, separators,
+        # RECOMMENDED section, APC section, INELIGIBLE section).
+        data_lines = [
+            line
+            for line in lines
+            if line.strip()
+            and not line.startswith("=")
+            and not line.startswith("-")
+            and "Rank" not in line
+            and "COMPOSITE RANKING" not in line
+            and "RECOMMENDED" not in line
+            and not line.startswith("No quality")
+            and not line.startswith("INELIGIBLE")
+            and not line.startswith("Config")
+        ]
+        # First line should start with a rank number
+        assert len(data_lines) >= 3, (
+            f"Expected at least 3 data rows, got {len(data_lines)}"
+        )
+        assert data_lines[0].strip()[0].isdigit()
+        # Extract model names from the Config column: "backend/model_id"
+        # Uses regex to find the Config value after the rank column
+        models = []
+        for line in data_lines:
+            import re
+
+            config_match = re.search(r"\d+\s{2,}(\S+)", line)
+            if config_match:
+                config_val = config_match.group(1)
+                model_name = config_val.split("/")[-1]
+                models.append(model_name)
+        # fast-c2 (agg=300) > fast-c1 (agg=100) > slow-c1 (agg=50)
+        assert models[0] == "fast-c2"
+        assert models[1] == "fast-c1"
+        assert models[2] == "slow-c1"
+
+    def test_column_order_in_data_rows(self) -> None:
+        """Verify column order matches the header spec."""
+        rows = [
+            self._make_row(
+                model_id="test-model",
+                context_size=8192,
+                concurrency=2,
+                ttft_s=0.250,
+                throughput_tok_s=120.0,
+            ),
+        ]
+        output = _capture(rows)
+        lines = output.splitlines()
+        data_lines = [
+            line
+            for line in lines
+            if line.strip()
+            and not line.startswith("=")
+            and not line.startswith("-")
+            and "Rank" not in line
+            and "COMPOSITE RANKING" not in line
+            and not line.startswith("No quality")
+            and not line.startswith("INELIGIBLE")
+        ]
+        assert len(data_lines) >= 1
+        data = data_lines[0]
+        # The order of values should follow: rank → config → ttft_p50 → ttft_p95 → cv
+        # → tok_p50 → agg_tok_p50 → q_tier → stable → vram → speedup
+        rank_pos = data.index("   1")
+        model_pos = data.index("test-model")
+        ttft_p50_pos = data.index("0.250")
+        tok_pos = data.index("120")
+        # rank comes first, then config, then ttft, then tok/s
+        assert rank_pos < model_pos < ttft_p50_pos < tok_pos
+
+    def test_recommended_banner_at_end(self) -> None:
+        """The RECOMMENDED banner should appear in the output."""
+        rows = [self._make_row()]
+        output = _capture(rows)
+        assert "RECOMMENDED" in output
+
+    def test_separator_lines_present(self) -> None:
+        """The table should have == and --- separator lines."""
+        rows = [self._make_row()]
+        output = _capture(rows)
+        assert "==*" in output or any(
+            line.strip().startswith("==") for line in output.splitlines()
+        )

@@ -79,8 +79,8 @@ def print_compare_table(
 
     hdr = (
         f"   {'Model':<20}  {'Tier':<12}  {'Ctx':>6}  {'C':>3}  {'R':>3}  "
-        f"{'TTFT-1(s)':>9}  {'TTFT-2(s)':>9}  {'ΔTTFT':>17}  "
-        f"{'Tok/s-1':>8}  {'Tok/s-2':>8}  {'ΔTok/s':>14}  "
+        f"{'TTFT-1(s)':>9}  {'TTFT-2(s)':>9}  {'TTFT-delta':>12}  "
+        f"{'Tok/s-1':>8}  {'Tok/s-2':>8}  {'Tok/s-delta':>10}  "
         f"{'OOM1':>5}  {'OOM2':>5}  {'Off1':>5}  {'Off2':>5}"
     )
     print(hdr)
@@ -137,10 +137,10 @@ def print_compare_table(
         prefix = "!!" if is_regression else "  "
 
         ttft_cols = (
-            f"{_fmt(ttft1, '.3f'):>9}  {_fmt(ttft2, '.3f'):>9}  {ttft_delta_str:>17}"
+            f"{_fmt(ttft1, '.3f'):>9}  {_fmt(ttft2, '.3f'):>9}  {ttft_delta_str:>16}"
         )
         tok_cols = (
-            f"{_fmt(tok1, '.0f'):>8}  {_fmt(tok2, '.0f'):>8}  {tok_delta_str:>14}"
+            f"{_fmt(tok1, '.0f'):>8}  {_fmt(tok2, '.0f'):>8}  {tok_delta_str:>11}"
         )
         ann_cols = f"{oom1:>5}  {oom2:>5}  {off1:>5}  {off2:>5}"
         id_cols = (
