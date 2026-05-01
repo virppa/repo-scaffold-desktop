@@ -214,9 +214,10 @@ The informational scan runs on `github.base_ref != 'main'`; the blocking scan ru
 `.claude/settings.json` ships with hooks that run automatically:
 
 - **PostToolUse** — ruff lint + format after any Python file edit
+- **PostToolUse** — mypy type-check on the edited file after any Python file edit
 - **PostToolUse** — bandit security scan after any Python file edit (if bandit is installed)
 - **PostToolUse** — `lint-imports` architecture contract check after any Python file edit
-- **PostToolUse** — pytest (no coverage) after changes to `tests/` files only
+- **PostToolUse** — pytest (no coverage) on the edited test file after changes to `tests/` files only
 - **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)
 
 No setup needed — hooks activate as soon as Claude Code loads the project.
@@ -303,11 +304,12 @@ for f in ['app/core/watcher.py', 'app/core/watcher_types.py', ...]:
 "
 ```
 
-**Update mock patch paths after any module move.** `unittest.mock.patch()` targets are string literals — they are not updated by import fixers and will silently break tests. After moving or renaming any module, run:
+**Update mock patch paths after any module move.** `unittest.mock.patch()` targets are string literals — they are not updated by import fixers and will silently break tests. After moving or renaming any module, run two greps — one for mock strings, one for bare from-imports (conftest.py and fixture files use these and they are missed by the patch grep):
 ```bash
 grep -rn 'patch("' tests/ | grep '<old.module.path>'
+grep -rn 'from <old.module.path> import' tests/ app/
 ```
-and update every match to the new path before running pytest.
+and update every match to the new path before running pytest. Missing the from-import grep causes `ModuleNotFoundError` in conftest.py that fires before any test runs — all tests fail even though the implementation is correct.
 
 **Convert `patch.object` when extracting instance methods to module-level functions.** `patch.object(instance, "method")` patches the method on the class; once the function is module-level it no longer exists on the class and the patch silently does nothing. After extracting any method from a class, run:
 ```bash
@@ -315,11 +317,13 @@ grep -rn 'patch\.object' tests/ | grep '<ClassName>'
 ```
 and convert every match to `patch("new.module.path.function_name")`.
 
-**Create new files with the Write tool, not Bash heredocs.** Heredocs containing Python source break on Windows when the file body contains single quotes — the shell misinterprets them as closing the delimiter. The Write tool handles any content without escaping and avoids the multi-attempt retry loop.
+**Create new files with the Write tool, not Bash heredocs.** Heredocs containing Python source break on Windows when the file body contains single quotes — the shell misinterprets them as closing the delimiter. The Write tool handles any content without escaping and avoids the multi-attempt retry loop. If the Write tool is unavailable (local model sessions), fall back to a single-quoted Bash heredoc: `python3 << 'PYEOF'` with the closing `PYEOF` at column 0 — the single-quoted delimiter prevents the shell from interpreting anything inside, including single quotes in Python source.
 
 **Run mypy on each new Python file immediately after creating it.** Do not defer to the final `mypy app/` check — type errors in new files compound across the session and each late fix costs a full tool round-trip. Read the type signatures of the source functions *before* writing the new file so annotations are correct on the first attempt.
 
-**Package reorganizations: move all files first, __init__.py last.** When moving multiple files into a new subpackage: (1) move all source files, (2) update all imports in every consumer, (3) write `__init__.py` last. Do not run pytest at any intermediate step — the package is invalid mid-move and pytest will always fail with `ModuleNotFoundError` until every file is in place.
+**Package reorganizations: move all files first, __init__.py last.** When moving multiple files into a new subpackage: (1) move all source files, (2) update all imports in every consumer, (3) write `__init__.py` last. Do not run pytest at any intermediate step — the package is invalid mid-move and pytest will always fail with `ModuleNotFoundError` until every file is in place. After all files are moved and imports updated (but before `__init__.py`), make a WIP commit: `git add -A && git commit -m "WIP: ..."` — preserves structural work if the session ends before checks pass.
+
+**Use `replace_all=True` for bulk patch string migrations.** When updating `unittest.mock.patch()` strings after a module rename, use `Edit(old_string="app.core.old_module", new_string="app.core.new.module", replace_all=True)` rather than replacing each occurrence individually. One Edit call per (file, module-name) pair covers the entire migration in a single round-trip.
 
 ---
 

@@ -55,11 +55,15 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **No re-planning** — do not re-read Linear, re-query the project, or change scope. If something in the codebase is surprising, implement defensively within the manifest scope and note it in the result artifact summary.
 
-**New Python files** — after creating any new `.py` file (not editing an existing one), immediately run `mypy <that_file>` and fix all type errors before moving on. Do not defer to the final `required_checks` run — errors in new files compound when caught late and each fix-loop iteration costs a full tool round-trip. Read the type signatures of the source functions *before* writing the new file so annotations are correct on the first attempt.
+**Hooks run automatically — do not duplicate them manually.** After every Edit/Write to a `.py` file, PostToolUse hooks fire: `ruff check --fix` + `ruff format`, `mypy <file>`, `bandit`, and `lint-imports`. After every edit to a `tests/` file, the hook runs `pytest <that_file> --no-cov --tb=short -q`. You will see hook output in the tool result — trust it. Running these tools manually during implementation wastes a Bash round-trip per call (~40s each). Only run the final `required_checks` commands at step 4.
 
-**New test files** — after creating any new `tests/test_*.py` file, immediately run `pytest <that_file> -x --tb=short` and fix all failures before moving on. Before writing the file, read at least one existing sibling test file to understand the fixture patterns, mock conventions, and how real objects (not MagicMock) are constructed for this codebase.
+**New Python files** — read the type signatures of source functions *before* writing a new `.py` file so annotations are correct on the first attempt. The mypy hook will report errors immediately after Write — fix them before moving on.
 
-**Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping.
+**New test files** — before writing a new `tests/test_*.py` file, read at least one existing sibling test file to understand the fixture patterns, mock conventions, and how real objects (not MagicMock) are constructed for this codebase. The pytest hook runs the file automatically after each edit — watch its output rather than triggering manual pytest runs.
+
+**Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping. If the Write tool is unavailable (local model sessions), use a single-quoted Bash heredoc instead — `python3 << 'PYEOF'` with the closing `PYEOF` at column 0; the single-quoted delimiter prevents the shell from interpreting any characters inside, including single quotes in Python source.
+
+**Package reorganizations** — when moving multiple files into a new subpackage directory: (1) move ALL source files first, (2) update ALL imports in every consumer file, (3) write `__init__.py` LAST. Do not run pytest at any intermediate step — the package is broken until every file is in place and every import is updated, so any pytest run before that is noise and will always produce `ModuleNotFoundError`. After all files are moved and imports updated (but before `__init__.py` and pytest), make an intermediate WIP commit to preserve the structural work: `git add -A && git commit -m "WIP: <ticket_id> package structure complete, pre-check"` — this prevents losing all progress if the session ends before checks pass.
 
 **Package reorganizations** — when moving multiple files into a new subpackage directory: (1) move ALL source files first, (2) update ALL imports in every consumer file, (3) write `__init__.py` LAST. Do not run pytest at any intermediate step — the package is broken until every file is in place and every import is updated, so any pytest run before that is noise and will always produce `ModuleNotFoundError`.
 
@@ -73,6 +77,17 @@ grep -rn 'patch("' tests/ | grep '<old.module.path>'
 ```
 
 Update every match to the new path before running pytest. Missing this causes tests that use `unittest.mock.patch()` to fail with `AttributeError` or `ModuleNotFoundError` even though all real imports are correct.
+
+**Also grep for bare from-imports** — `patch("...")` grep only finds mock strings, not `from app.core.old_module import X` in conftest.py, fixtures, or helper files. Run a second check:
+
+```bash
+# replace <old.module.path> with the moved module, e.g. app.core.watcher_types
+grep -rn 'from <old.module.path> import' tests/ app/
+```
+
+Update every from-import to the new path. Missing this causes `ModuleNotFoundError` in conftest.py or fixture files that fires before any test runs — all tests fail even though the implementation is correct.
+
+For module renames affecting many files, use `replace_all=True` on the Edit tool rather than updating occurrences one at a time — `Edit(file_path=..., old_string="app.core.old_module", new_string="app.core.new.module", replace_all=True)` replaces every occurrence in the file in one round-trip. One call per (file, module-name) pair covers the whole migration.
 
 **If any instance methods were extracted from a class into a new module-level function**, grep for `patch.object` calls targeting those methods — they must be converted from `patch.object(instance, "method")` to `patch("new.module.path.method")`:
 
