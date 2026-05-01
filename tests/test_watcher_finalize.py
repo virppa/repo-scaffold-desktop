@@ -741,7 +741,13 @@ def test_execute_finalization_nonzero_returncode_returns_failure(
     from app.core.watcher_finalize import _execute_finalization
 
     result = _execute_finalization(
-        worker, 1, linear_mock, EscalationPolicy.from_toml(), tmp_path, MagicMock()
+        worker,
+        1,
+        linear_mock,
+        EscalationPolicy.from_toml(),
+        tmp_path,
+        MagicMock(),
+        "proj-1",
     )
     outcome, escalated, preserved, findings, _result_data = result
 
@@ -772,7 +778,13 @@ def test_execute_finalization_check_failure_abort_returns_failure(
 
     with patch("app.core.watcher_finalize.run_checks", return_value=False):
         result = _execute_finalization(
-            worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path, MagicMock()
+            worker,
+            0,
+            linear_mock,
+            EscalationPolicy.from_toml(),
+            tmp_path,
+            MagicMock(),
+            "proj-1",
         )
     outcome, escalated, preserved, findings, _result_data = result
 

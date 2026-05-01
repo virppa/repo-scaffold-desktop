@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.manifest import ArtifactPaths, ExecutionManifest
+from app.core.metrics import MetricsStore
 from app.core.watcher_helpers import _tee_worker_output
 from app.core.watcher_subprocess import (
     build_snippet_tool_restrictions,
@@ -460,6 +461,8 @@ def test_launch_worker_cloud_mode_with_snippets_prepends_critical_warning(
 
 def test_run_checks_returns_true_when_all_pass(tmp_path: Path) -> None:
     manifest = _make_manifest(required_checks=["ruff check .", "mypy app/"])
+    db_path = tmp_path / "metrics.db"
+    metrics = MetricsStore(db_path=db_path)
 
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
         result = MagicMock()
@@ -469,13 +472,15 @@ def test_run_checks_returns_true_when_all_pass(tmp_path: Path) -> None:
         return result
 
     with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
-        assert run_checks(manifest, tmp_path) is True
+        assert run_checks(manifest, tmp_path, metrics, "proj-1") is True
 
 
 def test_run_checks_returns_false_on_check_failure(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     manifest = _make_manifest(required_checks=["ruff check .", "mypy app/"])
+    db_path = tmp_path / "metrics.db"
+    metrics = MetricsStore(db_path=db_path)
     call_count = 0
 
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
@@ -491,7 +496,7 @@ def test_run_checks_returns_false_on_check_failure(
         patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run),
         caplog.at_level(logging.ERROR, logger="app.core.watcher_subprocess"),
     ):
-        passed = run_checks(manifest, tmp_path)
+        passed = run_checks(manifest, tmp_path, metrics, "proj-1")
 
     assert passed is False
     assert any("Check failed" in msg for msg in caplog.messages)
@@ -500,6 +505,8 @@ def test_run_checks_returns_false_on_check_failure(
 
 def test_run_checks_writes_last_failure_json_on_failure(tmp_path: Path) -> None:
     manifest = _make_manifest(required_checks=["ruff check ."])
+    db_path = tmp_path / "metrics.db"
+    metrics = MetricsStore(db_path=db_path)
 
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
         result = MagicMock()
@@ -509,7 +516,7 @@ def test_run_checks_writes_last_failure_json_on_failure(tmp_path: Path) -> None:
         return result
 
     with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
-        run_checks(manifest, tmp_path)
+        run_checks(manifest, tmp_path, metrics, "proj-1")
 
     artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
     failure_file = artifact_dir / "last_failure.json"
@@ -526,6 +533,8 @@ def test_run_checks_writes_last_failure_json_on_failure(tmp_path: Path) -> None:
 
 def test_run_checks_stdout_trimmed_to_4000_chars(tmp_path: Path) -> None:
     manifest = _make_manifest(required_checks=["ruff check ."])
+    db_path = tmp_path / "metrics.db"
+    metrics = MetricsStore(db_path=db_path)
     long_stdout = "x" * 8000
 
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
@@ -536,7 +545,7 @@ def test_run_checks_stdout_trimmed_to_4000_chars(tmp_path: Path) -> None:
         return result
 
     with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
-        run_checks(manifest, tmp_path)
+        run_checks(manifest, tmp_path, metrics, "proj-1")
 
     artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
     import json as json_mod
@@ -549,6 +558,8 @@ def test_run_checks_stdout_trimmed_to_4000_chars(tmp_path: Path) -> None:
 
 def test_run_checks_deletes_last_failure_json_on_success(tmp_path: Path) -> None:
     manifest = _make_manifest(required_checks=["ruff check ."])
+    db_path = tmp_path / "metrics.db"
+    metrics = MetricsStore(db_path=db_path)
 
     # Pre-create a stale last_failure.json in the artifact dir
     artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
@@ -564,7 +575,7 @@ def test_run_checks_deletes_last_failure_json_on_success(tmp_path: Path) -> None
         return result
 
     with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
-        assert run_checks(manifest, tmp_path) is True
+        assert run_checks(manifest, tmp_path, metrics, "proj-1") is True
 
     assert not stale.exists(), (
         "last_failure.json should be deleted after successful run"
@@ -575,6 +586,8 @@ def test_run_checks_last_failure_overwritten_by_last_failing_check(
     tmp_path: Path,
 ) -> None:
     manifest = _make_manifest(required_checks=["ruff check .", "mypy app/"])
+    db_path = tmp_path / "metrics.db"
+    metrics = MetricsStore(db_path=db_path)
     call_count = 0
 
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
@@ -587,7 +600,7 @@ def test_run_checks_last_failure_overwritten_by_last_failing_check(
         return result
 
     with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
-        run_checks(manifest, tmp_path)
+        run_checks(manifest, tmp_path, metrics, "proj-1")
 
     artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
     import json as json_mod
@@ -598,6 +611,45 @@ def test_run_checks_last_failure_overwritten_by_last_failing_check(
     # Last failing check (mypy) should overwrite the first (ruff)
     assert data["check"] == "mypy app/"
     assert data["stdout"] == "output from check 2"
+
+
+def test_run_checks_records_check_runs_in_metrics(tmp_path: Path) -> None:
+    """Verify that run_checks writes CheckRunEntry rows with correct outcomes."""
+    manifest = _make_manifest(required_checks=["echo ok", "false"])
+    db_path = tmp_path / "check_run.db"
+    metrics = MetricsStore(db_path=db_path)
+
+    call_order: list[str] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        call_order.append(cmd[0])
+        result = MagicMock()
+        # First command (echo ok) succeeds, second (false) fails
+        result.returncode = 0 if cmd[0] == "echo" else 1
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+        run_checks(manifest, tmp_path, metrics, "proj-1")
+
+    stats = metrics.get_check_stats("proj-1")
+    assert len(stats) == 2
+
+    passed_stats = [s for s in stats if s.pass_count == 1][0]
+    failed_stats = [s for s in stats if s.fail_count == 1][0]
+
+    assert passed_stats.check_cmd == "echo ok"
+    assert passed_stats.pass_count == 1
+    assert passed_stats.fail_count == 0
+    assert passed_stats.pass_pct == 100.0
+    assert passed_stats.avg_duration_s is not None and passed_stats.avg_duration_s > 0
+
+    assert failed_stats.check_cmd == "false"
+    assert failed_stats.fail_count == 1
+    assert failed_stats.pass_count == 0
+    assert failed_stats.pass_pct == 0.0
+    assert failed_stats.avg_duration_s is not None and failed_stats.avg_duration_s > 0
 
 
 # ---------------------------------------------------------------------------
