@@ -13,7 +13,8 @@ import subprocess  # nosec B404
 from pathlib import Path
 
 from app.core.manifest import ExecutionManifest
-from app.core.watcher_types import (
+
+from .watcher_types import (
     _CLAUDE_DIR,
     _WORKTREE_BASE,
     ActiveWorker,

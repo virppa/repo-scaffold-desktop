@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.core.watcher_helpers import (
+from app.core.watcher.watcher_helpers import (
     _parse_ollama_model,
     _parse_worker_usage,
     build_worker_cmd,

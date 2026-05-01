@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import IO
 
 from app.core.manifest import ExecutionManifest
-from app.core.watcher_types import (
+
+from .watcher_types import (
     _ENV_VARS_TO_STRIP_FOR_CLOUD,
     _LITELLM_BASE_URL,
     _LOCAL_MODEL,

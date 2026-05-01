@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from app.core.watcher_services import _VLLM_FP8_CMD, ServiceManager
+from app.core.watcher.watcher_services import _VLLM_FP8_CMD, ServiceManager
 
 # ---------------------------------------------------------------------------
 # ServiceManager.stop  (formerly _stop_litellm_proxy via Watcher shim)

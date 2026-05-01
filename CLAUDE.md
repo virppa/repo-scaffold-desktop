@@ -85,14 +85,16 @@ Module responsibilities:
 - `escalation_policy.py` — `EscalationPolicy` Pydantic model: loads `config/escalation_policy.toml`, classifies result-artifact flags and Sonar findings into watcher actions
 - `linear_client.py` — thin Linear GraphQL client (stdlib `urllib` only, no third-party HTTP deps); requires `LINEAR_API_KEY` env var
 - `metrics.py` — SQLite-backed store for per-ticket cost and execution metrics; watcher is sole writer, workers emit JSON result files only
-- `watcher_types.py` — constants, `LinearClientProtocol`, `ActiveWorker` dataclass, `is_watcher_running`, `_to_metrics_mode`
-- `watcher_helpers.py` — pure stateless functions: `check_allowed_paths_overlap`, `build_worker_env`, `build_worker_cmd`, `resolve_effective_mode`, `_tee_worker_output`, `_parse_worker_usage`, `_parse_ollama_model`
-- `watcher_subprocess.py` — worker subprocess lifecycle: `launch_worker`, `run_checks`, `fetch_sonar_findings`, `create_pr`, `build_snippet_tool_restrictions`
-- `watcher_worktrees.py` — git worktree lifecycle: `setup_worktree`, `teardown_worktree`, `rebase_worktree_from_base`, `preserve_worker_artifacts`
-- `watcher_services.py` — `ServiceManager` class: LiteLLM proxy and Ollama process management
-- `watcher_finalize.py` — worker finalization logic: `finalize_worker`, `attempt_pr`, `safe_set_state`; extracted from watcher to keep watcher.py below SonarCloud cognitive-complexity threshold
+- `watcher/` — watcher subpackage (subpackage boundary, not flat files):
+  - `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
+  - `watcher_dispatch.py` — extracted ticket start logic: `start_ticket` module function plus thin class wrappers
+  - `watcher_finalize.py` — worker finalization logic: `finalize_worker`, `attempt_pr`, `safe_set_state`
+  - `watcher_helpers.py` — pure stateless functions: `check_allowed_paths_overlap`, `build_worker_env`, `build_worker_cmd`, `resolve_effective_mode`, `_tee_worker_output`, `_parse_worker_usage`, `_parse_ollama_model`
+  - `watcher_services.py` — `ServiceManager` class: LiteLLM proxy and Ollama process management
+  - `watcher_subprocess.py` — worker subprocess lifecycle: `launch_worker`, `run_checks`, `fetch_sonar_findings`, `create_pr`, `build_snippet_tool_restrictions`
+  - `watcher_types.py` — constants, `LinearClientProtocol`, `ActiveWorker` dataclass, `is_watcher_running`, `_to_metrics_mode`
+  - `watcher_worktrees.py` — git worktree lifecycle: `create_worktree`, `rebase_worktree_from_base`, `copy_manifest_to_worktree`, `preserve_worker_artifacts`, `cleanup_worktree`, `cleanup_orphaned_worktrees`, `backup_plan_files`, `restore_plan_files`, `write_worker_pytest_config`
 - `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records (`bench.db`); mirrors `metrics.py` structure but stores hardware/timing/quality columns per run
-- `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
 - `main.py` — PySide6 `QApplication` entry point
 
 Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.

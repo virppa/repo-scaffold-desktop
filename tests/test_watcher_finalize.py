@@ -13,8 +13,8 @@ import pytest
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
 from app.core.manifest import FailurePolicy
-from app.core.watcher_finalize import _try_post_comment, finalize_worker
-from app.core.watcher_types import ActiveWorker
+from app.core.watcher.watcher_finalize import _try_post_comment, finalize_worker
+from app.core.watcher.watcher_types import ActiveWorker
 from tests.conftest import make_manifest
 
 # ---------------------------------------------------------------------------
@@ -71,9 +71,9 @@ def test_finalize_worker_pr_failure_marks_blocked(tmp_path: Path) -> None:
     exc = subprocess.CalledProcessError(1, "gh", stderr="Head sha can't be blank")
 
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
-        patch("app.core.watcher_finalize.create_pr", side_effect=exc),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.create_pr", side_effect=exc),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
 
@@ -101,12 +101,12 @@ def test_finalize_worker_retry_count_zero_on_success(tmp_path: Path) -> None:
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, metrics=metrics_mock)
 
@@ -126,8 +126,8 @@ def test_finalize_worker_retry_count_increments_on_check_failure(
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=False),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=False),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker)
         _call_finalize(worker)
@@ -149,12 +149,14 @@ def test_finalize_worker_retry_count_two_failures_then_success(
     )
     check_results = [False, False, True]
     with (
-        patch("app.core.watcher_finalize.run_checks", side_effect=check_results),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.run_checks", side_effect=check_results
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, metrics=metrics_mock)
         _call_finalize(worker, metrics=metrics_mock)
@@ -182,7 +184,7 @@ def test_finalize_worker_set_state_failure_nonzero_no_crash(tmp_path: Path) -> N
         process=MagicMock(spec=subprocess.Popen),
     )
 
-    with patch("app.core.watcher_finalize.cleanup_worktree"):
+    with patch("app.core.watcher.watcher_finalize.cleanup_worktree"):
         _call_finalize(worker, returncode=1, linear=linear_mock)
 
 
@@ -202,12 +204,12 @@ def test_finalize_worker_set_state_failure_success_path_no_crash(
     )
 
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, linear=linear_mock)
 
@@ -245,12 +247,12 @@ def test_finalize_worker_passes_usage_to_metrics(tmp_path: Path) -> None:
     )
 
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, metrics=metrics_mock)
 
@@ -272,12 +274,12 @@ def test_finalize_worker_usage_none_when_no_log(tmp_path: Path) -> None:
     )
 
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, metrics=metrics_mock)
 
@@ -302,14 +304,14 @@ def test_finalize_worker_sonar_count_wired_to_metrics(tmp_path: Path) -> None:
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
         patch(
-            "app.core.watcher_finalize.fetch_sonar_findings",
+            "app.core.watcher.watcher_finalize.fetch_sonar_findings",
             return_value=["MAJOR", "MINOR", "MINOR"],
         ),
     ):
@@ -330,13 +332,15 @@ def test_finalize_worker_sonar_count_none_when_unavailable(tmp_path: Path) -> No
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
-        patch("app.core.watcher_finalize.fetch_sonar_findings", return_value=None),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch(
+            "app.core.watcher.watcher_finalize.fetch_sonar_findings", return_value=None
+        ),
     ):
         _call_finalize(worker, metrics=metrics_mock)
 
@@ -373,13 +377,14 @@ def test_finalize_worker_sonar_blocker_escalates(tmp_path: Path) -> None:
     linear_mock, worker = _make_worker_with_result(tmp_path, {})
     metrics_mock = MagicMock()
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
-        patch("app.core.watcher_finalize.preserve_worker_artifacts"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
         patch(
-            "app.core.watcher_finalize.fetch_sonar_findings", return_value=["BLOCKER"]
+            "app.core.watcher.watcher_finalize.fetch_sonar_findings",
+            return_value=["BLOCKER"],
         ),
-        patch("app.core.watcher_finalize.create_pr") as mock_create_pr,
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.create_pr") as mock_create_pr,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(
             worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
@@ -399,15 +404,18 @@ def test_finalize_worker_sonar_major_advisory_warning(
     linear_mock, worker = _make_worker_with_result(tmp_path, {})
     metrics_mock = MagicMock()
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
-        patch("app.core.watcher_finalize.preserve_worker_artifacts"),
-        patch("app.core.watcher_finalize.fetch_sonar_findings", return_value=["MAJOR"]),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.fetch_sonar_findings",
+            return_value=["MAJOR"],
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
-        caplog.at_level(logging.WARNING, logger="app.core.watcher_finalize"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_finalize"),
     ):
         _call_finalize(
             worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
@@ -424,14 +432,16 @@ def test_finalize_worker_sonar_none_no_escalation(tmp_path: Path) -> None:
     linear_mock, worker = _make_worker_with_result(tmp_path, {})
     metrics_mock = MagicMock()
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
-        patch("app.core.watcher_finalize.preserve_worker_artifacts"),
-        patch("app.core.watcher_finalize.fetch_sonar_findings", return_value=None),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.fetch_sonar_findings", return_value=None
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(
             worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
@@ -452,10 +462,10 @@ def test_finalize_worker_scope_drift_escalates(tmp_path: Path) -> None:
     linear_mock, worker = _make_worker_with_result(tmp_path, {"scope_drift": True})
     metrics_mock = MagicMock()
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
-        patch("app.core.watcher_finalize.preserve_worker_artifacts"),
-        patch("app.core.watcher_finalize.create_pr") as mock_create_pr,
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch("app.core.watcher.watcher_finalize.create_pr") as mock_create_pr,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(
             worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
@@ -476,10 +486,10 @@ def test_finalize_worker_forbidden_path_touched_escalates(tmp_path: Path) -> Non
     )
     metrics_mock = MagicMock()
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
-        patch("app.core.watcher_finalize.preserve_worker_artifacts"),
-        patch("app.core.watcher_finalize.create_pr") as mock_create_pr,
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch("app.core.watcher.watcher_finalize.create_pr") as mock_create_pr,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(
             worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
@@ -498,13 +508,13 @@ def test_finalize_worker_no_flags_proceeds_normally(tmp_path: Path) -> None:
     linear_mock, worker = _make_worker_with_result(tmp_path, {})
     metrics_mock = MagicMock()
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
-        patch("app.core.watcher_finalize.preserve_worker_artifacts"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(
             worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
@@ -528,13 +538,13 @@ def test_finalize_worker_missing_result_json_proceeds_normally(tmp_path: Path) -
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
-        patch("app.core.watcher_finalize.preserve_worker_artifacts"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(
             worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
@@ -556,10 +566,10 @@ def test_finalize_worker_human_policy_posts_comment_and_aborts(
     linear_mock, worker = _make_worker_with_result(tmp_path, {})
     metrics_mock = MagicMock()
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
-        patch("app.core.watcher_finalize.preserve_worker_artifacts"),
-        patch("app.core.watcher_finalize.create_pr") as mock_create_pr,
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch("app.core.watcher.watcher_finalize.create_pr") as mock_create_pr,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
         patch.object(EscalationPolicy, "classify_result", return_value="human"),
     ):
         _call_finalize(
@@ -588,7 +598,7 @@ def test_try_post_comment_swallows_exception(
     linear_mock = MagicMock()
     linear_mock.post_comment.side_effect = Exception("connection reset by peer")
 
-    with caplog.at_level(logging.WARNING, logger="app.core.watcher_finalize"):
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_finalize"):
         _try_post_comment(linear_mock, "lin-id", "WOR-10", "some comment body")
 
     assert any("Could not post comment" in msg for msg in caplog.messages)
@@ -615,8 +625,8 @@ def test_execute_finalization_check_failure_escalates_to_cloud(tmp_path: Path) -
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=False),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=False),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
 
@@ -643,8 +653,8 @@ def test_execute_finalization_check_failure_blocked_when_no_escalate(
         process=MagicMock(spec=subprocess.Popen),
     )
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=False),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=False),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
 
@@ -668,7 +678,7 @@ def test_execute_finalization_nonzero_exit_escalates_to_cloud(tmp_path: Path) ->
         worktree_path=tmp_path,
         process=MagicMock(spec=subprocess.Popen),
     )
-    with patch("app.core.watcher_finalize.cleanup_worktree"):
+    with patch("app.core.watcher.watcher_finalize.cleanup_worktree"):
         _call_finalize(worker, returncode=1, linear=linear_mock, metrics=metrics_mock)
 
     linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
@@ -695,7 +705,7 @@ def test_execute_finalization_nonzero_returncode_returns_failure(
         worktree_path=tmp_path,
         process=MagicMock(spec=subprocess.Popen),
     )
-    from app.core.watcher_finalize import _execute_finalization
+    from app.core.watcher.watcher_finalize import _execute_finalization
 
     outcome, escalated, preserved, findings = _execute_finalization(
         worker, 1, linear_mock, EscalationPolicy.from_toml(), tmp_path
@@ -724,9 +734,9 @@ def test_execute_finalization_check_failure_abort_returns_failure(
         worktree_path=tmp_path,
         process=MagicMock(spec=subprocess.Popen),
     )
-    from app.core.watcher_finalize import _execute_finalization
+    from app.core.watcher.watcher_finalize import _execute_finalization
 
-    with patch("app.core.watcher_finalize.run_checks", return_value=False):
+    with patch("app.core.watcher.watcher_finalize.run_checks", return_value=False):
         outcome, escalated, preserved, findings = _execute_finalization(
             worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path
         )
@@ -755,7 +765,7 @@ def test_handle_policy_outcome_escalate_returns_escalated(
         worktree_path=tmp_path,
         process=MagicMock(spec=subprocess.Popen),
     )
-    from app.core.watcher_finalize import _handle_policy_outcome
+    from app.core.watcher.watcher_finalize import _handle_policy_outcome
 
     outcome, escalated, findings = _handle_policy_outcome(
         "escalate",
@@ -781,7 +791,7 @@ def test_handle_policy_outcome_human_returns_aborted(tmp_path: Path) -> None:
         worktree_path=tmp_path,
         process=MagicMock(spec=subprocess.Popen),
     )
-    from app.core.watcher_finalize import _handle_policy_outcome
+    from app.core.watcher.watcher_finalize import _handle_policy_outcome
 
     outcome, escalated, findings = _handle_policy_outcome(
         "human",
@@ -804,7 +814,7 @@ def test_handle_policy_outcome_human_returns_aborted(tmp_path: Path) -> None:
 def test_sonar_requires_escalation_empty_list(tmp_path: Path) -> None:
     """returns False for empty findings list."""
     linear_mock = MagicMock()
-    from app.core.watcher_finalize import _sonar_requires_escalation
+    from app.core.watcher.watcher_finalize import _sonar_requires_escalation
 
     assert (
         _sonar_requires_escalation(
@@ -817,7 +827,7 @@ def test_sonar_requires_escalation_empty_list(tmp_path: Path) -> None:
 def test_sonar_requires_escalation_severity_triggers_true() -> None:
     """returns True when escalation_policy maps severity to 'escalate'."""
     linear_mock = MagicMock()
-    from app.core.watcher_finalize import _sonar_requires_escalation
+    from app.core.watcher.watcher_finalize import _sonar_requires_escalation
 
     # Default policy: BLOCKER → escalate
     assert (
@@ -837,7 +847,7 @@ def test_sonar_requires_escalation_severity_triggers_true() -> None:
 def test_sonar_requires_escalation_no_triggers_false() -> None:
     """returns False when no severity maps to 'escalate'."""
     linear_mock = MagicMock()
-    from app.core.watcher_finalize import _sonar_requires_escalation
+    from app.core.watcher.watcher_finalize import _sonar_requires_escalation
 
     # Default policy: MAJOR, MINOR, INFO → fix_locally (not escalate)
     assert (
@@ -864,9 +874,9 @@ def test_safe_set_state_linear_error_logged_as_warning(
     linear_mock = MagicMock()
     linear_mock.set_state.side_effect = LinearError("network timeout")
 
-    with caplog.at_level(logging.WARNING, logger="app.core.watcher_finalize"):
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_finalize"):
         # Should NOT raise — catches LinearError internally
-        from app.core.watcher_finalize import safe_set_state
+        from app.core.watcher.watcher_finalize import safe_set_state
 
         safe_set_state(linear_mock, "fake-linear-id", "Blocked", "WOR-10")
 
@@ -878,8 +888,8 @@ def test_safe_set_state_linear_error_logged_as_warning(
 def test_safe_set_state_success_no_warning(caplog: pytest.LogCaptureFixture) -> None:
     """Successful set_state produces no warning log."""
     linear_mock = MagicMock()
-    with caplog.at_level(logging.WARNING, logger="app.core.watcher_finalize"):
-        from app.core.watcher_finalize import safe_set_state
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_finalize"):
+        from app.core.watcher.watcher_finalize import safe_set_state
 
         safe_set_state(linear_mock, "fake-linear-id", "In Progress", "WOR-10")
 
@@ -905,10 +915,10 @@ def test_attempt_pr_success_returns_success(
         process=MagicMock(spec=subprocess.Popen),
     )
     linear_mock = MagicMock()
-    from app.core.watcher_finalize import attempt_pr
+    from app.core.watcher.watcher_finalize import attempt_pr
 
     with patch(
-        "app.core.watcher_finalize.create_pr",
+        "app.core.watcher.watcher_finalize.create_pr",
         return_value="https://github.com/example/pr/1",
     ):
         result = attempt_pr(manifest, worker, linear_mock)
@@ -935,10 +945,10 @@ def test_attempt_pr_called_process_error_returns_failure(
         worktree_path=tmp_path,
         process=MagicMock(spec=subprocess.Popen),
     )
-    from app.core.watcher_finalize import attempt_pr
+    from app.core.watcher.watcher_finalize import attempt_pr
 
     exc = subprocess.CalledProcessError(1, "gh pr create", stderr="validation failed")
-    with patch("app.core.watcher_finalize.create_pr", side_effect=exc):
+    with patch("app.core.watcher.watcher_finalize.create_pr", side_effect=exc):
         result = attempt_pr(manifest, worker, linear_mock)
 
     assert result == "failure"
@@ -983,12 +993,12 @@ def test_finalize_worker_writes_separate_token_fields(tmp_path: Path) -> None:
     )
 
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, wall_time=10.0, metrics=metrics_mock)
 
@@ -1015,12 +1025,12 @@ def test_finalize_worker_token_fields_none_when_no_log(
     )
 
     with (
-        patch("app.core.watcher_finalize.run_checks", return_value=True),
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=True),
         patch(
-            "app.core.watcher_finalize.create_pr",
+            "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
         ),
-        patch("app.core.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
     ):
         _call_finalize(worker, metrics=metrics_mock)
 
