@@ -44,6 +44,16 @@ If the worktree contains a commit whose message matches `wip(failed): <ticket_id
 - If the WIP commit has conflicts with the current branch tip, resolve them
   before continuing.
 
+Also inspect git log for wip commits from previous workers (WOR-267):
+
+```bash
+git log --oneline --grep="^wip: <ticket_id>$"  # find wip commits
+```
+
+If wip commits are found on the branch, inspect them and **resume from the last
+committed phase** without redoing completed work. The squash_wip_commits function
+(worker-side) will squash them into a single commit on success.
+
 This allows retry workers to pick up where the previous worker left off.
 
 ### 1. Verify branch
@@ -115,6 +125,26 @@ grep -rn 'patch\.object' tests/ | grep '<ClassName>'
 ```
 
 `patch.object` patches the method on the instance; once the function is module-level it no longer exists on the class and the patch silently does nothing or raises `AttributeError`. Convert every match to a string-path `patch("new.module.path.function_name")`.
+
+### 3.5. Commit WIP state (WOR-267)
+
+After completing all implementation (step 3), make an unconditional WIP commit
+so that squash_wip_commits can squash it on the success path:
+
+```bash
+git add -A && git commit -m "wip: <ticket_id> implementation complete"
+```
+
+After writing any new test files, make a separate WIP commit for tests:
+
+```bash
+git add tests/ && git commit -m "wip: <ticket_id> tests written"
+```
+
+These instructions are UNCONDITIONAL — do not gate on check results or
+implementation quality. The squash_wip_commits function (worker-side) will
+squash all wip commits since the diverge point into a single commit before
+the PR is created, giving fine-grained retry resume.
 
 ### 4. Run required checks
 

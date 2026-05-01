@@ -964,6 +964,47 @@ def test_attempt_pr_called_process_error_returns_failure(
 
 
 # ---------------------------------------------------------------------------
+# WOR-267 — attempt_pr calls commit_wip_state on failure
+# ---------------------------------------------------------------------------
+
+
+def test_attempt_pr_calls_commit_wip_state_on_failure(
+    tmp_path: Path,
+) -> None:
+    """On CalledProcessError, commit_wip_state is called to preserve changes."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+    )
+    linear_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    from app.core.watcher.watcher_finalize import attempt_pr
+
+    exc = subprocess.CalledProcessError(1, "gh pr create", stderr="validation failed")
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value=None,
+        ) as mock_commit,
+        patch("app.core.watcher.watcher_finalize.create_pr", side_effect=exc),
+    ):
+        result = attempt_pr(manifest, worker, linear_mock)
+
+    assert result == "failure"
+    mock_commit.assert_called_once_with(
+        tmp_path,
+        "WOR-10",
+        "wor-10-test-ticket",
+    )
+
+
+# ---------------------------------------------------------------------------
 # WOR-230 — local_input_tokens / local_output_tokens wired to metrics
 # ---------------------------------------------------------------------------
 
