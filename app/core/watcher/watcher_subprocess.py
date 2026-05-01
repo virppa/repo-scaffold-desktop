@@ -20,12 +20,13 @@ from pathlib import Path
 from typing import IO
 
 from app.core.manifest import ExecutionManifest
-from app.core.watcher_helpers import (
+
+from .watcher_helpers import (
     _tee_worker_output,
     build_worker_cmd,
     build_worker_env,
 )
-from app.core.watcher_types import _CLAUDE_DIR
+from .watcher_types import _CLAUDE_DIR
 
 logger = logging.getLogger(__name__)
 

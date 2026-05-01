@@ -14,24 +14,25 @@ from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import MetricsStore, Outcome, TicketMetrics
-from app.core.watcher_helpers import (
+
+from .watcher_helpers import (
     _POLICY_FLAGS,
     _parse_worker_usage,
     _read_result_flags,
     resolve_effective_mode,
 )
-from app.core.watcher_subprocess import (
+from .watcher_subprocess import (
     create_pr,
     fetch_sonar_findings,
     run_checks,
 )
-from app.core.watcher_types import (
+from .watcher_types import (
     _LOCAL_MODEL,
     ActiveWorker,
     LinearClientProtocol,
     _to_metrics_mode,
 )
-from app.core.watcher_worktrees import (
+from .watcher_worktrees import (
     cleanup_worktree,
     preserve_worker_artifacts,
     restore_plan_files,

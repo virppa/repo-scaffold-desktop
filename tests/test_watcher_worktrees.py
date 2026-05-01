@@ -1,4 +1,4 @@
-"""Tests for app.core.watcher_worktrees."""
+"""Tests for app.core.watcher.watcher_worktrees."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.manifest import ArtifactPaths
-from app.core.watcher_types import ActiveWorker
-from app.core.watcher_worktrees import (
+from app.core.watcher.watcher_types import ActiveWorker
+from app.core.watcher.watcher_worktrees import (
     backup_plan_files,
     cleanup_orphaned_worktrees,
     cleanup_worktree,
@@ -44,7 +44,7 @@ def test_create_worktree_happy_path(tmp_path: Path) -> None:
     with (
         patch("subprocess.run") as mock_run,
         patch(
-            "app.core.watcher_worktrees.rebase_worktree_from_base",
+            "app.core.watcher.watcher_worktrees.rebase_worktree_from_base",
         ) as mock_rebase,
     ):
         result = create_worktree(tmp_path, manifest)
@@ -70,7 +70,7 @@ def test_create_worktree_uses_worktree_name_when_present(tmp_path: Path) -> None
     with (
         patch("subprocess.run") as mock_run,
         patch(
-            "app.core.watcher_worktrees.rebase_worktree_from_base",
+            "app.core.watcher.watcher_worktrees.rebase_worktree_from_base",
         ),
     ):
         result = create_worktree(tmp_path, manifest)
@@ -109,7 +109,7 @@ def test_rebase_worktree_from_base_warns_on_failure(
 
     with (
         patch("subprocess.run", side_effect=_raise),
-        caplog.at_level(logging.WARNING, logger="app.core.watcher_worktrees"),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"),
     ):
         rebase_worktree_from_base(tmp_path, "some-epic-branch")
 
@@ -242,7 +242,7 @@ def test_backup_plan_files_moves_md_files(
     monkeypatch.setattr(Path, "home", staticmethod(fake_home))
 
     # The module uses Path.home() so we need to also patch Path.home in the module
-    with patch("app.core.watcher_worktrees.Path.home", return_value=tmp_path):
+    with patch("app.core.watcher.watcher_worktrees.Path.home", return_value=tmp_path):
         moved = backup_plan_files()
 
     assert len(moved) == 2
@@ -258,7 +258,8 @@ def test_backup_plan_files_no_op_when_plans_dir_absent(
         return Path("/nonexistent")
 
     with patch(
-        "app.core.watcher_worktrees.Path.home", return_value=Path("/nonexistent")
+        "app.core.watcher.watcher_worktrees.Path.home",
+        return_value=Path("/nonexistent"),
     ):
         result = backup_plan_files()
 
@@ -283,7 +284,7 @@ def test_restore_plan_files_moves_files_back(
 
     backed_up = [moved_file]
 
-    with patch("app.core.watcher_worktrees.Path.home", return_value=tmp_path):
+    with patch("app.core.watcher.watcher_worktrees.Path.home", return_value=tmp_path):
         restore_plan_files(backed_up)
 
     restored = plans_dir / "plan1.md"
@@ -293,7 +294,7 @@ def test_restore_plan_files_moves_files_back(
 
 
 def test_restore_plan_files_no_op_on_empty_list() -> None:
-    with patch("app.core.watcher_worktrees.Path.home") as mock_home:
+    with patch("app.core.watcher.watcher_worktrees.Path.home") as mock_home:
         restore_plan_files([])
         # home() should not be called for empty list
         mock_home.assert_not_called()
@@ -364,7 +365,7 @@ def test_preserve_worker_artifacts_missing_result_warns(
         process=MagicMock(spec=subprocess.Popen),
     )
 
-    with caplog.at_level(logging.WARNING, logger="app.core.watcher_worktrees"):
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"):
         preserve_worker_artifacts(tmp_path, worker)
 
     assert any("No result artifact" in r.message for r in caplog.records)
@@ -435,7 +436,7 @@ def test_cleanup_worktree_logs_warning_on_failure(
         raise subprocess.CalledProcessError(1, "git", stderr="failed to remove")
 
     with (
-        caplog.at_level(logging.WARNING, logger="app.core.watcher_worktrees"),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"),
         patch("subprocess.run", side_effect=_raise),
     ):
         cleanup_worktree(tmp_path, tmp_path)
@@ -461,7 +462,7 @@ def test_cleanup_orphaned_worktrees_removes_subdirs(tmp_path: Path) -> None:
     worktree_dir_b.mkdir(parents=True)
 
     with (
-        patch("app.core.watcher_worktrees.cleanup_worktree") as mock_cleanup,
+        patch("app.core.watcher.watcher_worktrees.cleanup_worktree") as mock_cleanup,
     ):
         cleanup_orphaned_worktrees(repo_root)
 
@@ -480,7 +481,7 @@ def test_cleanup_orphaned_worktrees_skips_files(tmp_path: Path) -> None:
     (worktrees_dir / "readme.md").write_text("not a worktree")
 
     with (
-        patch("app.core.watcher_worktrees.cleanup_worktree") as mock_cleanup,
+        patch("app.core.watcher.watcher_worktrees.cleanup_worktree") as mock_cleanup,
     ):
         cleanup_orphaned_worktrees(repo_root)
 
@@ -491,7 +492,7 @@ def test_cleanup_orphaned_worktrees_no_op_when_base_absent(
     tmp_path: Path,
 ) -> None:
     with patch(
-        "app.core.watcher_worktrees.cleanup_worktree",
+        "app.core.watcher.watcher_worktrees.cleanup_worktree",
     ) as mock_cleanup:
         cleanup_orphaned_worktrees(tmp_path)
 

@@ -30,17 +30,18 @@ from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import MetricsStore
-from app.core.watcher_finalize import finalize_worker, safe_set_state
-from app.core.watcher_helpers import check_allowed_paths_overlap, resolve_effective_mode
-from app.core.watcher_services import ServiceManager
-from app.core.watcher_subprocess import launch_worker
-from app.core.watcher_types import (
+
+from .watcher_finalize import finalize_worker, safe_set_state
+from .watcher_helpers import check_allowed_paths_overlap, resolve_effective_mode
+from .watcher_services import ServiceManager
+from .watcher_subprocess import launch_worker
+from .watcher_types import (
     _CLAUDE_DIR,
     _PID_FILE,
     ActiveWorker,
     LinearClientProtocol,
 )
-from app.core.watcher_worktrees import (
+from .watcher_worktrees import (
     backup_plan_files,
     cleanup_worktree,
     copy_manifest_to_worktree,
@@ -160,7 +161,7 @@ class Watcher:
             )
 
     def _cleanup_orphaned_worktrees(self) -> None:
-        from app.core.watcher_types import _WORKTREE_BASE
+        from .watcher_types import _WORKTREE_BASE
 
         base = self._repo_root.parent / _WORKTREE_BASE
         if not base.exists():

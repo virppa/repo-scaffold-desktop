@@ -16,8 +16,8 @@ import sys
 import time
 from pathlib import Path
 
-from app.core.watcher_helpers import _parse_ollama_model
-from app.core.watcher_types import (
+from .watcher_helpers import _parse_ollama_model
+from .watcher_types import (
     _LITELLM_CONFIG,
     _LITELLM_PORT,
     _OLLAMA_KEEPALIVE,
