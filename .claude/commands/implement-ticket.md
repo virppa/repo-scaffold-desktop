@@ -55,6 +55,17 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **No re-planning** — do not re-read Linear, re-query the project, or change scope. If something in the codebase is surprising, implement defensively within the manifest scope and note it in the result artifact summary.
 
+### 3.5. Post-implementation checks (before required_checks)
+
+**If any files were moved or renamed to a different module path**, grep for string-based mock patch targets that reference the old path and update them — import fixers do not touch these:
+
+```bash
+# replace <old.module.path> with the module that was moved, e.g. app.core.watcher_subprocess
+grep -rn 'patch("' tests/ | grep '<old.module.path>'
+```
+
+Update every match to the new path before running pytest. Missing this causes tests that use `unittest.mock.patch()` to fail with `AttributeError` or `ModuleNotFoundError` even though all real imports are correct.
+
 ### 4. Run required checks
 
 After implementation, run each command in `required_checks` in order:
