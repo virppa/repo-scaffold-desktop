@@ -304,6 +304,8 @@ for f in ['app/core/watcher.py', 'app/core/watcher_types.py', ...]:
 "
 ```
 
+**Trust the Edit tool and hooks — do not re-read after editing.** The Edit tool confirms the change was applied. PostToolUse hooks (ruff, mypy, bandit, lint-imports) report any issues immediately in the tool result. Re-reading a file after editing to "verify" wastes a round-trip per edit. Only re-read if a hook explicitly reported an error you need to inspect in context.
+
 **Update mock patch paths after any module move.** `unittest.mock.patch()` targets are string literals — they are not updated by import fixers and will silently break tests. After moving or renaming any module, run two greps — one for mock strings, one for bare from-imports (conftest.py and fixture files use these and they are missed by the patch grep):
 ```bash
 grep -rn 'patch("' tests/ | grep '<old.module.path>'
