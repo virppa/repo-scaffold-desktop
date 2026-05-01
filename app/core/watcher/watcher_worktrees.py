@@ -151,6 +151,113 @@ def write_worker_pytest_config(worktree_path: Path) -> None:
     (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
 
 
+def commit_wip_state(
+    worktree_path: Path,
+    ticket_id: str,
+    worker_branch: str,
+) -> str | None:
+    """Stage and commit all work-in-progress for post-failure retry.
+
+    Returns the short commit SHA (12 chars) on success, or None if the tree
+    is clean or any git step fails. Never raises — logs warnings instead.
+    """
+    try:
+        # Check if tree is clean
+        status = subprocess.run(  # nosec B603 B607
+            ["git", "-C", str(worktree_path), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if status.returncode != 0 or not status.stdout.strip():
+            if status.returncode != 0:
+                logger.warning(
+                    "git status failed in %s for %s — skipping wip commit",
+                    worktree_path,
+                    ticket_id,
+                )
+            else:
+                logger.info(
+                    "No working tree changes for %s — no wip commit needed",
+                    ticket_id,
+                )
+            return None
+
+        # Stage all changes
+        subprocess.run(  # nosec B603 B607
+            ["git", "-C", str(worktree_path), "add", "-A"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Commit with the wip message
+        subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "commit",
+                "-m",
+                f"wip(failed): {ticket_id} pre-failure state "
+                "— retry may resume from here",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Push the branch
+        push = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "push",
+                "-u",
+                "origin",
+                worker_branch,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if push.returncode != 0:
+            logger.warning(
+                "git push failed for %s — wip commit not pushed: %s",
+                ticket_id,
+                (push.stderr or push.stdout or "").strip(),
+            )
+            return None
+
+        # Get short SHA
+        rev = subprocess.run(  # nosec B603 B607
+            ["git", "-C", str(worktree_path), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        sha = rev.stdout.strip()
+        logger.info(
+            "WIP commit %s created for %s on %s",
+            sha,
+            ticket_id,
+            worker_branch,
+        )
+        return sha
+
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "WIP commit failed for %s: %s",
+            ticket_id,
+            (exc.stderr or exc.stdout or str(exc)).strip(),
+        )
+        return None
+    except OSError as exc:
+        logger.warning("WIP commit failed for %s (OSError): %s", ticket_id, exc)
+        return None
+
+
 def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:
     """Copy worker log and result.json from the worktree to the repo artifact dir.
 
