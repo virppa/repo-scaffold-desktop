@@ -109,6 +109,7 @@ If no siblings are In Progress, skip this block silently.
 - List what new files will be created (not just edited) — for each one, add to `risk_flags` in the manifest: `"<filename>.py is a new file — worker must read source type signatures before writing and run mypy on the file immediately after creation"`
 - List what new test files will be created — for each one, add to `risk_flags`: `"<test_file>.py is a new test file — worker must read a sibling test file first for fixture/mock patterns, then run pytest <file> -x immediately after creation"`
 - If any instance methods are being extracted from a class into module-level functions, add to `risk_flags`: `"methods extracted from <ClassName> — grep for patch.object(instance, '<method>') in tests/ and convert to patch('new.module.path.<method>') — patch.object silently does nothing once the method is no longer on the class"`
+- If the ticket involves moving files into a new subpackage, add to `risk_flags`: `"package reorganization — move ALL source files into the subpackage first, update ALL imports in consumers, then write __init__.py LAST — do not run pytest until the move is complete or ModuleNotFoundError will appear on every intermediate check"`
 - List what new tests are needed (file, test name, what it verifies)
 - Flag any security surface introduced: new I/O, user input handling, file operations, subprocess calls
 - Note edge cases and overwrite behavior to consider
