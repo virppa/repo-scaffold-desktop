@@ -55,6 +55,10 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **No re-planning** — do not re-read Linear, re-query the project, or change scope. If something in the codebase is surprising, implement defensively within the manifest scope and note it in the result artifact summary.
 
+**New Python files** — after creating any new `.py` file (not editing an existing one), immediately run `mypy <that_file>` and fix all type errors before moving on. Do not defer to the final `required_checks` run — errors in new files compound when caught late and each fix-loop iteration costs a full tool round-trip. Read the type signatures of the source functions *before* writing the new file so annotations are correct on the first attempt.
+
+**Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping.
+
 ### 3.5. Post-implementation checks (before required_checks)
 
 **If any files were moved or renamed to a different module path**, grep for string-based mock patch targets that reference the old path and update them — import fixers do not touch these:
