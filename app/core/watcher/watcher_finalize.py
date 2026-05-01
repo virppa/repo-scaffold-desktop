@@ -14,7 +14,7 @@ from pathlib import Path
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import MetricsStore, Outcome, TicketMetrics
+from app.core.metrics import MetricsStore, Outcome, TicketMetrics, TicketRunLog
 
 from .watcher_helpers import (
     _POLICY_FLAGS,
@@ -134,6 +134,20 @@ def finalize_worker(
             sonar_findings_count=(
                 len(sonar_findings) if sonar_findings is not None else None
             ),
+        )
+    )
+    metrics.record_run(
+        TicketRunLog(
+            ticket_id=worker.ticket_id,
+            attempt=worker.retry_count + 1,
+            implementation_mode=_to_metrics_mode(eff),
+            outcome=outcome,
+            failed_check=None,
+            wall_time_s=wall_time,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            output_tok_per_s=local_output_tokens_per_second,
+            context_compactions=context_compactions,
         )
     )
 
