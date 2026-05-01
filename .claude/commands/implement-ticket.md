@@ -59,7 +59,7 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **New test files** — after creating any new `tests/test_*.py` file, immediately run `pytest <that_file> -x --tb=short` and fix all failures before moving on. Before writing the file, read at least one existing sibling test file to understand the fixture patterns, mock conventions, and how real objects (not MagicMock) are constructed for this codebase.
 
-**Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping.
+**Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping. If the Write tool is unavailable (local model sessions), use a single-quoted Bash heredoc instead — `python3 << 'PYEOF'` with the closing `PYEOF` at column 0; the single-quoted delimiter prevents the shell from interpreting any characters inside, including single quotes in Python source.
 
 **Editing existing files** — use the Edit tool, not `python3 -c`, `sed`, or Bash one-liners. Any approach that passes Python source through a shell command will break on Windows quoting (backslashes, single quotes, double quotes all collide). The Edit tool takes `old_string`/`new_string` directly with no shell quoting involved — it is always the right choice for modifying existing file content.
 
