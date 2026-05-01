@@ -315,7 +315,7 @@ grep -rn 'patch\.object' tests/ | grep '<ClassName>'
 ```
 and convert every match to `patch("new.module.path.function_name")`.
 
-**Create new files with the Write tool, not Bash heredocs.** Heredocs containing Python source break on Windows when the file body contains single quotes — the shell misinterprets them as closing the delimiter. The Write tool handles any content without escaping and avoids the multi-attempt retry loop.
+**Create new files with the Write tool, not Bash heredocs.** Heredocs containing Python source break on Windows when the file body contains single quotes — the shell misinterprets them as closing the delimiter. The Write tool handles any content without escaping and avoids the multi-attempt retry loop. If the Write tool is unavailable (local model sessions), fall back to a single-quoted Bash heredoc: `python3 << 'PYEOF'` with the closing `PYEOF` at column 0 — the single-quoted delimiter prevents the shell from interpreting anything inside, including single quotes in Python source.
 
 **Run mypy on each new Python file immediately after creating it.** Do not defer to the final `mypy app/` check — type errors in new files compound across the session and each late fix costs a full tool round-trip. Read the type signatures of the source functions *before* writing the new file so annotations are correct on the first attempt.
 
