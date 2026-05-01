@@ -143,12 +143,18 @@ def launch_worker(
 _LAST_FAILURE_FILENAME = "last_failure.json"
 
 
-def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
-    """Run manifest.required_checks in the worktree. Returns True if all pass."""
+def run_checks(
+    manifest: ExecutionManifest, worktree_path: Path
+) -> tuple[bool, list[dict[str, int | str]]]:
+    """Run manifest.required_checks in the worktree.
+
+    Returns (all_passed, failed_checks) where *failed_checks* is a list of
+    ``{check: str, exit_code: int}`` for each check that returned non-zero.
+    """
     artifact_dir = worktree_path / Path(manifest.artifact_paths.result_json).parent
     failure_artifact = artifact_dir / _LAST_FAILURE_FILENAME
 
-    all_passed = True
+    failed_checks: list[dict[str, int | str]] = []
     for check_cmd in manifest.required_checks:
         logger.info("Running check: %s", check_cmd)
         result = subprocess.run(  # nosec B603
@@ -161,7 +167,7 @@ def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
             logger.error(
                 "Check failed: %s\n%s", check_cmd, result.stdout + result.stderr
             )
-            all_passed = False
+            failed_checks.append({"check": check_cmd, "exit_code": result.returncode})
             artifact_dir.mkdir(parents=True, exist_ok=True)
             failure_artifact.write_text(
                 json.dumps(
@@ -175,10 +181,10 @@ def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
                 encoding="utf-8",
             )
 
-    if all_passed and failure_artifact.exists():
+    if not failed_checks and failure_artifact.exists():
         failure_artifact.unlink()
 
-    return all_passed
+    return (len(failed_checks) == 0, failed_checks)
 
 
 def create_pr(manifest: ExecutionManifest, worktree_path: Path) -> str:

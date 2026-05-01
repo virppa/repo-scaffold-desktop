@@ -516,7 +516,9 @@ def test_run_checks_returns_true_when_all_pass(tmp_path: Path) -> None:
     with patch(
         "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
     ):
-        assert run_checks(manifest, tmp_path) is True
+        passed, failures = run_checks(manifest, tmp_path)
+        assert passed is True
+        assert failures == []
 
 
 def test_run_checks_returns_false_on_check_failure(
@@ -540,9 +542,12 @@ def test_run_checks_returns_false_on_check_failure(
         ),
         caplog.at_level(logging.ERROR, logger="app.core.watcher.watcher_subprocess"),
     ):
-        passed = run_checks(manifest, tmp_path)
+        passed, failures = run_checks(manifest, tmp_path)
 
     assert passed is False
+    assert len(failures) == 1
+    assert failures[0]["check"] == "ruff check ."
+    assert failures[0]["exit_code"] == 1
     assert any("Check failed" in msg for msg in caplog.messages)
     assert call_count == 2
 
@@ -619,7 +624,9 @@ def test_run_checks_deletes_last_failure_json_on_success(tmp_path: Path) -> None
     with patch(
         "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
     ):
-        assert run_checks(manifest, tmp_path) is True
+        passed, failures = run_checks(manifest, tmp_path)
+        assert passed is True
+        assert failures == []
 
     assert not stale.exists(), (
         "last_failure.json should be deleted after successful run"

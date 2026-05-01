@@ -90,7 +90,10 @@ class TestRecordAndRetrieve:
 class TestCheckFailures:
     def test_check_failures_round_trip(self, tmp_path):
         store = _store(tmp_path)
-        failures = {"mypy": 2, "pytest": 1}
+        failures = [
+            {"check": "mypy", "exit_code": 1},
+            {"check": "pytest", "exit_code": 2},
+        ]
         store.record(_ticket(check_failures=failures))
         result = store.get_by_ticket("WOR-1", "proj-a")
         assert result is not None
@@ -102,6 +105,13 @@ class TestCheckFailures:
         result = store.get_by_ticket("WOR-1", "proj-a")
         assert result is not None
         assert result.check_failures is None
+
+    def test_empty_check_failures_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(check_failures=[]))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.check_failures == []
 
 
 class TestAdditionalMetrics:
