@@ -38,7 +38,7 @@ type = layers
 # watcher_types is a leaf: imports nothing from watcher siblings.
 # CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
 layers =
-    app.core.watcher
+    app.core.watcher.watcher
     app.core.watcher.watcher_finalize
     app.core.watcher.watcher_subprocess : app.core.watcher.watcher_worktrees : app.core.watcher.watcher_services
     app.core.watcher.watcher_helpers
@@ -53,7 +53,7 @@ type = forbidden
 source_modules =
     app.core.watcher.watcher_types
 forbidden_modules =
-    app.core.watcher
+    app.core.watcher.watcher
     app.core.watcher.watcher_finalize
     app.core.watcher.watcher_helpers
     app.core.watcher.watcher_subprocess
