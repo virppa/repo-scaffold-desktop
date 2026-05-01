@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess  # nosec B404
 from pathlib import Path
 
@@ -41,6 +42,49 @@ from .watcher_worktrees import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cloud pricing — per million tokens, keyed on model name
+# ---------------------------------------------------------------------------
+
+_CLOUD_PRICING: dict[str, dict[str, float]] = {
+    "claude-opus-4-7": {"input": 15.0, "output": 75.0},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    "claude-haiku-4-5": {"input": 0.80, "output": 4.0},
+}
+
+_DEFAULT_CLOUD_MODEL = "claude-opus-4-7"
+
+
+def _resolve_cloud_model() -> str:
+    """Return the cloud model name.
+
+    Checks ANTHROPIC_MODEL env-var first, falls back to ``_DEFAULT_CLOUD_MODEL``.
+    """
+    return os.environ.get("ANTHROPIC_MODEL") or _DEFAULT_CLOUD_MODEL
+
+
+def _estimate_cloud_cost(
+    input_tokens: int | None,
+    output_tokens: int | None,
+    model: str,
+) -> float:
+    """Estimate the cloud API cost for the given token counts.
+
+    Input tokens are billed at the model's input rate, output tokens at the
+    output rate.  Prices are per million tokens.
+
+    Returns 0.0 when the model is not found in the pricing table or either
+    token count is None.
+    """
+    if input_tokens is None or output_tokens is None:
+        return 0.0
+    pricing = _CLOUD_PRICING.get(model)
+    if pricing is None:
+        return 0.0
+    return (input_tokens / 1_000_000) * pricing["input"] + (
+        output_tokens / 1_000_000
+    ) * pricing["output"]
 
 
 # ---------------------------------------------------------------------------
@@ -102,17 +146,36 @@ def finalize_worker(
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
     input_tokens, output_tokens, context_compactions = _parse_worker_usage(log_path)
-    # Backward-compat: local_tokens = input + output (None when either is None)
-    local_tokens: int | None = (
-        (input_tokens or 0) + (output_tokens or 0)
-        if input_tokens is not None and output_tokens is not None
-        else None
-    )
-    # Derive throughput when both output tokens and wall time are available
-    local_output_tokens_per_second: float | None = None
-    if output_tokens is not None and wall_time and wall_time > 0:
-        local_output_tokens_per_second = output_tokens / wall_time
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
+
+    # Cloud metrics — populated only when eff == "cloud"
+    cloud_model: str | None = None
+    cloud_tokens: int | None = None
+    cloud_cost_estimate: float | None = None
+    if eff == "cloud" and input_tokens is not None and output_tokens is not None:
+        cloud_model = _resolve_cloud_model()
+        cloud_tokens = input_tokens + output_tokens
+        cloud_cost_estimate = _estimate_cloud_cost(
+            input_tokens, output_tokens, cloud_model
+        )
+
+    # Local metrics — populated only when eff == "local"
+    local_tokens: int | None = None
+    local_input_tokens: int | None = None
+    local_output_tokens: int | None = None
+    local_output_tokens_per_second: float | None = None
+    local_model_str: str | None = None
+    if eff == "local":
+        local_tokens = (
+            (input_tokens or 0) + (output_tokens or 0)
+            if input_tokens is not None and output_tokens is not None
+            else None
+        )
+        local_input_tokens = input_tokens
+        local_output_tokens = output_tokens
+        local_model_str = _LOCAL_MODEL
+        if output_tokens is not None and wall_time and wall_time > 0:
+            local_output_tokens_per_second = output_tokens / wall_time
     # Derive the first failed check name for TicketRunLog (WOR-261)
     first_failed_check: str | None = (
         str(failed_checks[0]["check"]) if failed_checks else None
@@ -127,10 +190,13 @@ def finalize_worker(
             epic_id=worker.manifest.epic_id,
             implementation_mode=_to_metrics_mode(eff),
             local_used=(eff == "local"),
-            local_model=(_LOCAL_MODEL if eff == "local" else None),
+            local_model=local_model_str,
             cloud_used=(eff == "cloud"),
-            local_input_tokens=input_tokens,
-            local_output_tokens=output_tokens,
+            cloud_model=cloud_model,
+            cloud_tokens=cloud_tokens,
+            cloud_cost_estimate=cloud_cost_estimate,
+            local_input_tokens=local_input_tokens,
+            local_output_tokens=local_output_tokens,
             local_tokens=local_tokens,
             local_wall_time=wall_time,
             local_output_tokens_per_second=local_output_tokens_per_second,
