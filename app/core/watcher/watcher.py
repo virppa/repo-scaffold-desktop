@@ -80,6 +80,7 @@ class Watcher:
         repo_root: Path | None = None,
         project_id: str = "repo-scaffold-desktop",
         verbose: bool = False,
+        no_epic_shutdown: bool = False,
     ) -> None:
         if linear_client is None:
             from app.core.linear_client import LinearClient  # lazy import
@@ -101,6 +102,7 @@ class Watcher:
         self._verbose = verbose
         self._retry_counters: dict[str, int] = {}
         self._escalation_policy = EscalationPolicy.from_toml()
+        self._no_epic_shutdown = no_epic_shutdown
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -570,7 +572,8 @@ class Watcher:
                     logger.warning(
                         "Could not post epic-complete comment on %s: %s", epic_id, exc
                     )
-            self._running = False
+            if not self._no_epic_shutdown:
+                self._running = False
 
     # ------------------------------------------------------------------
     # Manifest loading
