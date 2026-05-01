@@ -72,6 +72,15 @@ grep -rn 'patch("' tests/ | grep '<old.module.path>'
 
 Update every match to the new path before running pytest. Missing this causes tests that use `unittest.mock.patch()` to fail with `AttributeError` or `ModuleNotFoundError` even though all real imports are correct.
 
+**If any instance methods were extracted from a class into a new module-level function**, grep for `patch.object` calls targeting those methods — they must be converted from `patch.object(instance, "method")` to `patch("new.module.path.method")`:
+
+```bash
+# replace <ClassName> with the class methods were extracted from, e.g. Watcher
+grep -rn 'patch\.object' tests/ | grep '<ClassName>'
+```
+
+`patch.object` patches the method on the instance; once the function is module-level it no longer exists on the class and the patch silently does nothing or raises `AttributeError`. Convert every match to a string-path `patch("new.module.path.function_name")`.
+
 ### 4. Run required checks
 
 After implementation, run each command in `required_checks` in order:
