@@ -61,6 +61,8 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping.
 
+**Editing existing files** — use the Edit tool, not `python3 -c`, `sed`, or Bash one-liners. Any approach that passes Python source through a shell command will break on Windows quoting (backslashes, single quotes, double quotes all collide). The Edit tool takes `old_string`/`new_string` directly with no shell quoting involved — it is always the right choice for modifying existing file content.
+
 **Package reorganizations** — when moving multiple files into a new subpackage directory: (1) move ALL source files first, (2) update ALL imports in every consumer file, (3) write `__init__.py` LAST. Do not run pytest at any intermediate step — the package is broken until every file is in place and every import is updated, so any pytest run before that is noise and will always produce `ModuleNotFoundError`.
 
 ### 3.5. Post-implementation checks (before required_checks)
