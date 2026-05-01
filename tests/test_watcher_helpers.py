@@ -143,6 +143,21 @@ def test_cmd_no_disallowed_tools_when_none(tmp_path: Path) -> None:
     assert "--disallowed-tools" not in cmd
 
 
+def test_cmd_uses_empty_mcp_config_by_default(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path)
+    assert "--mcp-config" in cmd
+    idx = cmd.index("--mcp-config")
+    assert cmd[idx + 1] == '{"mcpServers":{}}'
+
+
+def test_cmd_uses_custom_mcp_config_when_provided(tmp_path: Path) -> None:
+    config = '{"mcpServers":{"linear-server":{"type":"http","url":"https://mcp.linear.app/mcp"}}}'
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path, mcp_config_json=config)
+    assert "--mcp-config" in cmd
+    idx = cmd.index("--mcp-config")
+    assert cmd[idx + 1] == config
+
+
 # ---------------------------------------------------------------------------
 # resolve_effective_mode
 # ---------------------------------------------------------------------------

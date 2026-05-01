@@ -59,7 +59,7 @@ Check out the correct branch before running /implement-ticket.
 
 ### 2. Set ticket state to InProgressLocal
 
-**Skip this step in watcher-managed sessions.** The watcher calls `set_state("InProgressLocal")` before launching the worker. MCP is disabled in worker processes (`--mcp-config '{"mcpServers":{}}'`), so `save_issue` is not available and any attempt (including spawning an Agent) will fail silently. Do not call it and do not spawn a subagent for it.
+Call `save_issue(id: "<ticket_id>", state: "InProgressLocal")` at startup to signal that local implementation has begun.
 
 ### 3. Implement
 

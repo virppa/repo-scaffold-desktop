@@ -31,6 +31,7 @@ from .watcher_types import _CLAUDE_DIR
 logger = logging.getLogger(__name__)
 
 _SONAR_MAX_PAGES = 10
+_LINEAR_MCP = '{"mcpServers":{"linear-server":{"type":"http","url":"https://mcp.linear.app/mcp"}}}'
 
 
 def expand_skill(repo_root: Path, ticket_id: str) -> str | None:
@@ -97,7 +98,12 @@ def launch_worker(
             prompt = warning + (prompt or "")
 
     cmd = build_worker_cmd(
-        manifest.ticket_id, effective_mode, worktree_path, prompt, disallowed_tools
+        manifest.ticket_id,
+        effective_mode,
+        worktree_path,
+        prompt,
+        disallowed_tools,
+        mcp_config_json=_LINEAR_MCP,
     )
     env = build_worker_env(effective_mode, dict(os.environ))
 

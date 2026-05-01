@@ -150,6 +150,7 @@ def build_worker_cmd(
     worktree_path: Path,
     prompt: str | None = None,
     disallowed_tools: list[str] | None = None,
+    mcp_config_json: str | None = None,
 ) -> list[str]:
     """Return the claude subprocess command list for the given mode.
 
@@ -158,11 +159,14 @@ def build_worker_cmd(
 
     disallowed_tools — list of tool-call patterns passed to --disallowed-tools
     (e.g. ["Read(*watcher.py)", "Read(*metrics.py)"]) to enforce context_snippets.
+
+    mcp_config_json — JSON string for --mcp-config. When None, uses an empty
+    server map ('{"mcpServers":{}}') to disable all MCP servers. Pass a
+    non-empty value to enable specific MCP servers (e.g. Linear).
     """
     if prompt is None:
         prompt = f"/implement-ticket {ticket_id}"
-    # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
-    # from blocking ~180s on OAuth in non-interactive mode.
+    mcp_config = mcp_config_json if mcp_config_json is not None else '{"mcpServers":{}}'
     base = [
         "claude",
         "--dangerously-skip-permissions",
@@ -170,7 +174,7 @@ def build_worker_cmd(
         str(worktree_path),
         "--strict-mcp-config",
         "--mcp-config",
-        '{"mcpServers":{}}',
+        mcp_config,
         "--verbose",
         "--output-format",
         "stream-json",
