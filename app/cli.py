@@ -13,7 +13,12 @@ from app.core.config import RepoConfig
 from app.core.credentials import cli_delete_token, save_token
 from app.core.generator import generate
 from app.core.metrics import MetricsStore
-from app.core.post_setup import fetch_skills, run_git_init, run_precommit_install
+from app.core.post_setup import (
+    create_github_repo,
+    fetch_skills,
+    run_git_init,
+    run_precommit_install,
+)
 from app.core.presets import _PRESETS, get_preset
 from app.core.user_prefs import PrefsStore, UserPreferences
 
@@ -100,6 +105,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--install-precommit",
         action="store_true",
         help="Run pre-commit install in the output directory.",
+    )
+    gen.add_argument(
+        "--github-create", action="store_true", help="Create a GitHub repository."
+    )
+    github_group = gen.add_mutually_exclusive_group()
+    github_group.add_argument(
+        "--private", action="store_true", help="Create a private GitHub repository."
+    )
+    github_group.add_argument(
+        "--public", action="store_true", help="Create a public GitHub repository."
     )
 
     metrics = sub.add_parser("metrics", help="Metrics DB commands.")
@@ -333,6 +348,20 @@ def _run_generate(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+
+    if args.github_create:
+        prefs = PrefsStore.load()
+        github_private = not args.public
+        try:
+            clone_url = create_github_repo(
+                repo_name=config.repo_name,
+                prefs=prefs,
+                private=github_private,
+            )
+            print(f"✓ Created GitHub repo: {clone_url}")
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
 
     return 0
 

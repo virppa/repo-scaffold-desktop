@@ -7,6 +7,9 @@ from pathlib import Path
 
 from jinja2 import Environment, Undefined
 
+from app.core.credentials import get_token
+from app.core.user_prefs import UserPreferences
+
 _GITHUB_SOURCE_RE = re.compile(r"^github:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
 _SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_.\-/]+$")
 
@@ -126,3 +129,59 @@ def run_precommit_install(output_path: Path) -> None:
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode(errors="replace").strip()
         raise RuntimeError(f"pre-commit install failed: {stderr}")
+
+
+def create_github_repo(
+    repo_name: str,
+    prefs: UserPreferences,
+    private: bool = True,
+    description: str = "",
+) -> str:
+    """Create a GitHub repository via the REST API and return its clone URL.
+
+    Requires a GitHub token configured via :func:`app.core.credentials.get_token`.
+    Raises ``RuntimeError`` if no token is configured or the API returns an error.
+    """
+    token = get_token()
+    if token is None:
+        raise RuntimeError(
+            "No GitHub token configured. Run: python -m app.cli config set github-token"
+        )
+
+    body = {
+        "name": repo_name,
+        "private": private,
+        "description": description,
+        "auto_init": False,
+    }
+    payload = json.dumps(body).encode("utf-8")
+
+    api_url = "https://api.github.com/user/repos"
+    req = urllib.request.Request(  # nosec B310
+        api_url,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = json.loads(exc.read()).get("message", str(exc))
+        except Exception:  # noqa: BLE001
+            err_body = str(exc)
+        if exc.code == 422:
+            raise RuntimeError(
+                f"Repository '{repo_name}' already exists — {err_body}"
+            ) from exc
+        raise RuntimeError(f"GitHub API error: {err_body}") from exc
+
+    clone_url: str = result["html_url"]
+    return clone_url
