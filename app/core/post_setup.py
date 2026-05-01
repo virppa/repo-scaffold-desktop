@@ -131,6 +131,82 @@ def run_precommit_install(output_path: Path) -> None:
         raise RuntimeError(f"pre-commit install failed: {stderr}")
 
 
+def run_initial_push(
+    output_path: Path, remote_url: str, prefs: UserPreferences
+) -> None:
+    """Stage all files, create initial commit, set remote origin, and push to main.
+
+    Raises ``RuntimeError`` on any subprocess failure with a clear message
+    including stderr.
+    """
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            ["git", "add", "."],
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git add failed: {stderr}")
+
+    commit_args: list[str] = ["git", "commit", "-m", "Initial scaffold"]
+    if prefs.author_name and prefs.author_email:
+        commit_args = [
+            "git",
+            "-c",
+            f"user.name={prefs.author_name}",
+            "-c",
+            f"user.email={prefs.author_email}",
+            "commit",
+            "-m",
+            "Initial scaffold",
+        ]
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            commit_args,
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git commit failed: {stderr}")
+
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            ["git", "remote", "add", "origin", remote_url],
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git remote add origin failed: {stderr}")
+
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            ["git", "branch", "-M", "main"],
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git branch -M main failed: {stderr}")
+
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            ["git", "push", "-u", "origin", "main"],
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git push failed: {stderr}")
+
+
 def create_github_repo(
     repo_name: str,
     prefs: UserPreferences,
