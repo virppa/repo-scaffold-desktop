@@ -151,6 +151,8 @@ def build_worker_cmd(
     prompt: str | None = None,
     disallowed_tools: list[str] | None = None,
     mcp_config_json: str | None = None,
+    *,
+    effort: str | None = None,
 ) -> list[str]:
     """Return the claude subprocess command list for the given mode.
 
@@ -179,13 +181,14 @@ def build_worker_cmd(
         "--output-format",
         "stream-json",
     ]
+    _effort = effort if effort is not None else ("xhigh" if mode == "local" else "max")
     if mode == "local":
-        # --effort xhigh: interim default pending WOR-265 adaptive effort scaling.
         # (CLI values: low|medium|high|xhigh|max — "normal" was removed)
-        base += ["--effort", "xhigh"]
+        # When effort=None, fall back to xhigh for local, max for cloud.
+        base += ["--effort", _effort]
         base += ["--model", _LOCAL_MODEL]
     else:
-        base += ["--effort", "max"]
+        base += ["--effort", _effort]
     if disallowed_tools:
         base += ["--disallowed-tools", ",".join(disallowed_tools)]
     return base + ["-p", prompt]

@@ -434,6 +434,8 @@ def test_launch_worker_cloud_mode_with_snippets_prepends_critical_warning(
         prompt: object,
         disallowed: object,
         mcp_config_json: object = None,
+        *,
+        effort: object = None,
     ) -> list[str]:
         captured_prompts.append(prompt)
         return ["claude"]
@@ -475,6 +477,8 @@ def test_launch_worker_passes_linear_mcp_config_to_build_worker_cmd(
         prompt: object,
         disallowed: object,
         mcp_config_json: object = None,
+        *,
+        effort: object = None,
     ) -> list[str]:
         captured_args["mcp_config_json"] = mcp_config_json
         return ["claude"]

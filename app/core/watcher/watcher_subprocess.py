@@ -104,6 +104,7 @@ def launch_worker(
         prompt,
         disallowed_tools,
         mcp_config_json=_LINEAR_MCP,
+        effort=manifest.effort,
     )
     env = build_worker_env(effective_mode, dict(os.environ))
 

@@ -130,6 +130,11 @@ class ExecutionManifest(BaseModel):
     """auto — PR auto-merges to epic branch when CI passes.
     human — PR requires explicit human approval."""
 
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    """Per-ticket effort level for the worker. When None the caller falls
+    back to the default xhigh (local) / max (cloud). Allowed values:
+    low, medium, high, xhigh, max."""
+
     # ------------------------------------------------------------------
     # Branch / worktree
     # ------------------------------------------------------------------
