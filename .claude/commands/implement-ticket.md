@@ -61,7 +61,7 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping.
 
-**Package reorganizations** — when moving multiple files into a new subpackage directory: (1) move ALL source files first, (2) update ALL imports in every consumer file, (3) write `__init__.py` LAST. Do not run pytest at any intermediate step — the package is broken until every file is in place and every import is updated, so any pytest run before that is noise and will always produce `ModuleNotFoundError`.
+**Package reorganizations** — when moving multiple files into a new subpackage directory: (1) move ALL source files first, (2) update ALL imports in every consumer file, (3) write `__init__.py` LAST. Do not run pytest at any intermediate step — the package is broken until every file is in place and every import is updated, so any pytest run before that is noise and will always produce `ModuleNotFoundError`. After all files are moved and imports updated (but before `__init__.py` and pytest), make an intermediate WIP commit to preserve the structural work: `git add -A && git commit -m "WIP: <ticket_id> package structure complete, pre-check"` — this prevents losing all progress if the session ends before checks pass.
 
 ### 3.5. Post-implementation checks (before required_checks)
 
@@ -73,6 +73,8 @@ grep -rn 'patch("' tests/ | grep '<old.module.path>'
 ```
 
 Update every match to the new path before running pytest. Missing this causes tests that use `unittest.mock.patch()` to fail with `AttributeError` or `ModuleNotFoundError` even though all real imports are correct.
+
+For module renames affecting many files, use `replace_all=True` on the Edit tool rather than updating occurrences one at a time — `Edit(file_path=..., old_string="app.core.old_module", new_string="app.core.new.module", replace_all=True)` replaces every occurrence in the file in one round-trip. One call per (file, module-name) pair covers the whole migration.
 
 **If any instance methods were extracted from a class into a new module-level function**, grep for `patch.object` calls targeting those methods — they must be converted from `patch.object(instance, "method")` to `patch("new.module.path.method")`:
 
