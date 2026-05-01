@@ -44,6 +44,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]]; then mypy \"$FILE\" 2>/dev/null || echo \"[mypy] Type errors in $FILE\"; fi"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
             "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == *.py ]] && command -v bandit >/dev/null 2>&1; then bandit -q \"$FILE\" 2>/dev/null || echo \"[bandit] Issues found \u00e2\u20ac\u201d run /security-check\"; fi"
           }
         ]
@@ -62,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */tests/* ]]; then pytest --no-cov --tb=short -q; fi"
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */tests/* ]]; then pytest \"$FILE\" --no-cov --tb=short -q; fi"
           }
         ]
       }
