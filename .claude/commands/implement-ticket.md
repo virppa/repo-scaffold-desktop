@@ -57,6 +57,8 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **New Python files** — after creating any new `.py` file (not editing an existing one), immediately run `mypy <that_file>` and fix all type errors before moving on. Do not defer to the final `required_checks` run — errors in new files compound when caught late and each fix-loop iteration costs a full tool round-trip. Read the type signatures of the source functions *before* writing the new file so annotations are correct on the first attempt.
 
+**New test files** — after creating any new `tests/test_*.py` file, immediately run `pytest <that_file> -x --tb=short` and fix all failures before moving on. Before writing the file, read at least one existing sibling test file to understand the fixture patterns, mock conventions, and how real objects (not MagicMock) are constructed for this codebase.
+
 **Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping.
 
 ### 3.5. Post-implementation checks (before required_checks)
