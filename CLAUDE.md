@@ -303,11 +303,12 @@ for f in ['app/core/watcher.py', 'app/core/watcher_types.py', ...]:
 "
 ```
 
-**Update mock patch paths after any module move.** `unittest.mock.patch()` targets are string literals — they are not updated by import fixers and will silently break tests. After moving or renaming any module, run:
+**Update mock patch paths after any module move.** `unittest.mock.patch()` targets are string literals — they are not updated by import fixers and will silently break tests. After moving or renaming any module, run two greps — one for mock strings, one for bare from-imports (conftest.py and fixture files use these and they are missed by the patch grep):
 ```bash
 grep -rn 'patch("' tests/ | grep '<old.module.path>'
+grep -rn 'from <old.module.path> import' tests/ app/
 ```
-and update every match to the new path before running pytest.
+and update every match to the new path before running pytest. Missing the from-import grep causes `ModuleNotFoundError` in conftest.py that fires before any test runs — all tests fail even though the implementation is correct.
 
 **Convert `patch.object` when extracting instance methods to module-level functions.** `patch.object(instance, "method")` patches the method on the class; once the function is module-level it no longer exists on the class and the patch silently does nothing. After extracting any method from a class, run:
 ```bash

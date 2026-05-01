@@ -76,6 +76,15 @@ grep -rn 'patch("' tests/ | grep '<old.module.path>'
 
 Update every match to the new path before running pytest. Missing this causes tests that use `unittest.mock.patch()` to fail with `AttributeError` or `ModuleNotFoundError` even though all real imports are correct.
 
+**Also grep for bare from-imports** — `patch("...")` grep only finds mock strings, not `from app.core.old_module import X` in conftest.py, fixtures, or helper files. Run a second check:
+
+```bash
+# replace <old.module.path> with the moved module, e.g. app.core.watcher_types
+grep -rn 'from <old.module.path> import' tests/ app/
+```
+
+Update every from-import to the new path. Missing this causes `ModuleNotFoundError` in conftest.py or fixture files that fires before any test runs — all tests fail even though the implementation is correct.
+
 For module renames affecting many files, use `replace_all=True` on the Edit tool rather than updating occurrences one at a time — `Edit(file_path=..., old_string="app.core.old_module", new_string="app.core.new.module", replace_all=True)` replaces every occurrence in the file in one round-trip. One call per (file, module-name) pair covers the whole migration.
 
 **If any instance methods were extracted from a class into a new module-level function**, grep for `patch.object` calls targeting those methods — they must be converted from `patch.object(instance, "method")` to `patch("new.module.path.method")`:
