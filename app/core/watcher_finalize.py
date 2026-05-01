@@ -96,7 +96,13 @@ def finalize_worker(
 ) -> None:
     outcome, escalated, artifacts_preserved, sonar_findings, result_data = (
         _execute_finalization(
-            worker, returncode, linear, escalation_policy, repo_root, metrics
+            worker,
+            returncode,
+            linear,
+            escalation_policy,
+            repo_root,
+            metrics,
+            project_id,
         )
     )
 
@@ -168,6 +174,7 @@ def _execute_finalization(
     escalation_policy: EscalationPolicy,
     repo_root: Path,
     metrics: MetricsStore,
+    project_id: str,
 ) -> tuple[Outcome, bool, bool, list[str] | None, dict[str, object] | None]:
     """Determine outcome, escalation status, and artifact state.
 
@@ -212,7 +219,7 @@ def _execute_finalization(
             )
         return "failure", escalated, False, None, result_data
 
-    checks_ok = run_checks(manifest, worker.worktree_path)
+    checks_ok = run_checks(manifest, worker.worktree_path, metrics, project_id)
     if not checks_ok:
         worker.retry_count += 1
         metrics.record_rework_event(

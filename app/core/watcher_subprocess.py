@@ -15,11 +15,13 @@ import shlex
 import subprocess  # nosec B404
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO
 
 from app.core.manifest import ExecutionManifest
+from app.core.metrics import CheckOutcome, CheckRunEntry, MetricsStore
 from app.core.watcher_helpers import (
     _tee_worker_output,
     build_worker_cmd,
@@ -136,7 +138,12 @@ def launch_worker(
 _LAST_FAILURE_FILENAME = "last_failure.json"
 
 
-def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
+def run_checks(
+    manifest: ExecutionManifest,
+    worktree_path: Path,
+    metrics: MetricsStore,
+    project_id: str,
+) -> bool:
     """Run manifest.required_checks in the worktree. Returns True if all pass."""
     artifact_dir = worktree_path / Path(manifest.artifact_paths.result_json).parent
     failure_artifact = artifact_dir / _LAST_FAILURE_FILENAME
@@ -144,11 +151,23 @@ def run_checks(manifest: ExecutionManifest, worktree_path: Path) -> bool:
     all_passed = True
     for check_cmd in manifest.required_checks:
         logger.info("Running check: %s", check_cmd)
+        start = time.monotonic()
         result = subprocess.run(  # nosec B603
             shlex.split(check_cmd),
             cwd=str(worktree_path),
             capture_output=True,
             text=True,
+        )
+        elapsed = time.monotonic() - start
+        outcome: CheckOutcome = "passed" if result.returncode == 0 else "failed"
+        metrics.record_check_run(
+            CheckRunEntry(
+                ticket_id=manifest.ticket_id,
+                project_id=project_id,
+                check_cmd=check_cmd,
+                outcome=outcome,
+                duration_s=elapsed,
+            )
         )
         if result.returncode != 0:
             logger.error(
