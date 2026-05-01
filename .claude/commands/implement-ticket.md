@@ -26,6 +26,8 @@ a pre-loaded code excerpt — do NOT re-read these sections from disk unless you
 need context beyond what is shown. The snippets are verbatim source with file
 path and line numbers in the header comment.
 
+Log the snippet count on startup: `"Loading {N} context snippets from manifest."`
+
 ### 0.1. Inspect last_failure.json for WIP state (WOR-258)
 
 If `.claude/artifacts/<ticket_id_lower>/last_failure.json` exists in the

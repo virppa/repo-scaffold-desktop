@@ -176,7 +176,24 @@ If all four apply, note it explicitly: *"This ticket is a good candidate for int
 
 ---
 
-### 4.5. After human approves the plan — generate the execution manifest
+### 2.5. Populate context_snippets from related_files_hint
+
+Before writing the manifest (step 4.6), populate the `context_snippets` field so the
+local worker can read file headers without round-trip Read calls.
+
+For each file path listed in `related_files_hint` (the architect populates this in step 2):
+1. Read the first ~60 lines of the file using the **Read** tool — one Read call per file.
+2. If the file has fewer than 80 lines, read the entire file.
+3. Cap each snippet at **min(80 lines, 3000 characters)** — truncate at whichever limit is hit first.
+4. Store as a JSON object keyed by file path: `{ "<file_path>": "<snippet_content>" }`.
+5. If `related_files_hint` has **more than 10 files**, take only the first 10.
+
+If `related_files_hint` is empty, leave `context_snippets` as null (omit it from the manifest).
+
+Write the populated `context_snippets` object into the manifest at `context_snippets` key
+(see step 4.6 for the full manifest structure).
+
+### 4.6. After human approves the plan — generate the execution manifest
 
 Once the human says to proceed, generate and write an `ExecutionManifest` JSON to disk. This is the handoff artifact the local worker reads — it must not require re-reading Linear or re-planning.
 
@@ -215,6 +232,9 @@ Construct the manifest from the planning context gathered in steps 1–4:
   "ticket_state_map": {
     "in_progress_local": "InProgressLocal",
     "failed": "Blocked"
+  },
+  "context_snippets": {
+    "<file_path>": "<snippet content, capped at 80 lines / 3000 chars>"
   },
   "artifact_paths": {
     "result_json": ".claude/artifacts/<ticket_id_lower>/result.json",
