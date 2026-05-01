@@ -176,9 +176,9 @@ def build_worker_cmd(
         "stream-json",
     ]
     if mode == "local":
-        # --effort high: bounded tasks don't need max thinking budget; saves tokens.
+        # --effort xhigh: interim default pending WOR-265 adaptive effort scaling.
         # (CLI values: low|medium|high|xhigh|max — "normal" was removed)
-        base += ["--effort", "high"]
+        base += ["--effort", "xhigh"]
         base += ["--model", _LOCAL_MODEL]
     else:
         base += ["--effort", "max"]
