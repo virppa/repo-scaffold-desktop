@@ -185,6 +185,7 @@ def _execute_finalization(
         logger.error("Worker %s exited non-zero (%d)", ticket_id, returncode)
         escalated = bool(manifest.failure_policy.escalate_to_cloud)
         if escalated:
+            logger.info("Escalating %s to cloud per failure policy", ticket_id)
             metrics.record_rework_event(
                 ReworkEvent(
                     ticket_id=ticket_id,
@@ -193,15 +194,17 @@ def _execute_finalization(
                     rework_cost_minutes=0.0,
                 )
             )
-        if escalated:
-            logger.info("Escalating %s to cloud per failure policy", ticket_id)
-            safe_set_state(linear, linear_id, "In Progress", ticket_id)
-            _try_post_comment(
-                linear,
-                linear_id,
-                ticket_id,
-                f"Local worker failed for `{ticket_id}` (non-zero exit). "
-                f"Escalating to cloud per failure policy.",
+            escalate_to_cloud(
+                linear=linear,
+                linear_id=linear_id,
+                ticket_id=ticket_id,
+                manifest=manifest,
+                repo_root=repo_root,
+                comment=(
+                    f"Local worker failed for `{ticket_id}` (non-zero exit). "
+                    f"Escalating to cloud per failure policy. "
+                    f"The cloud worker will pick it up automatically."
+                ),
             )
         else:
             safe_set_state(
@@ -232,13 +235,17 @@ def _execute_finalization(
                 )
             )
             logger.info("Escalating %s to cloud after check failure", ticket_id)
-            safe_set_state(linear, linear_id, "In Progress", ticket_id)
-            _try_post_comment(
-                linear,
-                linear_id,
-                ticket_id,
-                f"Local worker failed checks for `{ticket_id}`. "
-                f"Escalating to cloud per failure policy.",
+            escalate_to_cloud(
+                linear=linear,
+                linear_id=linear_id,
+                ticket_id=ticket_id,
+                manifest=manifest,
+                repo_root=repo_root,
+                comment=(
+                    f"Local worker failed checks for `{ticket_id}`. "
+                    f"Escalating to cloud per failure policy. "
+                    f"The cloud worker will pick it up automatically."
+                ),
             )
         else:
             safe_set_state(
@@ -345,6 +352,32 @@ def _sonar_requires_escalation(
             "Sonar finding for %s: severity=%s — fix_locally", ticket_id, severity
         )
     return False
+
+
+def escalate_to_cloud(
+    *,
+    linear: LinearClientProtocol,
+    linear_id: str,
+    ticket_id: str,
+    manifest: ExecutionManifest,
+    repo_root: Path,
+    comment: str,
+) -> None:
+    """Escalate a ticket to cloud execution.
+
+    Updates the manifest on disk with ``implementation_mode='cloud'``,
+    resets the Linear ticket state to **ReadyForLocal** (not *In Progress*),
+    and posts a comment explaining the escalation.  The watcher's
+    cloud-mode poll will then pick up the ticket automatically.
+    """
+    # Write the updated manifest to disk so the cloud poll reads cloud mode.
+    manifest_path = repo_root / manifest.artifact_paths.manifest_copy
+    updated = manifest.model_copy(update={"implementation_mode": "cloud"})
+    updated.to_json(manifest_path)
+
+    safe_set_state(linear, linear_id, "ReadyForLocal", ticket_id)
+
+    _try_post_comment(linear, linear_id, ticket_id, comment)
 
 
 def _try_post_comment(
