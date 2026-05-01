@@ -117,16 +117,17 @@ def test_cmd_includes_dangerously_skip_permissions(tmp_path: Path) -> None:
         assert "--dangerously-skip-permissions" in cmd
 
 
-def test_cmd_bare_mode_uses_worktree_path(tmp_path: Path) -> None:
+def test_local_cmd_uses_worktree_path(tmp_path: Path) -> None:
     cmd = build_worker_cmd("WOR-10", "local", tmp_path)
-    assert "--bare" in cmd
+    assert "--bare" not in cmd
     idx = cmd.index("--add-dir")
     assert cmd[idx + 1] == str(tmp_path)
 
 
-def test_cloud_cmd_has_no_bare_flag(tmp_path: Path) -> None:
-    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path)
-    assert "--bare" not in cmd
+def test_no_bare_flag_in_any_mode(tmp_path: Path) -> None:
+    for mode in ("cloud", "local"):
+        cmd = build_worker_cmd("WOR-10", mode, tmp_path)
+        assert "--bare" not in cmd, f"--bare should not appear in {mode} mode"
 
 
 def test_cmd_disallowed_tools_appended(tmp_path: Path) -> None:
