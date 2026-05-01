@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.core.escalation_policy import EscalationPolicy
+from app.core.escalation_policy import EscalationPolicy, ImprovementLogConfig
 from app.core.linear_client import LinearError
-from app.core.manifest import FailurePolicy
+from app.core.manifest import ExecutionManifest, FailurePolicy
 from app.core.metrics import ReworkEvent
 from app.core.watcher_finalize import (
     _infer_category,
@@ -48,8 +48,8 @@ def _call_finalize(
             worker,
             returncode=returncode,
             wall_time=wall_time,
-            linear=linear or MagicMock(),
-            metrics=metrics or MagicMock(),
+            linear=linear or MagicMock(),  # type: ignore[arg-type]
+            metrics=metrics or MagicMock(),  # type: ignore[arg-type]
             escalation_policy=EscalationPolicy.from_toml(),
             repo_root=repo_root or Path("."),
             mode="default",
@@ -397,6 +397,8 @@ def test_finalize_worker_sonar_blocker_escalates(tmp_path: Path) -> None:
         )
 
     mock_create_pr.assert_not_called()
+    # Sonar escalation is a *policy-based* escalation for successful execution
+    # (not a failure path), so it still uses "In Progress" for manual re-pick.
     linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
     m = metrics_mock.record.call_args[0][0]
     assert m.escalated_to_cloud is True
@@ -473,6 +475,8 @@ def test_finalize_worker_scope_drift_escalates(tmp_path: Path) -> None:
         )
 
     mock_create_pr.assert_not_called()
+    # Policy-based escalation (checks pass, flag triggers escalation) uses
+    # "In Progress" for manual re-pick — not the failure-based ReadyForLocal path.
     linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
     comment_body: str = linear_mock.post_comment.call_args[0][1]
     assert "scope_drift" in comment_body
@@ -497,6 +501,8 @@ def test_finalize_worker_forbidden_path_touched_escalates(tmp_path: Path) -> Non
         )
 
     mock_create_pr.assert_not_called()
+    # Policy-based escalation (checks pass, flag triggers escalation) uses
+    # "In Progress" for manual re-pick — not the failure-based ReadyForLocal path.
     linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
     comment_body: str = linear_mock.post_comment.call_args[0][1]
     assert "forbidden_path_touched" in comment_body
@@ -629,12 +635,23 @@ def test_execute_finalization_check_failure_escalates_to_cloud(tmp_path: Path) -
         patch("app.core.watcher_finalize.run_checks", return_value=False),
         patch("app.core.watcher_finalize.cleanup_worktree"),
     ):
-        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+        _call_finalize(
+            worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
+        )
 
-    linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
-    linear_mock.post_comment.assert_called_once()
+    # ReadyForLocal — auto-requeue to cloud poll
+    linear_mock.set_state.assert_called_with("fake-linear-id", "ReadyForLocal")
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    assert "WOR-10" in comment_body
+    assert "cloud" in comment_body
+    assert "automatically" in comment_body
     m = metrics_mock.record.call_args[0][0]
     assert m.escalated_to_cloud is True
+    # Manifest is updated on disk with cloud mode
+    manifest_path = tmp_path / manifest.artifact_paths.manifest_copy
+    assert manifest_path.exists()
+    updated = ExecutionManifest.from_json(manifest_path)
+    assert updated.implementation_mode == "cloud"
 
 
 def test_execute_finalization_check_failure_blocked_when_no_escalate(
@@ -680,12 +697,27 @@ def test_execute_finalization_nonzero_exit_escalates_to_cloud(tmp_path: Path) ->
         process=MagicMock(spec=subprocess.Popen),
     )
     with patch("app.core.watcher_finalize.cleanup_worktree"):
-        _call_finalize(worker, returncode=1, linear=linear_mock, metrics=metrics_mock)
+        _call_finalize(
+            worker,
+            returncode=1,
+            linear=linear_mock,
+            metrics=metrics_mock,
+            repo_root=tmp_path,
+        )
 
-    linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
-    linear_mock.post_comment.assert_called_once()
+    # ReadyForLocal — auto-requeue to cloud poll
+    linear_mock.set_state.assert_called_with("fake-linear-id", "ReadyForLocal")
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    assert "WOR-10" in comment_body
+    assert "cloud" in comment_body
+    assert "automatically" in comment_body
     m = metrics_mock.record.call_args[0][0]
     assert m.escalated_to_cloud is True
+    # Manifest is updated on disk with cloud mode
+    manifest_path = tmp_path / manifest.artifact_paths.manifest_copy
+    assert manifest_path.exists()
+    updated = ExecutionManifest.from_json(manifest_path)
+    assert updated.implementation_mode == "cloud"
 
 
 # ---------------------------------------------------------------------------
@@ -1221,10 +1253,8 @@ def test_infer_category_scope_wins_over_quality(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_config(ticket_id: str = "WOR-254") -> "ImprovementLogConfig":  # noqa: F821
+def _make_config(ticket_id: str = "WOR-254") -> ImprovementLogConfig:
     """Helper to create an ImprovementLogConfig for tests."""
-    from app.core.escalation_policy import ImprovementLogConfig
-
     return ImprovementLogConfig(ticket_id=ticket_id)
 
 
@@ -1826,3 +1856,45 @@ class TestReworkEventRecording:
             )
 
         metrics_mock.record_rework_event.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# WOR-177 — escalate_to_cloud helper (new)
+# ---------------------------------------------------------------------------
+
+
+def test_escalate_to_cloud_writes_manifest_and_sets_ready_for_local(
+    tmp_path: Path,
+) -> None:
+    """escalate_to_cloud writes manifest with cloud mode and sets ReadyForLocal."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+    )
+    linear_mock = MagicMock()
+
+    from app.core.watcher_finalize import escalate_to_cloud
+
+    escalate_to_cloud(
+        linear=linear_mock,
+        linear_id="fake-linear-id",
+        ticket_id="WOR-10",
+        manifest=manifest,
+        repo_root=tmp_path,
+        comment="Testing escalation comment",
+    )
+
+    # Manifest is written to disk with cloud mode
+    manifest_path = tmp_path / manifest.artifact_paths.manifest_copy
+    assert manifest_path.exists()
+    updated = ExecutionManifest.from_json(manifest_path)
+    assert updated.implementation_mode == "cloud"
+    assert updated.ticket_id == "WOR-10"
+
+    # State is set to ReadyForLocal
+    linear_mock.set_state.assert_called_once_with("fake-linear-id", "ReadyForLocal")
+
+    # Comment is posted
+    linear_mock.post_comment.assert_called_once()
+    body = linear_mock.post_comment.call_args[0][1]
+    assert "Testing escalation comment" in body
