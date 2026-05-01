@@ -61,6 +61,8 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping.
 
+**Package reorganizations** — when moving multiple files into a new subpackage directory: (1) move ALL source files first, (2) update ALL imports in every consumer file, (3) write `__init__.py` LAST. Do not run pytest at any intermediate step — the package is broken until every file is in place and every import is updated, so any pytest run before that is noise and will always produce `ModuleNotFoundError`.
+
 ### 3.5. Post-implementation checks (before required_checks)
 
 **If any files were moved or renamed to a different module path**, grep for string-based mock patch targets that reference the old path and update them — import fixers do not touch these:
