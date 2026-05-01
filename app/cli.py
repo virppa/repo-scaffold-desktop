@@ -1,13 +1,16 @@
 import argparse
+import getpass
 import os
 import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from keyring.errors import KeyringError, NoKeyringError
 from pydantic import ValidationError
 
 from app.core.config import RepoConfig
+from app.core.credentials import cli_delete_token, save_token
 from app.core.generator import generate
 from app.core.metrics import MetricsStore
 from app.core.post_setup import fetch_skills, run_git_init, run_precommit_install
@@ -33,10 +36,17 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_set = cfg_sub.add_parser("set", help="Set a preference value.")
     cfg_set.add_argument(
         "key",
-        choices=sorted(_KEY_TO_FIELD),
+        choices=set(sorted(_KEY_TO_FIELD)) | {"github-token"},
         help="Preference key (use hyphens, e.g. author-name).",
     )
-    cfg_set.add_argument("value", help="Value to store.")
+    cfg_set.add_argument("value", nargs="?", default=None, help="Value to store.")
+
+    cfg_del = cfg_sub.add_parser("delete", help="Delete a credential.")
+    cfg_del.add_argument(
+        "key",
+        choices=set(sorted(_KEY_TO_FIELD)) | {"github-token"},
+        help="Credential key to delete.",
+    )
 
     gen = sub.add_parser("generate", help="Generate scaffold files.")
     gen.add_argument(
@@ -208,6 +218,27 @@ def _run_config(args: argparse.Namespace) -> int:
         return 0
 
     if args.config_cmd == "set":
+        if args.key == "github-token":
+            raw = args.value
+            if not raw:
+                raw = getpass.getpass(
+                    "GitHub token: ",
+                    stream=sys.stderr,
+                )
+            if not raw:
+                print("Error: empty token", file=sys.stderr)
+                return 1
+            try:
+                save_token(raw)
+                print("Done.", file=sys.stderr)
+            except (NoKeyringError, KeyringError) as exc:
+                print(
+                    f"Error: unable to store token ({type(exc).__name__})",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
+
         field = _KEY_TO_FIELD[args.key]
         prefs = PrefsStore.load()
         raw = args.value
@@ -227,8 +258,17 @@ def _run_config(args: argparse.Namespace) -> int:
         print(f"✓ {args.key} = {value}")
         return 0
 
+    if args.config_cmd == "delete":
+        if args.key == "github-token":
+            return cli_delete_token()
+        print(
+            f"Error: unknown credential '{args.key}'",
+            file=sys.stderr,
+        )
+        return 1
+
     # config with no sub-subcommand
-    print("Usage: scaffold config {get,set}", file=sys.stderr)
+    print("Usage: scaffold config {get,set,delete}", file=sys.stderr)
     return 1
 
 
