@@ -55,9 +55,11 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **No re-planning** — do not re-read Linear, re-query the project, or change scope. If something in the codebase is surprising, implement defensively within the manifest scope and note it in the result artifact summary.
 
-**New Python files** — after creating any new `.py` file (not editing an existing one), immediately run `mypy <that_file>` and fix all type errors before moving on. Do not defer to the final `required_checks` run — errors in new files compound when caught late and each fix-loop iteration costs a full tool round-trip. Read the type signatures of the source functions *before* writing the new file so annotations are correct on the first attempt.
+**Hooks run automatically — do not duplicate them manually.** After every Edit/Write to a `.py` file, PostToolUse hooks fire: `ruff check --fix` + `ruff format`, `mypy <file>`, `bandit`, and `lint-imports`. After every edit to a `tests/` file, the hook runs `pytest <that_file> --no-cov --tb=short -q`. You will see hook output in the tool result — trust it. Running these tools manually during implementation wastes a Bash round-trip per call (~40s each). Only run the final `required_checks` commands at step 4.
 
-**New test files** — after creating any new `tests/test_*.py` file, immediately run `pytest <that_file> -x --tb=short` and fix all failures before moving on. Before writing the file, read at least one existing sibling test file to understand the fixture patterns, mock conventions, and how real objects (not MagicMock) are constructed for this codebase.
+**New Python files** — read the type signatures of source functions *before* writing a new `.py` file so annotations are correct on the first attempt. The mypy hook will report errors immediately after Write — fix them before moving on.
+
+**New test files** — before writing a new `tests/test_*.py` file, read at least one existing sibling test file to understand the fixture patterns, mock conventions, and how real objects (not MagicMock) are constructed for this codebase. The pytest hook runs the file automatically after each edit — watch its output rather than triggering manual pytest runs.
 
 **Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping. If the Write tool is unavailable (local model sessions), use a single-quoted Bash heredoc instead — `python3 << 'PYEOF'` with the closing `PYEOF` at column 0; the single-quoted delimiter prevents the shell from interpreting any characters inside, including single quotes in Python source.
 
