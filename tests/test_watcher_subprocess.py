@@ -433,6 +433,7 @@ def test_launch_worker_cloud_mode_with_snippets_prepends_critical_warning(
         wt: Path,
         prompt: object,
         disallowed: object,
+        mcp_config_json: object = None,
     ) -> list[str]:
         captured_prompts.append(prompt)
         return ["claude"]
@@ -458,6 +459,43 @@ def test_launch_worker_cloud_mode_with_snippets_prepends_critical_warning(
     assert isinstance(captured_prompts[0], str)
     assert "CRITICAL" in captured_prompts[0]
     assert "watcher.py" in captured_prompts[0]
+
+
+def test_launch_worker_passes_linear_mcp_config_to_build_worker_cmd(
+    tmp_path: Path,
+) -> None:
+    manifest = _make_manifest()
+    mock_process = MagicMock()
+    captured_args: dict = {}
+
+    def capture_cmd(
+        ticket_id: str,
+        mode: str,
+        wt: Path,
+        prompt: object,
+        disallowed: object,
+        mcp_config_json: object = None,
+    ) -> list[str]:
+        captured_args["mcp_config_json"] = mcp_config_json
+        return ["claude"]
+
+    with (
+        patch("app.core.watcher.watcher_subprocess.expand_skill", return_value=None),
+        patch(
+            "app.core.watcher.watcher_subprocess.build_worker_cmd",
+            side_effect=capture_cmd,
+        ),
+        patch("app.core.watcher.watcher_subprocess.build_worker_env", return_value={}),
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.Popen",
+            return_value=mock_process,
+        ),
+    ):
+        launch_worker(tmp_path, manifest, tmp_path, "cloud", verbose=False)
+
+    assert isinstance(captured_args["mcp_config_json"], str)
+    assert "linear-server" in captured_args["mcp_config_json"]
+    assert "mcp.linear.app" in captured_args["mcp_config_json"]
 
 
 # ---------------------------------------------------------------------------
