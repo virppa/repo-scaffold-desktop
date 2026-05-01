@@ -39,6 +39,7 @@ from .watcher_worktrees import (
     commit_wip_state,
     preserve_worker_artifacts,
     restore_plan_files,
+    squash_wip_commits,
 )
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,13 @@ def attempt_pr(
     except subprocess.CalledProcessError as exc:
         err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
         logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
+        # Preserve any uncommitted worktree changes so a retry worker can
+        # resume from them (WOR-267).
+        commit_wip_state(
+            worker.worktree_path,
+            ticket_id,
+            manifest.worker_branch,
+        )
         safe_set_state(linear, linear_id, manifest.ticket_state_map.failed, ticket_id)
         _try_post_comment(
             linear,
@@ -305,7 +313,7 @@ def _execute_finalization(
     action = escalation_policy.classify_result(**flags)
 
     outcome, escalated, sonar_findings = _handle_policy_outcome(
-        action, flags, worker, linear, escalation_policy
+        action, flags, worker, linear, escalation_policy, manifest.objective
     )
     return outcome, escalated, True, sonar_findings, []
 
@@ -316,6 +324,7 @@ def _handle_policy_outcome(
     worker: ActiveWorker,
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
+    final_message: str = "Implementation complete",
 ) -> tuple[Outcome, bool, list[str] | None]:
     """Map a policy action to an outcome, posting Linear comments as needed."""
     ticket_id = worker.ticket_id
@@ -360,6 +369,15 @@ def _handle_policy_outcome(
             f"to Sonar finding requiring immediate action.",
         )
         return "escalated", True, sonar_findings
+
+    # Squash any wip commits into a single commit so retry workers can
+    # diff the final_message commit and resume from a clean state.
+    squash_wip_commits(
+        worker.worktree_path,
+        ticket_id,
+        manifest.base_branch,
+        final_message,
+    )
 
     outcome = attempt_pr(manifest, worker, linear)
     return outcome, False, sonar_findings

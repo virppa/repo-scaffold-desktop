@@ -21,6 +21,7 @@ from app.core.watcher.watcher_worktrees import (
     preserve_worker_artifacts,
     rebase_worktree_from_base,
     restore_plan_files,
+    squash_wip_commits,
     write_worker_pytest_config,
 )
 from tests.conftest import make_manifest
@@ -688,3 +689,129 @@ def test_commit_wip_state_handles_status_error(
 
     assert result is None
     assert any("git status failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# squash_wip_commits
+# ---------------------------------------------------------------------------
+
+
+def test_squash_wip_commits_squashes_correctly(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When wip commits exist, they are squashed into a single commit."""
+    sha = "a1b2c3d4e5f6"  # pragma: allowlist secret — fake SHA
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        cmd = args[0] if args else kwargs.get("args", [])
+        if "merge-base" in cmd:
+            return _completed_process(stdout=sha + "\n")
+        if "log" in cmd:
+            # Return wip commits in git log --oneline format
+            return _completed_process(
+                stdout="aaaaaaaa wip: WOR-10 implementation\n"
+                "bbbbbbbb wip: WOR-10 tests written\n"
+            )
+        if "reset" in cmd:
+            return _completed_process()
+        if "commit" in cmd:
+            return _completed_process()
+        if "push" in cmd:
+            return _completed_process()
+        if "rev-parse" in cmd:
+            return _completed_process(stdout="deadbeef\n")
+        return _completed_process()
+
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+            side_effect=fake_run,
+        ),
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        result = squash_wip_commits(
+            tmp_path,
+            "WOR-10",
+            "epic/wor-253",
+            "Implementation complete",
+        )
+
+    assert result == "deadbeef"
+    assert any("squashing" in r.message for r in caplog.records)
+
+
+def test_squash_wip_commits_no_op_when_no_wip_commits(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Returns None when no wip commits — no reset/commit/push calls."""
+    sha = "a1b2c3d4e5f6"  # pragma: allowlist secret — fake SHA
+
+    call_order: list[str] = []
+    call_count = [0]
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        cmd = args[0] if args else kwargs.get("args", [])
+        idx = call_count[0]
+        call_count[0] = idx + 1
+        if "merge-base" in cmd:
+            call_order.append("merge-base")
+            return _completed_process(stdout=sha + "\n")
+        if "log" in cmd:
+            call_order.append("log")
+            # No wip commits — log is empty
+            return _completed_process(stdout="")
+        # Should not reach here
+        call_order.append("unexpected")
+        return _completed_process()
+
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+            side_effect=fake_run,
+        ),
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        result = squash_wip_commits(
+            tmp_path,
+            "WOR-10",
+            "epic/wor-253",
+            "Implementation complete",
+        )
+
+    assert result is None
+    assert call_order == ["merge-base", "log"]
+    # No reset/commit/push calls — no-op
+    assert "unexpected" not in call_order
+    assert any("nothing to squash" in r.message for r in caplog.records)
+
+
+def test_squash_wip_commits_returns_none_on_git_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Any git failure returns None and logs a warning."""
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        cmd = args[0] if args else kwargs.get("args", [])
+        if "merge-base" in cmd:
+            raise subprocess.CalledProcessError(1, "git", stderr="error")
+        return _completed_process()
+
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+            side_effect=fake_run,
+        ),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        result = squash_wip_commits(
+            tmp_path,
+            "WOR-10",
+            "epic/wor-253",
+            "Implementation complete",
+        )
+
+    assert result is None
+    assert any("squash_wip_commits failed" in r.message for r in caplog.records)
