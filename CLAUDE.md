@@ -10,6 +10,7 @@ python -m venv .venv
 pip install -r requirements-dev.txt
 
 # Run app
+pip install -r requirements-ui.txt
 python -m app.main
 
 # CLI — scaffold

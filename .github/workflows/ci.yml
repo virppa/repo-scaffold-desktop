@@ -44,7 +44,7 @@ jobs:
         run: mypy app/
 
       - name: Dependency check
-        run: deptry . --requirements-files requirements.txt,requirements-dev.txt
+        run: deptry . --requirements-files requirements.txt,requirements-dev.txt,requirements-ui.txt
 
       - name: Test
         run: pytest --cov=app --cov-report=xml
