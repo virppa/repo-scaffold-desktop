@@ -19,25 +19,7 @@ ABORT: Unsupported manifest_version '<version>'. This worker supports 1.0 only.
 Confirm the following fields are present before continuing:
 - `ticket_id`, `worker_branch`, `base_branch`, `objective`, `artifact_paths`
 
-### 0.5. Check for prior failure context (if present)
-
-Read `.claude/artifacts/<ticket_id_lower>/last_failure.json` if it exists.
-(e.g. for WOR-80: `.claude/artifacts/wor_80/last_failure.json`)
-
-If the file is present, surface its contents as context before proceeding:
-
-```
-PRIOR FAILURE CONTEXT:
-  Failed at: <failed_at>
-  Check:     <check>
-  Stdout:    <stdout>
-  Stderr:    <stderr>
-```
-
-Use this context to understand what the previous worker attempt failed on and
-avoid repeating the same mistake. Do NOT abort — this is informational only.
-
-### 0.6. Load context snippets (if present)
+### 0.5. Load context snippets (if present)
 
 If `manifest.context_snippets` is non-null and non-empty, treat each entry as
 a pre-loaded code excerpt — do NOT re-read these sections from disk unless you
@@ -61,22 +43,6 @@ Check out the correct branch before running /implement-ticket.
 
 `save_issue(id: "<ticket_id>", state: "<ticket_state_map.in_progress_local>")`
 
-### 2.7. Pre-read all implementation files (one pass, before writing any code)
-
-Read every file you will need to modify — in a single pass, before touching anything:
-- All files listed in `related_files_hint`
-- Any other `allowed_paths` files you know you will edit based on the objective
-
-Take inline notes about current structure, signatures, and invariants as you read. **Then stop reading and start writing.**
-
-**Context discipline — obey these rules for the entire session:**
-
-- **Each file gets one read.** Do not re-read a file you already read unless you made a structural change large enough that your notes are no longer accurate (rare — think "rewrote the whole class").
-- **Trust the Edit tool.** After an Edit call the file is updated — the diff in the tool result shows exactly what changed. Do NOT re-read the file to confirm the edit took effect.
-- **Do not re-read context_snippets.** They are pre-loaded verbatim — treat them as files you have already read.
-- **Batch your edits, then run checks once.** Write all code changes across all files first. Run `ruff`, `mypy`, and `pytest` as a single final pass — not after each individual edit.
-- **No exploratory Bash.** Do not run Python one-liners to probe module structure or test a hypothesis. Reason from the source code you have already read, then edit.
-
 ### 3. Implement
 
 Implement the work described in `objective` and `acceptance_criteria`. Obey these hard rules at all times:
@@ -89,30 +55,46 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **No re-planning** — do not re-read Linear, re-query the project, or change scope. If something in the codebase is surprising, implement defensively within the manifest scope and note it in the result artifact summary.
 
-### 3.5. Auto-fix style violations
+**Hooks run automatically — do not duplicate them manually.** After every Edit/Write to a `.py` file, PostToolUse hooks fire: `ruff check --fix` + `ruff format`, `mypy <file>`, `bandit`, and `lint-imports`. After every edit to a `tests/` file, the hook runs `pytest <that_file> --no-cov --tb=short -q`. You will see hook output in the tool result — trust it. Running these tools manually during implementation wastes a Bash round-trip per call (~40s each). Only run the final `required_checks` commands at step 4.
 
-Before running required checks, apply the auto-fixers:
+**New Python files** — read the type signatures of source functions *before* writing a new `.py` file so annotations are correct on the first attempt. The mypy hook will report errors immediately after Write — fix them before moving on.
+
+**New test files** — before writing a new `tests/test_*.py` file, read at least one existing sibling test file to understand the fixture patterns, mock conventions, and how real objects (not MagicMock) are constructed for this codebase. The pytest hook runs the file automatically after each edit — watch its output rather than triggering manual pytest runs.
+
+**Creating new files** — use the Write tool, not Bash heredocs. Heredocs with Python source have shell quoting issues on Windows (single quotes inside the body break the delimiter). The Write tool handles any content without escaping. If the Write tool is unavailable (local model sessions), use a single-quoted Bash heredoc instead — `python3 << 'PYEOF'` with the closing `PYEOF` at column 0; the single-quoted delimiter prevents the shell from interpreting any characters inside, including single quotes in Python source.
+
+**Package reorganizations** — when moving multiple files into a new subpackage directory: (1) move ALL source files first, (2) update ALL imports in every consumer file, (3) write `__init__.py` LAST. Do not run pytest at any intermediate step — the package is broken until every file is in place and every import is updated, so any pytest run before that is noise and will always produce `ModuleNotFoundError`. After all files are moved and imports updated (but before `__init__.py` and pytest), make an intermediate WIP commit to preserve the structural work: `git add -A && git commit -m "WIP: <ticket_id> package structure complete, pre-check"` — this prevents losing all progress if the session ends before checks pass.
+
+### 3.5. Post-implementation checks (before required_checks)
+
+**If any files were moved or renamed to a different module path**, grep for string-based mock patch targets that reference the old path and update them — import fixers do not touch these:
 
 ```bash
-ruff format .
-ruff check . --fix
+# replace <old.module.path> with the module that was moved, e.g. app.core.watcher_subprocess
+grep -rn 'patch("' tests/ | grep '<old.module.path>'
 ```
 
-These are safe to run on any Python codebase: `ruff format` reformats long lines and spacing; `ruff check --fix` removes unused imports and corrects other auto-fixable violations. Run them after all code changes are written.
+Update every match to the new path before running pytest. Missing this causes tests that use `unittest.mock.patch()` to fail with `AttributeError` or `ModuleNotFoundError` even though all real imports are correct.
 
-Then verify:
+**Also grep for bare from-imports** — `patch("...")` grep only finds mock strings, not `from app.core.old_module import X` in conftest.py, fixtures, or helper files. Run a second check:
 
 ```bash
-ruff check .
-mypy app/
+# replace <old.module.path> with the moved module, e.g. app.core.watcher_types
+grep -rn 'from <old.module.path> import' tests/ app/
 ```
 
-If violations remain after `--fix`, fix them before continuing:
-- **E501** (line too long): break the line at a logical boundary — function parameter, string concatenation, or by extracting a variable
-- **F401** (unused import): delete the import line
-- **mypy errors**: fix the type mismatch in the code; do not add `# type: ignore`
+Update every from-import to the new path. Missing this causes `ModuleNotFoundError` in conftest.py or fixture files that fires before any test runs — all tests fail even though the implementation is correct.
 
-Do not proceed to step 4 until both `ruff check .` and `mypy app/` exit cleanly.
+For module renames affecting many files, use `replace_all=True` on the Edit tool rather than updating occurrences one at a time — `Edit(file_path=..., old_string="app.core.old_module", new_string="app.core.new.module", replace_all=True)` replaces every occurrence in the file in one round-trip. One call per (file, module-name) pair covers the whole migration.
+
+**If any instance methods were extracted from a class into a new module-level function**, grep for `patch.object` calls targeting those methods — they must be converted from `patch.object(instance, "method")` to `patch("new.module.path.method")`:
+
+```bash
+# replace <ClassName> with the class methods were extracted from, e.g. Watcher
+grep -rn 'patch\.object' tests/ | grep '<ClassName>'
+```
+
+`patch.object` patches the method on the instance; once the function is module-level it no longer exists on the class and the patch silently does nothing or raises `AttributeError`. Convert every match to a string-path `patch("new.module.path.function_name")`.
 
 ### 4. Run required checks
 

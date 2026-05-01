@@ -133,6 +133,13 @@ def build_worker_env(
     elif mode == "local":
         env["ANTHROPIC_BASE_URL"] = _LITELLM_BASE_URL
         env.setdefault("ANTHROPIC_API_KEY", "sk-dummy")
+        # Compact at ~180K tokens: 240K window × 75% PCT trigger.
+        # vLLM FP8 throughput is flat 16K→262K (WOR-234/WOR-118), so there is no
+        # throughput cliff to avoid — 240K gives generous context while leaving 80K
+        # headroom before the 262K hard limit. 75% fires compaction early enough to
+        # prevent late-session drift observed in WOR-216/WOR-217/WOR-212 (163K peak).
+        env.setdefault("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "240000")
+        env.setdefault("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "75")
     return env
 
 
@@ -147,21 +154,14 @@ def build_worker_cmd(
 
     prompt — pre-expanded skill content; defaults to the /implement-ticket
     slash-command shortcut (requires commands to be loaded by Claude Code).
-    In --bare mode the shortcut is unavailable, so callers should pass the
-    expanded implement-ticket.md content with $ARGUMENTS substituted.
 
     disallowed_tools — list of tool-call patterns passed to --disallowed-tools
     (e.g. ["Read(*watcher.py)", "Read(*metrics.py)"]) to enforce context_snippets.
     """
     if prompt is None:
         prompt = f"/implement-ticket {ticket_id}"
-    # --bare strips auto-memory, hooks, and CLAUDE.md auto-discovery, keeping
-    # the system prompt lean. --add-dir re-adds the worktree CLAUDE.md.
     # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
     # from blocking ~180s on OAuth in non-interactive mode.
-    # NOTE: --bare also strips OAuth credential loading, so it must NOT be used
-    # for cloud mode where the worker authenticates via OAuth (Claude Max).
-    # Local mode uses a dummy API key via LiteLLM, so --bare is safe there.
     base = [
         "claude",
         "--dangerously-skip-permissions",
@@ -175,14 +175,9 @@ def build_worker_cmd(
         "stream-json",
     ]
     if mode == "local":
-        # --bare strips OAuth; safe for local (dummy API key via LiteLLM).
-        # --effort normal: bounded implementation tasks don't benefit from max extended
-        #   thinking budget; normal saves tokens without quality regression.
-        # --context-window 80000: force compaction at 80K tokens instead of letting
-        #   context drift to the model max, preventing late-session turns from bloating
-        #   to 140K+ input with near-zero output (observed in WOR-216 / WOR-217).
-        base.insert(2, "--bare")
-        base += ["--effort", "normal", "--context-window", "80000"]
+        # --effort xhigh: interim default pending WOR-265 adaptive effort scaling.
+        # (CLI values: low|medium|high|xhigh|max — "normal" was removed)
+        base += ["--effort", "xhigh"]
         base += ["--model", _LOCAL_MODEL]
     else:
         base += ["--effort", "max"]
