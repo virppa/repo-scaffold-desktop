@@ -249,6 +249,8 @@ Write this JSON to `.claude/artifacts/<ticket_id_lower>/manifest.json` (e.g. `.c
 
 > **Path normalization:** `<ticket_id_lower>` is `ticket_id.lower().replace("-", "_")` — hyphens become underscores (e.g. `WOR-127` → `wor_127`). This matches `ArtifactPaths.from_ticket_id()` in `app/core/manifest.py`. Using `wor-127` (hyphen) will cause a "No such file or directory" error at watcher startup.
 
+**Sync Linear blockedBy with the manifest.** If the manifest's `blocked_by_tickets` field is non-empty (e.g. `"blocked_by_tickets": ["WOR-266"]`), call `save_issue(id: "$ARGUMENTS", blockedBy: [...])` with the same set of ticket identifiers so that Linear's relation matches the manifest. If the list is empty, do not call `save_issue` for blockedBy.
+
 Then:
 1. Set the ticket to **ReadyForLocal** in Linear: `save_issue(id: "$ARGUMENTS", state: "ReadyForLocal")`
 2. Post a Linear comment with the manifest path: `save_comment(issueId: "$ARGUMENTS", body: "Execution manifest written to .claude/artifacts/<ticket_id_lower>/manifest.json — watcher may now pick up.")`

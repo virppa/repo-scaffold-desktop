@@ -373,6 +373,18 @@ class Watcher:
             logger.info("Skipping %s — open blockers: %s", ticket_id, open_blockers)
             return
 
+        # Manifest-based blocker check — defense-in-depth alongside Linear check.
+        for blocker_id in manifest.blocked_by_tickets:
+            state_type = self._linear.get_issue_state_type(blocker_id)
+            if state_type not in DONE_STATE_TYPES:
+                logger.info(
+                    "Skipping %s — manifest declares unmerged blocker %s (state=%s)",
+                    ticket_id,
+                    blocker_id,
+                    state_type,
+                )
+                return
+
         all_active = self._local_active + self._cloud_active
         conflicts = check_allowed_paths_overlap(all_active, manifest)
         if conflicts:

@@ -225,6 +225,8 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json` with these key diff
 
 All other fields the same as the Batch 1 template above.
 
+**5e.5. Sync Linear blockedBy with the manifest.** If `blocked_by_tickets` is non-empty, call `save_issue(id: "<ticket_id>", blockedBy: [...])` with the same identifiers. If empty, skip the call.
+
 **5f. Post a Linear comment (no state change)**
 `save_comment(issueId: "<ticket_id>", body: "Execution manifest written — watcher will auto-promote to ReadyForLocal once WOR-45 merges.")`
 
