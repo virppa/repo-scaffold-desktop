@@ -214,9 +214,10 @@ The informational scan runs on `github.base_ref != 'main'`; the blocking scan ru
 `.claude/settings.json` ships with hooks that run automatically:
 
 - **PostToolUse** — ruff lint + format after any Python file edit
+- **PostToolUse** — mypy type-check on the edited file after any Python file edit
 - **PostToolUse** — bandit security scan after any Python file edit (if bandit is installed)
 - **PostToolUse** — `lint-imports` architecture contract check after any Python file edit
-- **PostToolUse** — pytest (no coverage) after changes to `tests/` files only
+- **PostToolUse** — pytest (no coverage) on the edited test file after changes to `tests/` files only
 - **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)
 
 No setup needed — hooks activate as soon as Claude Code loads the project.
