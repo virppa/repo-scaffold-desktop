@@ -23,6 +23,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: check-patch-paths
+        name: check-patch-paths
+        language: python
+        entry: python scripts/check_patch_paths.py
+        pass_filenames: false
+        types: [python]
+
       - id: semgrep
         name: semgrep
         language: python
@@ -45,12 +52,3 @@ repos:
     hooks:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]
-
-  - repo: local
-    hooks:
-      - id: check-patch-paths
-        name: check-patch-paths
-        language: python
-        entry: python scripts/check_patch_paths.py
-        pass_filenames: false
-        types: [python]

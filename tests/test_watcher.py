@@ -383,6 +383,39 @@ def test_check_epic_completion_posts_comment_and_exits(tmp_path: Path) -> None:
     assert w._running is False
 
 
+def test_check_epic_completion_no_epic_shutdown_keeps_running(
+    tmp_path: Path,
+) -> None:
+    """When no_epic_shutdown=True, _check_epic_completion must NOT set
+    _running to False. The epic-complete comment must still be posted."""
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    w = Watcher(
+        linear_client=linear_mock,
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+    w._processed_tickets = [
+        _ProcessedTicket(
+            ticket_id="WOR-10",
+            epic_id="WOR-96",
+            worker_branch="wor-10-test-ticket",
+            elapsed=120.0,
+        )
+    ]
+
+    with (
+        patch.object(w, "_has_waiting_deps", return_value=False),
+        patch.object(
+            w, "_lookup_pr_url", return_value="https://github.com/org/repo/pull/1"
+        ),
+    ):
+        w._check_epic_completion()
+
+    linear_mock.post_comment.assert_called_once()
+    assert w._running is True
+
+
 def test_check_epic_completion_no_tickets_processed_no_comment_exits(
     tmp_path: Path,
 ) -> None:
