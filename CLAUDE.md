@@ -277,6 +277,40 @@ Test core logic only. Priority: config validation, preset selection, file genera
 
 ---
 
+## Worker efficiency
+
+Rules for local worker sessions (watcher-spawned `claude` processes). Each tool call is a ~40s round-trip — minimising call count directly reduces wall time.
+
+**No standalone `cd` commands.** Every `cd` is a wasted round-trip. Use absolute paths or chain with the actual command:
+```bash
+# bad  — two round-trips
+cd /path/to/dir
+ruff check .
+
+# good — one round-trip
+cd /path/to/dir && ruff check .
+# or use absolute path directly
+ruff check /path/to/dir
+```
+
+**Batch file reads.** When you need the contents of multiple related files, read them in one round-trip with a shell one-liner rather than issuing individual Read calls:
+```bash
+# reads 5 files in one tool call instead of 5
+python3 -c "
+import sys
+for f in ['app/core/watcher.py', 'app/core/watcher_types.py', ...]:
+    print(f'=== {f} ==='); print(open(f).read())
+"
+```
+
+**Update mock patch paths after any module move.** `unittest.mock.patch()` targets are string literals — they are not updated by import fixers and will silently break tests. After moving or renaming any module, run:
+```bash
+grep -rn 'patch("' tests/ | grep '<old.module.path>'
+```
+and update every match to the new path before running pytest.
+
+---
+
 ## Escalation policy
 
 The watcher reads `config/escalation_policy.toml` at startup to decide when to stop a local worker session and escalate to cloud LLM. Rules are data-driven — no hardcoded logic in the watcher.
