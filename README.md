@@ -41,8 +41,10 @@ python -m app.cli watcher --worker-mode cloud    # force cloud (Anthropic API)
 python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy)
 python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concurrency
 python -m app.cli watcher --max-cloud-workers 3  # default 3
-python -m app.cli watcher --verbose              # stream worker output live to stderr
+python -m app.cli watcher --verbose              # DEBUG level on the watcher's own logger
+python -m app.cli watcher --worker-verbose       # stream worker stdout+stderr live, prefixed [WOR-NN]
 python -m app.cli watcher --no-epic-shutdown     # keep daemon running past current epic
+python -m app.cli watcher --tui                  # live rich TUI: per-worker status, cost rollups, tracked PRs
 
 # Metrics
 python -m app.cli metrics browse   # open metrics DB in Datasette browser UI
