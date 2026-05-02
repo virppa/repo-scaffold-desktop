@@ -288,6 +288,119 @@ def test_parse_worker_usage_malformed_json(tmp_path: Path) -> None:
     assert compactions is None
 
 
+def test_parse_worker_usage_cumulative_output_tokens(tmp_path: Path) -> None:
+    """output_tokens summed across every type=assistant event."""
+    assistant = [
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "a1",
+                    "usage": {
+                        "input_tokens": 10000,
+                        "output_tokens": 100,
+                    },
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "a2",
+                    "usage": {
+                        "input_tokens": 10000,
+                        "output_tokens": 200,
+                    },
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "a3",
+                    "usage": {
+                        "input_tokens": 10000,
+                        "output_tokens": 300,
+                    },
+                },
+            }
+        ),
+    ]
+    result_line = json.dumps(
+        {
+            "type": "result",
+            "usage": {
+                "input_tokens": 40000,
+                "output_tokens": 707,
+            },
+            "context_compactions": 5,
+        }
+    )
+    log = tmp_path / "worker.log"
+    log.write_text("\n".join(assistant + [result_line]) + "\n", encoding="utf-8")
+    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    assert output_tok == 600  # 100+200+300
+    assert compactions == 5
+
+
+def test_parse_worker_usage_cumulative_input_tokens(tmp_path: Path) -> None:
+    """input_tokens summed across every type=assistant event."""
+    assistant = [
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "a1",
+                    "usage": {
+                        "input_tokens": 8000,
+                        "output_tokens": 50,
+                    },
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "a2",
+                    "usage": {
+                        "input_tokens": 12000,
+                        "output_tokens": 60,
+                    },
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "id": "a3",
+                    "usage": {
+                        "input_tokens": 15000,
+                        "output_tokens": 70,
+                    },
+                },
+            }
+        ),
+    ]
+    result_line = json.dumps(
+        {
+            "type": "result",
+            "usage": {
+                "input_tokens": 50000,
+                "output_tokens": 200,
+            },
+            "context_compactions": 2,
+        }
+    )
+    log = tmp_path / "worker.log"
+    log.write_text("\n".join(assistant + [result_line]) + "\n", encoding="utf-8")
+    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    assert input_tok == 35000  # 8000+12000+15000
+
+
 def test_parse_worker_usage_mixed_valid_invalid_lines(tmp_path: Path) -> None:
     result_line = json.dumps(
         {
@@ -313,8 +426,9 @@ def test_parse_worker_usage_returns_first_result_line(tmp_path: Path) -> None:
     )
     log = _write_log(tmp_path, [first, second])
     input_tok, output_tok, _ = _parse_worker_usage(log)
-    assert input_tok == 10
-    assert output_tok == 5
+    # No assistant events — fallback uses the last result event's snapshot.
+    assert input_tok == 999
+    assert output_tok == 999
 
 
 def test_parse_worker_usage_empty_file(tmp_path: Path) -> None:
