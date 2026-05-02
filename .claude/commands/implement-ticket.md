@@ -69,9 +69,9 @@ ABORT: Expected branch '<worker_branch>' but current branch is '<actual>'.
 Check out the correct branch before running /implement-ticket.
 ```
 
-### 2. Set ticket state to InProgressLocal
+### 2. State transitions are owned by the watcher
 
-Call `save_issue(id: "<ticket_id>", state: "InProgressLocal")` at startup to signal that local implementation has begun.
+The watcher already set state to `InProgressLocal` before launching this session. **Do not call `save_issue` for state transitions** at any point during the worker run — the watcher reads the result artifact and `finalize_worker` handles every subsequent transition (success → push + PR + InReview → MergedToEpic; failure → Blocked or In Progress + escalation comment). Posting Linear *comments* for context is fine; setting *state* is not.
 
 ### 3. Implement
 
@@ -207,14 +207,15 @@ Write a JSON result file to `artifact_paths.result_json`. Create parent dirs as 
 
 Also copy the manifest to `artifact_paths.manifest_copy` for audit purposes.
 
-### 6. Update Linear
+### 6. Linear updates (comments only — state is owned by the watcher)
 
-**On success:**
-Leave the ticket in `InProgressLocal`. The watcher reads the result artifact and handles PR creation and state transitions — do NOT call `/finalize-ticket`.
+**On success:** do nothing in Linear. The watcher reads the result artifact and handles PR creation and state transitions. Do not call `/finalize-ticket`.
 
-**On failure:**
-- If `failure_policy.escalate_to_cloud` is `true`: `save_issue(id: "<ticket_id>", state: "In Progress")` and post a Linear comment: `"Local worker failed after <N> checks. Escalating to cloud. See result artifact: <artifact_paths.result_json>"`
-- Otherwise: `save_issue(id: "<ticket_id>", state: "Blocked")` and post a comment with the failure reason
+**On failure:** post a single Linear comment summarising the failure for human visibility — do **not** call `save_issue` to set state. The watcher's `finalize_worker` reads the result artifact + escalation policy and applies the correct state transition (`Blocked`, or `In Progress` with an escalation note when `failure_policy.escalate_to_cloud` is true).
+
+```
+save_comment(issueId: "<ticket_id>", body: "Local worker failed: <one-line reason>. See result artifact: <artifact_paths.result_json>")
+```
 
 ### 7. Exit
 
