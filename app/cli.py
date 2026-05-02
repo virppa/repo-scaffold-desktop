@@ -172,6 +172,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
+            "Set DEBUG level on the watcher's own logger. "
+            "Does not affect worker stdout streaming."
+        ),
+    )
+    watcher.add_argument(
+        "--worker-verbose",
+        action="store_true",
+        default=False,
+        help=(
             "Stream worker stdout+stderr live to the daemon's stderr, "
             "prefixed with [WOR-NN]. Output is still written to the log file."
         ),
@@ -186,6 +195,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "get added to the epic."
         ),
     )
+    watcher.add_argument(
+        "--tui",
+        action="store_true",
+        default=False,
+        help=(
+            "Show a live rich-based TUI with per-worker status, cost "
+            "economics, historical rollups, and PR auto-merge tracking. "
+            "Falls back to line-based logging when stderr is piped."
+        ),
+    )
 
     return parser
 
@@ -194,11 +213,13 @@ def _run_watcher(args: argparse.Namespace) -> int:
     import logging
 
     from app.core.watcher import Watcher
+    from app.core.watcher.log_format import ColorFormatter
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
         stream=sys.stderr,
+        cls=ColorFormatter,  # type: ignore[call-overload]
     )
     mode = args.worker_mode or os.environ.get("WORKER_MODE", "default")
     max_local = args.max_local_workers
@@ -210,7 +231,7 @@ def _run_watcher(args: argparse.Namespace) -> int:
         worker_mode=mode,
         max_local_workers=max_local,
         max_cloud_workers=max_cloud,
-        verbose=args.verbose,
+        worker_verbose=args.worker_verbose,
         no_epic_shutdown=args.no_epic_shutdown,
     )
     try:

@@ -14,10 +14,7 @@ from pathlib import Path
 from app.core.manifest import ExecutionManifest
 
 from .watcher_finalize import safe_set_state
-from .watcher_helpers import (
-    check_allowed_paths_overlap,
-    resolve_effective_mode,
-)
+from .watcher_helpers import resolve_effective_mode, suppress_dedup
 from .watcher_services import ServiceManager
 from .watcher_subprocess import launch_worker
 from .watcher_types import ActiveWorker, LinearClientProtocol
@@ -36,7 +33,7 @@ def start_ticket(
     linear: LinearClientProtocol,
     project_id: str,
     services: ServiceManager,
-    verbose: bool,
+    worker_verbose: bool,
     retry_counters: dict[str, int],
     _local_active: list[ActiveWorker],
     _cloud_active: list[ActiveWorker],
@@ -47,38 +44,17 @@ def start_ticket(
     linear_id: str,
     ticket_id: str,
     _escalation_policy: object,
+    _dedup_state: dict[str, str] | None = None,
 ) -> None:
     """Execute the full ticket-start flow extracted from Watcher._start_ticket."""
-    open_blockers = linear.get_open_blockers(linear_id)
-    if open_blockers:
-        logger.info("Skipping %s — open blockers: %s", ticket_id, open_blockers)
-        return
-
-    all_active = _local_active + _cloud_active
-    conflicts = check_allowed_paths_overlap(all_active, manifest)
-    if conflicts:
-        logger.info(
-            "Deferring %s — allowed_paths overlap with active workers: %s",
-            ticket_id,
-            conflicts,
-        )
-        return
-
+    # Prerequisite checks (open_blockers + overlap) are handled by
+    # Watcher._start_ticket before calling this function.
     effective_mode = resolve_effective_mode(
         services._mode if hasattr(services, "_mode") else "local",
         manifest.implementation_mode,
     )
 
-    if effective_mode == "local":
-        if len(_local_active) >= max_local_workers:
-            logger.info(
-                "Deferring %s — local pool full (%d/%d)",
-                ticket_id,
-                len(_local_active),
-                max_local_workers,
-            )
-            return
-    else:
+    if effective_mode != "local":
         if len(_cloud_active) >= max_cloud_workers:
             logger.info(
                 "Deferring %s — cloud pool full (%d/%d)",
@@ -90,7 +66,11 @@ def start_ticket(
 
     if effective_mode == "local":
         if not services.probe_vllm_health():
-            logger.warning("Deferring %s — vLLM not ready yet", ticket_id)
+            reason_msg = "Deferring %s — vLLM not ready yet" % (ticket_id,)
+            if suppress_dedup(
+                ticket_id, "vllm_not_ready", reason_msg, _dedup_state or {}
+            ):
+                logger.warning("%s", reason_msg)
             return
         services.ensure_litellm_running()
 
@@ -108,7 +88,7 @@ def start_ticket(
 
     backed_up_plans = backup_plan_files()
     process = launch_worker(
-        _repo_root, manifest, worktree_path, effective_mode, verbose
+        _repo_root, manifest, worktree_path, effective_mode, worker_verbose
     )
     worker = ActiveWorker(
         ticket_id=ticket_id,

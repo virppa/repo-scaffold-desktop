@@ -28,6 +28,7 @@ from .watcher_subprocess import (
     fetch_sonar_findings,
     run_checks,
 )
+from .watcher_tui import TrackedPR
 from .watcher_types import (
     _CLAUDE_DIR,
     _LOCAL_MODEL,
@@ -110,7 +111,12 @@ def attempt_pr(
     manifest: ExecutionManifest,
     worker: ActiveWorker,
     linear: LinearClientProtocol,
-) -> Outcome:
+    tracked_prs: list[TrackedPR] | None = None,
+) -> tuple[Outcome, str | None]:
+    """Attempt PR creation.  Returns (outcome, pr_url).
+
+    When *tracked_prs* is provided the PR is registered there on success.
+    """
     ticket_id = worker.ticket_id
     linear_id = worker.linear_id
     try:
@@ -135,9 +141,27 @@ def attempt_pr(
             ticket_id,
             f"PR creation failed for `{ticket_id}`:\n```\n{err_detail}\n```",
         )
-        return "failure"
+        return "failure", None
     logger.info("PR created for %s: %s", ticket_id, pr_url)
-    return "success"
+
+    # Register PR for auto-merge tracking (Phase 1).
+    if tracked_prs is not None:
+        try:
+            # gh pr create outputs a URL like:
+            # https://github.com/owner/repo/pull/123
+            parts = pr_url.rstrip("/").split("/")
+            if len(parts) >= 5:
+                pr_number = int(parts[-1])
+                tracked_prs.append(
+                    TrackedPR(
+                        number=pr_number,
+                        base=manifest.base_branch,
+                    )
+                )
+        except (IndexError, ValueError):
+            logger.warning("Could not parse PR URL %s for tracking", pr_url)
+
+    return "success", pr_url
 
 
 def finalize_worker(
@@ -151,9 +175,17 @@ def finalize_worker(
     repo_root: Path,
     mode: str,
     project_id: str,
-) -> tuple[Outcome, bool, bool, list[str] | None, list[dict[str, int | str]]]:
-    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks = (
-        _execute_finalization(worker, returncode, linear, escalation_policy, repo_root)
+    tracked_prs: list[TrackedPR] | None = None,
+) -> Outcome:
+    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, pr_url = (
+        _execute_finalization(
+            worker,
+            returncode,
+            linear,
+            escalation_policy,
+            repo_root,
+            tracked_prs=tracked_prs,
+        )
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
@@ -249,7 +281,7 @@ def finalize_worker(
     if artifacts_preserved:
         # Success path — artifacts already saved upstream; remove worktree.
         cleanup_worktree(repo_root, worker.worktree_path)
-        return outcome, escalated, artifacts_preserved, sonar_findings, failed_checks
+        return outcome
 
     # Failure path — preserve WIP before considering teardown (WOR-258, WOR-288).
     backup_root = repo_root / _CLAUDE_DIR / "artifacts"
@@ -280,7 +312,7 @@ def finalize_worker(
             wip_result.error or "unknown",
             worker.manifest.worker_branch,
         )
-    return outcome, escalated, artifacts_preserved, sonar_findings, failed_checks
+    return outcome
 
 
 # ---------------------------------------------------------------------------
@@ -319,11 +351,15 @@ def _execute_finalization(
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
     repo_root: Path,
-) -> tuple[Outcome, bool, bool, list[str] | None, list[dict[str, int | str]]]:
+    tracked_prs: list[TrackedPR] | None = None,
+) -> tuple[
+    Outcome, bool, bool, list[str] | None, list[dict[str, int | str]], str | None
+]:
     """Determine outcome, escalation status, and artifact state.
 
     Returns (outcome, escalated, artifacts_preserved, sonar_findings,
-             failed_checks).
+             failed_checks, pr_url).  *pr_url* is only populated when the
+             action is ``"fix_locally"`` and the PR is created successfully.
     """
     manifest = worker.manifest
     ticket_id = worker.ticket_id
@@ -368,7 +404,7 @@ def _execute_finalization(
                 safe_set_state(
                     linear, linear_id, manifest.ticket_state_map.failed, ticket_id
                 )
-            return "failure", escalated, False, None, []
+            return "failure", escalated, False, None, [], None
 
     checks_ok, failed_checks = run_checks(manifest, worker.worktree_path)
     if not checks_ok:
@@ -389,16 +425,22 @@ def _execute_finalization(
             safe_set_state(
                 linear, linear_id, manifest.ticket_state_map.failed, ticket_id
             )
-        return "failure", escalated, False, None, failed_checks
+        return "failure", escalated, False, None, failed_checks, None
 
     preserve_worker_artifacts(repo_root, worker)
     flags = _read_result_flags(repo_root / manifest.artifact_paths.result_json)
     action = escalation_policy.classify_result(**flags)
 
-    outcome, escalated, sonar_findings = _handle_policy_outcome(
-        action, flags, worker, linear, escalation_policy, manifest.objective
+    outcome, escalated, sonar_findings, pr_url = _handle_policy_outcome(
+        action,
+        flags,
+        worker,
+        linear,
+        escalation_policy,
+        manifest.objective,
+        tracked_prs=tracked_prs,
     )
-    return outcome, escalated, True, sonar_findings, []
+    return outcome, escalated, True, sonar_findings, [], pr_url
 
 
 def _handle_policy_outcome(
@@ -408,8 +450,14 @@ def _handle_policy_outcome(
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
     final_message: str = "Implementation complete",
-) -> tuple[Outcome, bool, list[str] | None]:
-    """Map a policy action to an outcome, posting Linear comments as needed."""
+    tracked_prs: list[TrackedPR] | None = None,
+) -> tuple[Outcome, bool, list[str] | None, str | None]:
+    """Map a policy action to an outcome, posting Linear comments as needed.
+
+    Returns (outcome, escalated, sonar_findings, pr_url).  *pr_url* is only
+    populated when the action is ``"fix_locally"`` and the PR is created
+    successfully.
+    """
     ticket_id = worker.ticket_id
     linear_id = worker.linear_id
     manifest = worker.manifest
@@ -425,7 +473,7 @@ def _handle_policy_outcome(
             f"Local worker escalating `{ticket_id}` to cloud. "
             f"Triggering flag: `{triggering}`.",
         )
-        return "escalated", True, None
+        return "escalated", True, None, None
 
     if action == "human":
         logger.info("Human review required for %s per policy", ticket_id)
@@ -436,7 +484,7 @@ def _handle_policy_outcome(
             f"Human review required for `{ticket_id}` before "
             f"proceeding. Please inspect the result artifact.",
         )
-        return "aborted", False, None
+        return "aborted", False, None, None
 
     # fix_locally — check Sonar findings before creating PR
     sonar_findings = fetch_sonar_findings(manifest.worker_branch)
@@ -451,7 +499,7 @@ def _handle_policy_outcome(
             f"Local worker escalating `{ticket_id}` to cloud due "
             f"to Sonar finding requiring immediate action.",
         )
-        return "escalated", True, sonar_findings
+        return "escalated", True, sonar_findings, None
 
     # Squash any wip commits into a single commit so retry workers can
     # diff the final_message commit and resume from a clean state.
@@ -462,8 +510,8 @@ def _handle_policy_outcome(
         final_message,
     )
 
-    outcome = attempt_pr(manifest, worker, linear)
-    return outcome, False, sonar_findings
+    outcome, pr_url = attempt_pr(manifest, worker, linear, tracked_prs=tracked_prs)
+    return outcome, False, sonar_findings, pr_url
 
 
 def _sonar_requires_escalation(

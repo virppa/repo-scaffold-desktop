@@ -24,17 +24,24 @@ import signal
 import subprocess  # nosec B404
 import time
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import MetricsStore
+from app.core.metrics import CostRollup, MetricsStore
 
 from .watcher_finalize import finalize_worker, safe_set_state
-from .watcher_helpers import check_allowed_paths_overlap, resolve_effective_mode
+from .watcher_helpers import (
+    check_allowed_paths_overlap,
+    format_elapsed,
+    format_worker_token_count,
+    resolve_effective_mode,
+    suppress_dedup,
+)
 from .watcher_services import ServiceManager
 from .watcher_subprocess import launch_worker
+from .watcher_tui import TrackedPR, TUIState, WatcherDisplay, WorkerState
 from .watcher_types import (
     _CLAUDE_DIR,
     _PID_FILE,
@@ -79,8 +86,9 @@ class Watcher:
         metrics_store: MetricsStore | None = None,
         repo_root: Path | None = None,
         project_id: str = "repo-scaffold-desktop",
-        verbose: bool = False,
+        worker_verbose: bool = False,
         no_epic_shutdown: bool = False,
+        tui_mode: bool = False,
     ) -> None:
         if linear_client is None:
             from app.core.linear_client import LinearClient  # lazy import
@@ -99,10 +107,16 @@ class Watcher:
         self._processed_tickets: list[_ProcessedTicket] = []
         self._running = True
         self._services = ServiceManager(self._repo_root)
-        self._verbose = verbose
+        self._worker_verbose = worker_verbose
         self._retry_counters: dict[str, int] = {}
         self._escalation_policy = EscalationPolicy.from_toml()
         self._no_epic_shutdown = no_epic_shutdown
+        self._last_deferral_state: dict[str, str] = {}
+        self._last_idle_state: tuple[int, int, int, bool] | None = None
+        self._heartbeat: dict[str, tuple[float, int]] = {}
+        self._tui_mode = tui_mode
+        self._display: Any | None = None
+        self._tracked_prs: list[TrackedPR] = []
         self._last_epic_complete_announced: dict[str, str] = {}
 
     # ------------------------------------------------------------------
@@ -115,6 +129,9 @@ class Watcher:
         self._register_signals()
         self._cleanup_orphaned_worktrees()
 
+        if self._tui_mode:
+            self._display = WatcherDisplay()
+
         if self._mode in ("local", "default"):
             self._services.probe_vllm_health()
 
@@ -126,6 +143,8 @@ class Watcher:
         try:
             while self._running:
                 self._reap_finished_workers()
+                if self._display is not None:
+                    self._display.update_state(self._build_tui_state())
                 self._promote_waiting_tickets()
                 local_has_capacity = len(self._local_active) < self._max_local_workers
                 cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
@@ -135,10 +154,14 @@ class Watcher:
                 if not self._running:
                     break
                 time.sleep(self._POLL_INTERVAL)
+                self._emit_idle_line()
+                self._emit_heartbeat()
         finally:
             self._wait_for_active_workers()
             self._services.stop()
             self._remove_pid_file()
+            if self._display is not None:
+                self._display.stop()
             logger.info("Watcher stopped cleanly")
 
     def _log_startup_info(self) -> None:
@@ -163,7 +186,73 @@ class Watcher:
                 self._max_cloud_workers,
             )
 
-    def _cleanup_orphaned_worktrees(self) -> None:
+    def _emit_idle_line(self) -> None:
+        """Emit a single idle line when the watcher has nothing active to do.
+
+        Only re-emits when state changes (pool sizes / waiting count / capacity).
+        """
+        now_local = len(self._local_active)
+        now_cloud = len(self._cloud_active)
+        has_local = now_local < self._max_local_workers
+        has_cloud = now_cloud < self._max_cloud_workers
+        has_capacity = has_local or has_cloud
+
+        # Count WaitingForDeps manifests
+        artifacts_root = self._repo_root / _CLAUDE_DIR / "artifacts"
+        waiting = 0
+        if artifacts_root.exists():
+            for mp in artifacts_root.glob("*/manifest.json"):
+                try:
+                    m = ExecutionManifest.from_json(mp)
+                except (OSError, ValueError):
+                    # Missing, unreadable, or invalid manifest — skip silently;
+                    # idle-line counter does not need to surface every malformed file.
+                    continue
+                if m.status == "WaitingForDeps":
+                    waiting += 1
+
+        state = (now_local, now_cloud, waiting, has_capacity)
+        if state == self._last_idle_state:
+            return
+        self._last_idle_state = state
+
+        logger.info(
+            "Watcher idle — %d/%d local, %d/%d cloud, %d waiting for blockers, "
+            "polling every %ds",
+            now_local,
+            self._max_local_workers,
+            now_cloud,
+            self._max_cloud_workers,
+            waiting,
+            self._POLL_INTERVAL,
+        )
+
+    def _emit_heartbeat(self) -> None:
+        """Emit a per-worker heartbeat every ~30s with elapsed time."""
+        all_active: list[ActiveWorker] = []
+        all_active.extend(self._local_active)
+        all_active.extend(self._cloud_active)
+
+        for worker in all_active:
+            elapsed = time.monotonic() - worker.start_time
+            key = worker.ticket_id
+
+            if key in self._heartbeat:
+                last_elapsed, last_tick = self._heartbeat[key]
+                # Emit when we cross a new 30-second boundary
+                new_tick = int(elapsed / 30)
+                if new_tick <= last_tick:
+                    continue
+                self._heartbeat[key] = (elapsed, new_tick)
+            else:
+                # First emission — start at the first 30-second boundary
+                tick = int(elapsed / 30)
+                if tick < 1:
+                    continue
+                self._heartbeat[key] = (elapsed, tick)
+
+            elapsed_str = format_elapsed(elapsed)
+            logger.info("[%s] %s", worker.ticket_id, elapsed_str)
         from .watcher_types import _WORKTREE_BASE
 
         base = self._repo_root.parent / _WORKTREE_BASE
@@ -174,6 +263,40 @@ class Watcher:
                 continue
             logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
             cleanup_worktree(self._repo_root, worktree_dir)
+
+    # ------------------------------------------------------------------
+    # TUI state
+    # ------------------------------------------------------------------
+
+    def _build_tui_state(self) -> TUIState:
+        """Build the current TUI snapshot for the display."""
+        workers: list[WorkerState] = []
+        for w in self._local_active:
+            elapsed = time.monotonic() - w.start_time
+            workers.append(
+                WorkerState(
+                    ticket_id=w.ticket_id,
+                    mode="local",
+                    status="running",
+                    elapsed_s=elapsed,
+                )
+            )
+        for w in self._cloud_active:
+            elapsed = time.monotonic() - w.start_time
+            workers.append(
+                WorkerState(
+                    ticket_id=w.ticket_id,
+                    mode="cloud",
+                    status="running",
+                    elapsed_s=elapsed,
+                )
+            )
+        rollups: dict[str, CostRollup] = {}
+        for period in ("today", "week", "all"):
+            rollups[period] = self._metrics.get_cost_rollup(period)
+        return TUIState(
+            workers=workers, cost_rollups=rollups, tracked_prs=self._tracked_prs
+        )
 
     # ------------------------------------------------------------------
     # WaitingForDeps promotion
@@ -389,11 +512,13 @@ class Watcher:
         all_active = self._local_active + self._cloud_active
         conflicts = check_allowed_paths_overlap(all_active, manifest)
         if conflicts:
-            logger.info(
-                "Deferring %s — allowed_paths overlap with active workers: %s",
-                ticket_id,
-                conflicts,
+            reason = f"overlap:{','.join(conflicts)}"
+            reason_msg = (
+                "Deferring %s — allowed_paths overlap with active workers: %s"
+                % (ticket_id, conflicts)
             )
+            if suppress_dedup(ticket_id, reason, reason_msg, self._last_deferral_state):
+                logger.info(reason_msg)
             return
 
         effective_mode = resolve_effective_mode(
@@ -402,26 +527,45 @@ class Watcher:
 
         if effective_mode == "local":
             if len(self._local_active) >= self._max_local_workers:
-                logger.info(
-                    "Deferring %s — local pool full (%d/%d)",
+                reason_msg = "Deferring %s — local pool full (%d/%d)" % (
                     ticket_id,
                     len(self._local_active),
                     self._max_local_workers,
                 )
+                if suppress_dedup(
+                    ticket_id,
+                    "local_pool_full",
+                    reason_msg,
+                    self._last_deferral_state,
+                ):
+                    logger.info(reason_msg)
                 return
         else:
             if len(self._cloud_active) >= self._max_cloud_workers:
-                logger.info(
-                    "Deferring %s — cloud pool full (%d/%d)",
+                reason_msg = "Deferring %s — cloud pool full (%d/%d)" % (
                     ticket_id,
                     len(self._cloud_active),
                     self._max_cloud_workers,
                 )
+                if suppress_dedup(
+                    ticket_id,
+                    "cloud_pool_full",
+                    reason_msg,
+                    self._last_deferral_state,
+                ):
+                    logger.info(reason_msg)
                 return
 
         if effective_mode == "local":
             if not self._services.probe_vllm_health():
-                logger.warning("Deferring %s — vLLM not ready yet", ticket_id)
+                reason_msg = "Deferring %s — vLLM not ready yet" % ticket_id
+                if suppress_dedup(
+                    ticket_id,
+                    "vllm_not_ready",
+                    reason_msg,
+                    self._last_deferral_state,
+                ):
+                    logger.warning(reason_msg)
                 return
             self._services.ensure_litellm_running()
 
@@ -435,11 +579,15 @@ class Watcher:
             manifest.ticket_state_map.in_progress_local,
             ticket_id,
         )
-        logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
+        logger.info("Starting worker for %s — mode=%s", ticket_id, effective_mode)
 
         backed_up_plans = backup_plan_files()
         process = launch_worker(
-            self._repo_root, manifest, worktree_path, effective_mode, self._verbose
+            self._repo_root,
+            manifest,
+            worktree_path,
+            effective_mode,
+            self._worker_verbose,
         )
         worker = ActiveWorker(
             ticket_id=ticket_id,
@@ -466,13 +614,32 @@ class Watcher:
                 still_running.append(worker)
                 continue
             elapsed = time.monotonic() - worker.start_time
-            logger.info(
-                "Worker %s finished (rc=%d, elapsed=%.0fs)",
-                worker.ticket_id,
-                rc,
-                elapsed,
+            # Clear heartbeat state for the finished worker
+            self._heartbeat.pop(worker.ticket_id, None)
+            # Final heartbeat for finished worker
+            last_tick = self._heartbeat.get(worker.ticket_id, (0.0, 0))[1]
+            final_tick = int(elapsed / 30)
+            if final_tick > last_tick:
+                elapsed_str = format_elapsed(elapsed)
+                logger.info("[%s] %s", worker.ticket_id, elapsed_str)
+            # Build single-line finish summary with elapsed + token count
+            status = "success" if rc == 0 else "failed"
+            elapsed_str = format_elapsed(elapsed)
+            log_path = (
+                worker.worktree_path
+                / ".claude"
+                / "logs"
+                / f"{worker.ticket_id.replace('-', '_')}.jsonl"
             )
-            outcome, *_ = finalize_worker(
+            token_str = format_worker_token_count(log_path)
+            logger.info(
+                "%s done (%s, %s, %s)",
+                worker.ticket_id,
+                status,
+                elapsed_str,
+                token_str,
+            )
+            outcome = finalize_worker(
                 worker,
                 returncode=rc,
                 wall_time=elapsed,
@@ -482,6 +649,7 @@ class Watcher:
                 repo_root=self._repo_root,
                 mode=self._mode,
                 project_id=self._project_id,
+                tracked_prs=self._tracked_prs,
             )
             self._processed_tickets.append(
                 _ProcessedTicket(
@@ -699,3 +867,15 @@ class Watcher:
             _PID_FILE.unlink()
         except FileNotFoundError:
             pass
+
+    def _cleanup_orphaned_worktrees(self) -> None:
+        from app.core.watcher_types import _WORKTREE_BASE
+
+        base = self._repo_root.parent / _WORKTREE_BASE
+        if not base.exists():
+            return
+        for worktree_dir in base.iterdir():
+            if not worktree_dir.is_dir():
+                continue
+            logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
+            cleanup_worktree(self._repo_root, worktree_dir)

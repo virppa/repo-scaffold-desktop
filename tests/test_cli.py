@@ -270,17 +270,45 @@ def test_post_setup_error_exits_nonzero(output_dir, capsys):
     assert "git not found on PATH" in captured.err
 
 
-def test_watcher_verbose_flag_forwarded(tmp_path):
+def test_watcher_worker_verbose_flag_forwarded(tmp_path):
     from unittest.mock import MagicMock, patch
 
     mock_instance = MagicMock()
     mock_instance.run.return_value = None
     # Watcher is a lazy import inside _run_watcher, so patch at source module
     with patch("app.core.watcher.Watcher", return_value=mock_instance) as MockWatcher:
+        rc = main(["watcher", "--worker-verbose"])
+    assert rc == 0
+    _, kwargs = MockWatcher.call_args
+    assert kwargs.get("worker_verbose") is True
+
+
+def test_watcher_verbose_does_not_set_worker_verbose(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    mock_instance = MagicMock()
+    mock_instance.run.return_value = None
+    with patch("app.core.watcher.Watcher", return_value=mock_instance) as MockWatcher:
         rc = main(["watcher", "--verbose"])
     assert rc == 0
     _, kwargs = MockWatcher.call_args
-    assert kwargs.get("verbose") is True
+    # --verbose only controls logging level — it is intentionally not forwarded
+    # to Watcher.__init__ at all, so the kwarg must not appear.
+    assert "verbose" not in kwargs
+    assert kwargs.get("worker_verbose") is False
+
+
+def test_watcher_verbose_and_worker_verbose_both_forwarded(tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    mock_instance = MagicMock()
+    mock_instance.run.return_value = None
+    with patch("app.core.watcher.Watcher", return_value=mock_instance) as MockWatcher:
+        rc = main(["watcher", "--verbose", "--worker-verbose"])
+    assert rc == 0
+    _, kwargs = MockWatcher.call_args
+    # verbose is no longer forwarded to Watcher — it only controls logging level
+    assert kwargs.get("worker_verbose") is True
 
 
 def test_watcher_max_local_and_cloud_workers_forwarded():

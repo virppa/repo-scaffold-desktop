@@ -11,6 +11,7 @@ import json
 import platform
 import sqlite3
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Generator, Literal
 
@@ -233,6 +234,45 @@ class CheckStats(BaseModel):
     max_duration_s: float | None
 
 
+@dataclass
+class CostRollup:
+    """Aggregated cost economics over a time window."""
+
+    cloud_spent: float = 0.0
+    local_saved: float = 0.0
+    cloud_ticket_count: int = 0
+    local_ticket_count: int = 0
+
+
+# Pre-built cost-rollup SQL strings keyed by period. Defined as module-level
+# constants rather than f-string-interpolated at call time so that semgrep can
+# verify there is no SQL composition with variable input. The trailing WHERE
+# clauses are the only thing that varies per period.
+_COST_ROLLUP_SQL_BASE = """
+SELECT
+    COALESCE(SUM(CASE WHEN cloud_used = 1
+            THEN cloud_cost_estimate ELSE 0 END), 0)
+        AS cloud_spent,
+    COALESCE(SUM(CASE WHEN cloud_used = 1 THEN 1 ELSE 0 END), 0)
+        AS cloud_ticket_count,
+    COALESCE(SUM(CASE WHEN local_used = 1
+            THEN local_input_tokens * 3.0 / 1e6
+                 + local_output_tokens * 15.0 / 1e6
+            ELSE 0 END), 0)
+        AS local_saved,
+    COALESCE(SUM(CASE WHEN local_used = 1 THEN 1 ELSE 0 END), 0)
+        AS local_ticket_count
+FROM ticket_metrics
+"""
+_COST_ROLLUP_SQL_TODAY = (
+    _COST_ROLLUP_SQL_BASE + "WHERE started_at >= date('now', 'start of day')"
+)
+_COST_ROLLUP_SQL_WEEK = (
+    _COST_ROLLUP_SQL_BASE + "WHERE started_at >= date('now', '-7 days')"
+)
+_COST_ROLLUP_SQL_ALL = _COST_ROLLUP_SQL_BASE
+
+
 class MetricsStore:
     """SQLite-backed store for ticket execution metrics."""
 
@@ -405,6 +445,34 @@ class MetricsStore:
             lines_changed_total=row["lines_changed_total"],
             files_changed_total=row["files_changed_total"],
             sonar_findings_total=row["sonar_findings_total"],
+        )
+
+    def get_cost_rollup(self, period: Literal["today", "week", "all"]) -> CostRollup:
+        """Return aggregated cost economics for *period*.
+
+        *today*   = rows where ``started_at >= date('now', 'start of day')``
+        *week*    = rows where ``started_at >= date('now', '-7 days')``
+        *all*     = no filter
+
+        cloud_spent  = SUM(cloud_cost_estimate) where cloud_used=1
+        local_saved  = SUM(local_input_tokens * input_rate + local_output_tokens
+                         * output_rate) where local_used=1; sonnet-4-6 pricing
+        """
+        # Pre-built SQL strings keyed by period — no f-string interpolation,
+        # no user input ever touches these queries (period is a Literal type
+        # constrained to the dict keys at the call site).
+        queries = {
+            "today": _COST_ROLLUP_SQL_TODAY,
+            "week": _COST_ROLLUP_SQL_WEEK,
+            "all": _COST_ROLLUP_SQL_ALL,
+        }
+        with self._connect() as conn:
+            row = conn.execute(queries[period]).fetchone()
+        return CostRollup(
+            cloud_spent=row["cloud_spent"],
+            local_saved=row["local_saved"],
+            cloud_ticket_count=row["cloud_ticket_count"],
+            local_ticket_count=row["local_ticket_count"],
         )
 
     def record_run(self, entry: TicketRunLog) -> None:
