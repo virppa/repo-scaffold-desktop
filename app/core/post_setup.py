@@ -1,14 +1,33 @@
 import json
 import re
 import subprocess  # nosec B404 — controlled calls with hardcoded command lists, no shell=True
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 from jinja2 import Environment, Undefined
 
+from app.core.credentials import get_token
+from app.core.user_prefs import UserPreferences
+
 _GITHUB_SOURCE_RE = re.compile(r"^github:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
 _SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_.\-/]+$")
+
+
+def _parse_repo_full_name(clone_url: str) -> str:
+    """Extract owner/repo from a GitHub clone URL.
+
+    Handles both ``https://github.com/owner/repo`` and trailing-slash variants.
+    Returns the value as-is when no GitHub URL pattern is detected — the caller
+    should already have validated the format, so this is a fast path that does not
+    raise for non-GitHub URLs.
+    """
+    prefix = "https://github.com/"
+    if clone_url.startswith(prefix):
+        result = clone_url[len(prefix) :]
+        return result.rstrip("/")
+    return clone_url
 
 
 def fetch_skills(
@@ -126,3 +145,311 @@ def run_precommit_install(output_path: Path) -> None:
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode(errors="replace").strip()
         raise RuntimeError(f"pre-commit install failed: {stderr}")
+
+
+def run_initial_push(
+    output_path: Path, remote_url: str, prefs: UserPreferences
+) -> None:
+    """Stage all files, create initial commit, set remote origin, and push to main.
+
+    Raises ``RuntimeError`` on any subprocess failure with a clear message
+    including stderr.
+    """
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            ["git", "add", "."],
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git add failed: {stderr}")
+
+    commit_args: list[str] = ["git", "commit", "-m", "Initial scaffold"]
+    if prefs.author_name and prefs.author_email:
+        commit_args = [
+            "git",
+            "-c",
+            f"user.name={prefs.author_name}",
+            "-c",
+            f"user.email={prefs.author_email}",
+            "commit",
+            "-m",
+            "Initial scaffold",
+        ]
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            commit_args,
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git commit failed: {stderr}")
+
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            ["git", "remote", "add", "origin", remote_url],
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git remote add origin failed: {stderr}")
+
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            ["git", "branch", "-M", "main"],
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git branch -M main failed: {stderr}")
+
+    try:
+        subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
+            ["git", "push", "-u", "origin", "main"],
+            cwd=output_path,
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"git push failed: {stderr}")
+
+
+def create_github_repo(
+    repo_name: str,
+    prefs: UserPreferences,
+    private: bool = True,
+    description: str = "",
+) -> str:
+    """Create a GitHub repository via the REST API and return its clone URL.
+
+    Requires a GitHub token configured via :func:`app.core.credentials.get_token`.
+    Raises ``RuntimeError`` if no token is configured or the API returns an error.
+    """
+    token = get_token()
+    if token is None:
+        raise RuntimeError(
+            "No GitHub token configured. Run: python -m app.cli config set github-token"
+        )
+
+    body = {
+        "name": repo_name,
+        "private": private,
+        "description": description,
+        "auto_init": False,
+    }
+    payload = json.dumps(body).encode("utf-8")
+
+    api_url = "https://api.github.com/user/repos"
+    req = urllib.request.Request(  # nosec B310
+        api_url,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = json.loads(exc.read()).get("message", str(exc))
+        except Exception:  # noqa: BLE001
+            err_body = str(exc)
+        if exc.code == 422:
+            raise RuntimeError(
+                f"Repository '{repo_name}' already exists — {err_body}"
+            ) from exc
+        raise RuntimeError(f"GitHub API error: {err_body}") from exc
+
+    clone_url: str = result["html_url"]
+    return clone_url
+
+
+# ── Topic maps ─────────────────────────────────────────────────────────────────
+
+_TOPICS_BY_PRESET: dict[str, list[str]] = {
+    "python_basic": ["python"],
+    "python_desktop": ["python", "pyside6", "desktop"],
+    "full_agentic": ["python", "claude", "agentic", "linear"],
+}
+
+
+def configure_github_repo(
+    repo_full_name: str,
+    preset: str,
+    include_ci: bool,
+) -> None:
+    """Apply opinionated settings to a freshly created GitHub repository.
+
+    Makes three API calls:
+
+    1. **PUT /repos/{owner}/{repo}/topics** — sets the repository topic list
+       derived from the chosen preset.
+
+    2. **PATCH /repos/{owner}/{repo}** — disables wiki and projects.
+
+    3. **PUT /repos/{owner}/{repo}/branches/main/protection** (conditional) —
+       enables branch protection when ``include_ci`` is ``True`` (requires one
+       pull-request review and status checks).
+
+    All parameters are validated *before* any authentication or network calls.
+    Topics, wiki, and projects steps raise ``RuntimeError`` on 4xx/5xx.  Branch
+    protection failure is logged but does not break the overall flow — a
+    failed branch-protection step only warns; topics/wiki failures are fatal.
+    """
+    # Validate full_name format BEFORE calling get_token()
+    if "/" not in repo_full_name or repo_full_name.count("/") != 1:
+        raise ValueError(
+            f"Invalid repo_full_name {repo_full_name!r}. "
+            "Expected format: <owner>/<repo>"
+        )
+
+    owner, repo = repo_full_name.split("/")
+    topics = _TOPICS_BY_PRESET.get(preset, ["python"])
+
+    token = get_token()
+    if token is None:
+        raise RuntimeError(
+            "No GitHub token configured. Run: python -m app.cli config set github-token"
+        )
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.mercy-preview+json",
+    }
+
+    # 1. Set topics
+    _put(
+        f"https://api.github.com/repos/{owner}/{repo}/topics",
+        {"names": topics},
+        headers=headers,
+    )
+
+    # 2. Disable wiki and projects
+    _patch(
+        f"https://api.github.com/repos/{owner}/{repo}",
+        {"has_wiki": False, "has_projects": False},
+        headers=headers,
+    )
+
+    # 3. Branch protection (conditional)
+    if include_ci:
+        _set_branch_protection(owner, repo, headers)
+
+
+def _put(url: str, body: dict[str, object], headers: dict[str, str]) -> None:
+    """Send a PUT request. Raises ``RuntimeError`` on HTTP errors."""
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(  # nosec B310
+        url,
+        data=payload,
+        method="PUT",
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            if resp.status >= 400:
+                err_body = ""
+                try:
+                    err_body = json.loads(resp.read()).get("message", str(resp))
+                except Exception:  # noqa: BLE001
+                    err_body = str(resp)
+                raise RuntimeError(f"GitHub API error ({resp.status}): {err_body}")
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = json.loads(exc.read()).get("message", str(exc))
+        except Exception:  # noqa: BLE001
+            err_body = str(exc)
+        raise RuntimeError(f"GitHub API error: {err_body}") from exc
+
+
+def _patch(url: str, body: dict[str, object], headers: dict[str, str]) -> None:
+    """Send a PATCH request. Raises ``RuntimeError`` on HTTP errors."""
+    payload = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(  # nosec B310
+        url,
+        data=payload,
+        method="PATCH",
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            if resp.status >= 400:
+                err_body = ""
+                try:
+                    err_body = json.loads(resp.read()).get("message", str(resp))
+                except Exception:  # noqa: BLE001
+                    err_body = str(resp)
+                raise RuntimeError(f"GitHub API error ({resp.status}): {err_body}")
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = json.loads(exc.read()).get("message", str(exc))
+        except Exception:  # noqa: BLE001
+            err_body = str(exc)
+        raise RuntimeError(f"GitHub API error: {err_body}") from exc
+
+
+def _set_branch_protection(owner: str, repo: str, headers: dict[str, str]) -> None:
+    """Enable branch protection on main.
+
+    Logs a warning on failure rather than raising — a failed branch-protection
+    step should not break the overall flow.
+    """
+    body = {
+        "required_pull_request_reviews": {
+            "dismissal_restrictions": {},
+            "require_code_owner_reviews": True,
+            "required_approving_review_count": 1,
+        },
+        "required_status_checks": {
+            "strict": True,
+            "contexts": [],
+        },
+        "restrictions": None,
+    }
+    payload = json.dumps(body).encode("utf-8")
+    url = f"https://api.github.com/repos/{owner}/{repo}/branches/main/protection"
+    req = urllib.request.Request(  # nosec B310
+        url,
+        data=payload,
+        method="PUT",
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            if resp.status >= 400:
+                err_body = ""
+                try:
+                    err_body = json.loads(resp.read()).get("message", str(resp))
+                except Exception:  # noqa: BLE001
+                    err_body = str(resp)
+                print(
+                    f"Warning: branch protection for main failed: {err_body}",
+                    file=sys.stderr,
+                )
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = json.loads(exc.read()).get("message", str(exc))
+        except Exception:  # noqa: BLE001
+            err_body = str(exc)
+        print(
+            f"Warning: branch protection for main failed: {err_body}",
+            file=sys.stderr,
+        )
