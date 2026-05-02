@@ -21,6 +21,58 @@ Look up the Linear issue with identifier $ARGUMENTS in the {{ linear_project }} 
 
 Then spawn the **repo-investigator** subagent, passing the ticket title and description as the prompt. Use its returned summary as context for the analysis below — do not read any source files yourself.
 
+### Epic charter check (run FIRST when grooming an epic)
+
+If the issue has **no `parentId`** (it is itself an epic / umbrella ticket), enforce these gates before anything else:
+
+1. **Charter line**: the epic description must contain a single sentence describing the **user-visible outcome that ships at epic closure**. Look for a line of the form `**Charter:** <one sentence>` near the top of the description.
+   - If missing: prompt the human — "This epic has no Charter line. Add one now? (one sentence describing what ships when the epic closes)" — and propose a draft based on the epic title + description for the human to refine.
+   - If present but vague (e.g. starts with "improve" / "enhance" / "various"): warn that the charter risks drift, suggest a sharper rewrite, and ask the human to confirm or replace.
+
+2. **Sub-ticket budget**: the epic description must contain `**Sub-ticket budget:** <N>` where N is an integer 3–6 (default 5).
+   - If missing: prompt the human to set one (default 5 unless the human overrides).
+
+3. **Persistence**: once charter + budget are agreed, ensure they appear at the top of the epic description (before the "## Problem" or other sections). Update the description via `save_issue(id: "<EPIC>", description: "...")` if needed.
+
+4. **Refusal**: do NOT mark the epic state=Groomed until both charter and budget are persisted in the description.
+
+5. **Backward compatibility**: existing epics may not have a charter or budget. The skill must NOT block existing epics from grooming — it should prompt the human to add them and proceed once filled in. Never silently set state=Groomed on an epic with a missing charter.
+
+6. **Meta-epic exemption**: if the epic carries a `meta-epic` label, skip the budget check entirely (charter is still required). The label is for long-lived umbrella issues like "Watcher Reliability" that accumulate independent reliability fixes by design.
+
+### Sub-ticket budget check (run when grooming a non-epic ticket with a parent)
+
+If the issue has a `parentId`, fetch the parent epic with `get_issue(<parentId>)`:
+
+1. Read the **Sub-ticket budget** from the parent's description (parse the `**Sub-ticket budget:** <N>` line). If missing, default to 5 and warn the human.
+
+2. Skip this check entirely if the parent epic carries the `meta-epic` label.
+
+3. Count the parent's open sub-tickets via `list_issues(parentId: <parentId>)`, excluding any in state `Done`, `Cancelled`, `Duplicate`, `MergedToEpic`. **Note: count includes the ticket being groomed if it already has the parent set.**
+
+4. If `count >= budget`, surface this prompt to the human and require an explicit choice before proceeding:
+
+   ```
+   Parent epic <PARENT> "<parent title>" has <N> open sub-tickets (budget: <budget>).
+   Charter: "<charter line from parent description>"
+
+   Adding this ticket exceeds the budget. Choose:
+     1. Bump the budget (justify in one sentence — added to epic description)
+     2. Open a Wave 2 epic — create new sibling epic, move this ticket under it
+     3. Move to standalone — clear parentId on this ticket
+     4. The new ticket directly produces the charter outcome (proceed; budget assumed soft)
+
+   Which option?
+   ```
+
+5. After the human chooses:
+   - **(1) Bump**: update the parent epic description's budget line; append a one-sentence justification.
+   - **(2) Wave 2**: create a new epic with a draft charter (the human will edit), set this ticket's parentId to the new epic.
+   - **(3) Standalone**: call `save_issue(id: "<TICKET>", parentId: null)`.
+   - **(4) Proceed**: continue with grooming as planned; no Linear changes for budget.
+
+---
+
 As a Product Owner, evaluate the issue before development begins:
 
 1. **Restate** the requirement in one sentence in plain terms.

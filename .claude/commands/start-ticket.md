@@ -74,6 +74,40 @@ Check whether this ticket has a parent epic (`parentId` from `get_issue` relatio
 - Warn: "This ticket has no parent epic — branch will target main instead of an epic branch."
 - Continue with the normal main-targeting flow (step 3 will branch off main)
 
+### 0.55. Epic-size charter check (run when parent epic exists)
+
+When the ticket has a parent epic, count the parent's sub-tickets via `list_issues(parentId: <epicId>)` and inspect the parent description for a `**Charter:** <sentence>` line and a `**Sub-ticket budget:** <N>` line.
+
+Skip this check entirely if the parent epic carries the `meta-epic` label (these are long-lived umbrella issues like "Watcher Reliability" that accumulate independent reliability fixes by design).
+
+Exclude sub-tickets in `Done`, `Cancelled`, `Duplicate`, or `MergedToEpic` states from the count — only count open work.
+
+If `count >= 6` (or `count >= budget` if budget is set), surface this prompt to the human and wait for confirmation before proceeding with the rest of `/start-ticket`:
+
+```
+Parent epic <PARENT> "<parent title>" already has <N> open sub-tickets.
+Charter: "<charter line from parent description, or '(no charter set)'>"
+
+Does WOR-NNN "<this ticket title>" directly produce that charter outcome?
+
+  yes — proceed (the ticket aligns with charter; budget pressure noted)
+  no  — re-parent before proceeding:
+        1. Move to standalone (clear parentId)
+        2. Open a Wave 2 epic (sibling to current parent) and re-parent
+        3. Find a more-fit existing parent
+
+Which?
+```
+
+If the human picks `yes`, continue with the rest of `/start-ticket` unchanged.
+
+If the human picks a re-parent option:
+- **(1) Standalone**: `save_issue(id: "$ARGUMENTS", parentId: null)` and continue.
+- **(2) Wave 2**: create the new epic with `save_issue(team: ..., title: "Wave 2 — <theme>", labels: ["Refactor", ...])`, then `save_issue(id: "$ARGUMENTS", parentId: "<new-epic-id>")` and continue.
+- **(3) Different parent**: ask which one, then `save_issue(id: "$ARGUMENTS", parentId: "<new-parent>")` and continue.
+
+This check is the runtime enforcement of the budget that `/groom-ticket` set; it ensures the budget pressure surfaces at start time even if a sub-ticket was filed without re-grooming the parent.
+
 ### 0.6. Coordination check
 Query Linear for sibling tickets in the same epic that are currently In Progress:
 ```
