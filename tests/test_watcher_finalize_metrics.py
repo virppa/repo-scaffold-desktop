@@ -124,6 +124,9 @@ def test_finalize_worker_check_failures_empty_on_success(
 
     m = metrics_mock.record.call_args[0][0]
     assert m.check_failures is None
+    # WOR-284 — git-diff fields are zero when worktree has no base branch
+    assert m.lines_changed == 0
+    assert m.files_changed == 0
 
 
 def test_finalize_worker_sonar_count_zero_on_empty_findings(

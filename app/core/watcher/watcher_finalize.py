@@ -26,6 +26,7 @@ from .watcher_helpers import (
 from .watcher_subprocess import (
     create_pr,
     fetch_sonar_findings,
+    parse_git_shortstat,
     run_checks,
 )
 from .watcher_tui import TrackedPR
@@ -185,12 +186,35 @@ def finalize_worker(
             escalation_policy,
             repo_root,
             tracked_prs=tracked_prs,
+            metrics=metrics,
+            project_id=project_id,
         )
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
     input_tokens, output_tokens, context_compactions = _parse_worker_usage(log_path)
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
+
+    # Parse git diff --shortstat to populate lines_changed / files_changed.
+    # Must run before preserve_worker_artifacts tears down the worktree.
+    try:
+        diff_output = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worker.worktree_path),
+                "diff",
+                "--shortstat",
+                worker.manifest.base_branch,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        raw_shortstat = (diff_output.stdout or "") + (diff_output.stderr or "")
+        lines_changed, files_changed = parse_git_shortstat(raw_shortstat)
+    except (OSError, subprocess.TimeoutExpired, OSError):
+        lines_changed, files_changed = 0, 0
 
     # Cloud metrics — populated only when eff == "cloud"
     cloud_model: str | None = None
@@ -249,6 +273,8 @@ def finalize_worker(
             retry_count=worker.retry_count,
             context_compactions=context_compactions,
             check_failures=check_failures,
+            lines_changed=lines_changed,
+            files_changed=files_changed,
             sonar_findings_count=(
                 len(sonar_findings) if sonar_findings is not None else None
             ),
@@ -352,6 +378,8 @@ def _execute_finalization(
     escalation_policy: EscalationPolicy,
     repo_root: Path,
     tracked_prs: list[TrackedPR] | None = None,
+    metrics: MetricsStore | None = None,
+    project_id: str = "",
 ) -> tuple[
     Outcome, bool, bool, list[str] | None, list[dict[str, int | str]], str | None
 ]:
@@ -406,7 +434,13 @@ def _execute_finalization(
                 )
             return "failure", escalated, False, None, [], None
 
-    checks_ok, failed_checks = run_checks(manifest, worker.worktree_path)
+    checks_ok, failed_checks = run_checks(
+        manifest,
+        worker.worktree_path,
+        metrics=metrics,
+        ticket_id=ticket_id,
+        project_id=project_id,
+    )
     if not checks_ok:
         worker.retry_count += 1
     if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
