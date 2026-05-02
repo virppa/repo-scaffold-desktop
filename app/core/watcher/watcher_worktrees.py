@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess  # nosec B404
 from pathlib import Path
+from typing import Literal, NamedTuple
 
 from app.core.manifest import ExecutionManifest
 
@@ -22,6 +23,30 @@ from .watcher_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class WipPreservationResult(NamedTuple):
+    """Outcome of attempting to preserve worker work-in-progress (WOR-288).
+
+    The caller (``finalize_worker``) uses the ``status`` field to decide
+    whether it is safe to remove the worktree:
+
+    * ``"clean"``    — tree was clean, no work to preserve. Safe to cleanup.
+    * ``"pushed"``   — commit + push succeeded; ``sha`` is the short SHA.
+                       Safe to cleanup.
+    * ``"backup"``   — commit or push failed, but the dirty worktree files
+                       were copied to ``backup_path``. Safe to cleanup.
+    * ``"failed"``   — neither pushed nor backed up. **Caller MUST NOT
+                       cleanup** the worktree — work would be lost.
+
+    ``error`` carries the first stderr/exception summary observed, for log
+    surfacing. ``backup_path`` is set only on ``"backup"``.
+    """
+
+    status: Literal["clean", "pushed", "backup", "failed"]
+    sha: str | None
+    backup_path: Path | None
+    error: str | None
 
 
 def create_worktree(repo_root: Path, manifest: ExecutionManifest) -> Path:
@@ -152,16 +177,70 @@ def write_worker_pytest_config(worktree_path: Path) -> None:
     (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
 
 
+def _save_dirty_worktree_to_backup(
+    worktree_path: Path,
+    ticket_id: str,
+    backup_root: Path,
+) -> Path | None:
+    """Copy a dirty worktree's contents to ``<backup_root>/<ticket_lower>/wip/``.
+
+    Used when ``commit_wip_state`` cannot push the WIP commit (network down,
+    branch protection, hook reject). Without this fallback, the unconditional
+    ``cleanup_worktree`` call in ``finalize_worker`` would destroy the work.
+
+    Returns the absolute backup path on success, or None on failure.
+    Skips ``.git/`` and ``__pycache__/`` to keep the backup small.
+    """
+    target = backup_root / ticket_id.lower().replace("-", "_") / "wip"
+    try:
+        if target.exists():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            worktree_path,
+            target,
+            ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
+        )
+    except OSError as exc:
+        logger.error(
+            "Failed to back up dirty worktree for %s to %s: %s",
+            ticket_id,
+            target,
+            exc,
+        )
+        return None
+    logger.warning(
+        "WIP push failed for %s — dirty worktree backed up to %s",
+        ticket_id,
+        target,
+    )
+    return target
+
+
 def commit_wip_state(
     worktree_path: Path,
     ticket_id: str,
     worker_branch: str,
-) -> str | None:
-    """Stage and commit all work-in-progress for post-failure retry.
+    *,
+    backup_root: Path | None = None,
+) -> WipPreservationResult:
+    """Preserve worker work-in-progress (WOR-258, WOR-288).
 
-    Returns the short commit SHA (12 chars) on success, or None if the tree
-    is clean or any git step fails. Never raises — logs warnings instead.
+    Tries to commit and push uncommitted worktree changes so a retry worker
+    can resume. If push fails and ``backup_root`` is provided, falls back to
+    copying the dirty worktree contents to
+    ``<backup_root>/<ticket_lower>/wip/`` so the work is not lost when
+    ``finalize_worker`` removes the worktree.
+
+    Returns a :class:`WipPreservationResult` whose ``status`` tells the
+    caller whether it is safe to call ``cleanup_worktree`` next:
+
+    * ``"clean"`` / ``"pushed"`` / ``"backup"`` → safe to cleanup
+    * ``"failed"`` → caller MUST leave the worktree in place
+
+    Never raises.
     """
+    error: str | None = None
     try:
         # Check if tree is clean
         status = subprocess.run(  # nosec B603 B607
@@ -170,19 +249,25 @@ def commit_wip_state(
             text=True,
             check=False,
         )
-        if status.returncode != 0 or not status.stdout.strip():
-            if status.returncode != 0:
-                logger.warning(
-                    "git status failed in %s for %s — skipping wip commit",
-                    worktree_path,
-                    ticket_id,
-                )
-            else:
-                logger.info(
-                    "No working tree changes for %s — no wip commit needed",
-                    ticket_id,
-                )
-            return None
+        if status.returncode != 0:
+            error = (status.stderr or status.stdout or "").strip()
+            logger.warning(
+                "git status failed in %s for %s — cannot determine WIP state: %s",
+                worktree_path,
+                ticket_id,
+                error,
+            )
+            return WipPreservationResult(
+                status="failed", sha=None, backup_path=None, error=error
+            )
+        if not status.stdout.strip():
+            logger.info(
+                "No working tree changes for %s — no wip commit needed",
+                ticket_id,
+            )
+            return WipPreservationResult(
+                status="clean", sha=None, backup_path=None, error=None
+            )
 
         # Stage all changes
         subprocess.run(  # nosec B603 B607
@@ -209,7 +294,7 @@ def commit_wip_state(
         )
 
         # Push the branch
-        push = subprocess.run(  # nosec B603 B607
+        subprocess.run(  # nosec B603 B607
             [
                 "git",
                 "-C",
@@ -223,13 +308,6 @@ def commit_wip_state(
             capture_output=True,
             text=True,
         )
-        if push.returncode != 0:
-            logger.warning(
-                "git push failed for %s — wip commit not pushed: %s",
-                ticket_id,
-                (push.stderr or push.stdout or "").strip(),
-            )
-            return None
 
         # Get short SHA
         rev = subprocess.run(  # nosec B603 B607
@@ -245,18 +323,32 @@ def commit_wip_state(
             ticket_id,
             worker_branch,
         )
-        return sha
+        return WipPreservationResult(
+            status="pushed", sha=sha, backup_path=None, error=None
+        )
 
     except subprocess.CalledProcessError as exc:
+        error = (exc.stderr or exc.stdout or str(exc)).strip()
         logger.warning(
-            "WIP commit failed for %s: %s",
+            "WIP commit/push failed for %s: %s",
             ticket_id,
-            (exc.stderr or exc.stdout or str(exc)).strip(),
+            error,
         )
-        return None
     except OSError as exc:
+        error = str(exc)
         logger.warning("WIP commit failed for %s (OSError): %s", ticket_id, exc)
-        return None
+
+    # Fall through: commit or push failed. Try the dirty-worktree backup so
+    # the work is not lost when finalize_worker removes the worktree.
+    if backup_root is not None:
+        backup = _save_dirty_worktree_to_backup(worktree_path, ticket_id, backup_root)
+        if backup is not None:
+            return WipPreservationResult(
+                status="backup", sha=None, backup_path=backup, error=error
+            )
+    return WipPreservationResult(
+        status="failed", sha=None, backup_path=None, error=error
+    )
 
 
 def squash_wip_commits(

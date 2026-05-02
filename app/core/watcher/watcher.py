@@ -117,6 +117,7 @@ class Watcher:
         self._tui_mode = tui_mode
         self._display: Any | None = None
         self._tracked_prs: list[TrackedPR] = []
+        self._last_epic_complete_announced: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -605,7 +606,7 @@ class Watcher:
     # Worker lifecycle
     # ------------------------------------------------------------------
 
-    def _reap_pool(self, workers: list[ActiveWorker]) -> list[ActiveWorker]:
+    def _reap_pool(self, workers: list[ActiveWorker]) -> tuple[list[ActiveWorker], str]:
         still_running: list[ActiveWorker] = []
         for worker in workers:
             rc = worker.process.poll()
@@ -638,7 +639,7 @@ class Watcher:
                 elapsed_str,
                 token_str,
             )
-            finalize_worker(
+            outcome = finalize_worker(
                 worker,
                 returncode=rc,
                 wall_time=elapsed,
@@ -656,14 +657,14 @@ class Watcher:
                     epic_id=worker.manifest.epic_id,
                     worker_branch=worker.manifest.worker_branch,
                     elapsed=elapsed,
-                    succeeded=rc == 0,
+                    succeeded=(outcome == "success"),
                 )
             )
-        return still_running
+        return still_running, outcome
 
     def _reap_finished_workers(self) -> None:
-        self._local_active = self._reap_pool(self._local_active)
-        self._cloud_active = self._reap_pool(self._cloud_active)
+        self._local_active, _ = self._reap_pool(self._local_active)
+        self._cloud_active, _ = self._reap_pool(self._cloud_active)
 
     # ------------------------------------------------------------------
     # Epic completion detection
@@ -722,11 +723,20 @@ class Watcher:
             return
 
         if self._processed_tickets:
-            failed = [t for t in self._processed_tickets if not t.succeeded]
-            succeeded = [t for t in self._processed_tickets if t.succeeded]
+            state_key = (
+                "|".join(sorted(t.ticket_id for t in self._processed_tickets))
+                + ":"
+                + str(any(not t.succeeded for t in self._processed_tickets))
+            )
             epic_id = next(
                 (t.epic_id for t in self._processed_tickets if t.epic_id), None
             )
+            if epic_id and self._last_epic_complete_announced.get(epic_id) == state_key:
+                return
+            if epic_id:
+                self._last_epic_complete_announced[epic_id] = state_key
+            failed = [t for t in self._processed_tickets if not t.succeeded]
+            succeeded = [t for t in self._processed_tickets if t.succeeded]
             if failed:
                 logger.warning(
                     "All tickets processed — %d failed, %d succeeded",

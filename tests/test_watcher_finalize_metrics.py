@@ -1,0 +1,560 @@
+"""Metrics-population tests for finalize_worker.
+
+Extracted from test_watcher_finalize.py for the file-size gate (WOR-282).
+Covers WOR-261 (check_failures + sonar_findings_count), WOR-263 (local_model
+for local runs), and the cloud-pricing helpers (_resolve_cloud_model,
+_estimate_cloud_cost).
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.core.escalation_policy import EscalationPolicy
+from app.core.watcher.watcher_finalize import finalize_worker
+from app.core.watcher.watcher_types import ActiveWorker
+from tests.conftest import make_manifest
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_PROJECT = "repo-scaffold-desktop"
+
+
+def _call_finalize(
+    worker: ActiveWorker,
+    *,
+    returncode: int = 0,
+    wall_time: float = 1.0,
+    linear: object | None = None,
+    metrics: object | None = None,
+    repo_root: Path | None = None,
+    mode: str = "default",
+) -> None:
+    finalize_worker(
+        worker,
+        returncode=returncode,
+        wall_time=wall_time,
+        linear=linear or MagicMock(),
+        metrics=metrics or MagicMock(),
+        escalation_policy=EscalationPolicy.from_toml(),
+        repo_root=repo_root or Path("."),
+        mode=mode,
+        project_id=_DEFAULT_PROJECT,
+    )
+
+
+# ---------------------------------------------------------------------------
+# WOR-261 — check_failures_json and sonar_findings_count wired to metrics
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_check_failures_populated_on_check_failure(
+    tmp_path: Path,
+) -> None:
+    """A failing check produces check_failures with the correct check name."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        required_checks=["ruff check .", "mypy app/", "pytest"],
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize.run_checks",
+            return_value=(
+                False,
+                [{"check": "mypy app/", "exit_code": 1}],
+            ),
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.check_failures is not None
+    assert len(m.check_failures) == 1
+    assert m.check_failures[0]["check"] == "mypy app/"
+    assert m.check_failures[0]["exit_code"] == 1
+
+
+def test_finalize_worker_check_failures_empty_on_success(
+    tmp_path: Path,
+) -> None:
+    """All checks pass → check_failures is None (serialises to '[]')."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.check_failures is None
+
+
+def test_finalize_worker_sonar_count_zero_on_empty_findings(
+    tmp_path: Path,
+) -> None:
+    """Success-path finalization with fetch_sonar_findings returning []
+    produces sonar_findings_count=0 (not null)."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch(
+            "app.core.watcher.watcher_finalize.fetch_sonar_findings",
+            return_value=[],
+        ),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.sonar_findings_count == 0
+
+
+def test_finalize_worker_failed_check_in_run_log_on_failure(
+    tmp_path: Path,
+) -> None:
+    """TicketRunLog.failed_check is set to the first failed check name."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        required_checks=["ruff check .", "mypy app/"],
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize.run_checks",
+            return_value=(
+                False,
+                [
+                    {"check": "ruff check .", "exit_code": 1},
+                    {"check": "mypy app/", "exit_code": 2},
+                ],
+            ),
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    run_call = metrics_mock.record_run.call_args[0][0]
+    assert run_call.failed_check == "ruff check ."
+
+
+# ---------------------------------------------------------------------------
+# WOR-260 — cloud_model, cloud_tokens, cloud_cost_estimate for cloud runs
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_cloud_metrics_populated_for_cloud_run(
+    tmp_path: Path,
+) -> None:
+    """Cloud finalization records cloud_model, cloud_tokens, cloud_cost_estimate."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+    )
+    metrics_mock = MagicMock()
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-10.log"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 20000, "output_tokens": 500},
+                "context_compactions": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, mode="cloud", metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.cloud_used is True
+    assert m.local_used is False
+    assert m.cloud_model == "claude-opus-4-7"  # default
+    assert m.cloud_tokens == 20500  # 20000 + 500
+    # claude-opus-4-7: input $15/1M, output $75/1M
+    expected_cost = (20000 / 1_000_000) * 15.0 + (500 / 1_000_000) * 75.0
+    assert m.cloud_cost_estimate == pytest.approx(expected_cost)
+    # Local-specific fields must be None for cloud runs
+    assert m.local_input_tokens is None
+    assert m.local_output_tokens is None
+    assert m.local_tokens is None
+    assert m.local_model is None
+    assert m.local_output_tokens_per_second is None
+
+
+def test_finalize_worker_cloud_model_from_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ANTHROPIC_MODEL env-var overrides the default cloud model."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+    )
+    metrics_mock = MagicMock()
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-10.log"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 1000, "output_tokens": 100},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, mode="cloud", metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.cloud_model == "claude-sonnet-4-6"
+    # claude-sonnet-4-6: input $3/1M, output $15/1M
+    expected_cost = (1000 / 1_000_000) * 3.0 + (100 / 1_000_000) * 15.0
+    assert m.cloud_cost_estimate == pytest.approx(expected_cost)
+
+
+def test_finalize_worker_cloud_no_token_log(
+    tmp_path: Path,
+) -> None:
+    """Without a log file, cloud tokens/cost are None for cloud runs."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+    )
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, mode="cloud", metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.cloud_model is None
+    assert m.cloud_tokens is None
+    assert m.cloud_cost_estimate is None
+    assert m.cloud_used is True
+    assert m.local_used is False
+
+
+def test_finalize_worker_local_run_keeps_local_fields(
+    tmp_path: Path,
+) -> None:
+    """Local runs still populate local_* fields; cloud_* stay None."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+    )
+    metrics_mock = MagicMock()
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-10.log"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 15000, "output_tokens": 600},
+                "context_compactions": 2,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, wall_time=10.0, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.local_used is True
+    assert m.cloud_used is False
+    assert m.local_input_tokens == 15000
+    assert m.local_output_tokens == 600
+    assert m.local_tokens == 15600
+    assert m.local_output_tokens_per_second == pytest.approx(60.0)
+    # Cloud fields must be None for local runs
+    assert m.cloud_model is None
+    assert m.cloud_tokens is None
+    assert m.cloud_cost_estimate is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-263 — local_model always populated for local runs
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_local_model_non_null_for_local_run(
+    tmp_path: Path,
+) -> None:
+    """local_model is non-null for local runs and matches _LOCAL_MODEL constant."""
+    manifest = make_manifest(
+        ticket_id="WOR-263",
+        worker_branch="wor-263-test-ticket",
+    )
+    metrics_mock = MagicMock()
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-263.log"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 15000, "output_tokens": 600},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-263",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, wall_time=10.0, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    from app.core.watcher.watcher_types import _LOCAL_MODEL
+
+    assert m.local_model == _LOCAL_MODEL
+    assert m.local_model is not None
+    assert m.local_used is True
+
+
+def test_finalize_worker_local_model_is_none_for_cloud_run(
+    tmp_path: Path,
+) -> None:
+    """local_model is None for cloud runs."""
+    manifest = make_manifest(
+        ticket_id="WOR-263",
+        worker_branch="wor-263-test-ticket",
+    )
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-263",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, mode="cloud", metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.local_model is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-260 — _resolve_cloud_model and _estimate_cloud_cost unit tests
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_cloud_model_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without ANTHROPIC_MODEL env-var, returns the default model."""
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    from app.core.watcher.watcher_finalize import _resolve_cloud_model
+
+    assert _resolve_cloud_model() == "claude-opus-4-7"
+
+
+def test_resolve_cloud_model_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ANTHROPIC_MODEL is set, that value is returned."""
+    monkeypatch.setenv("ANTHROPIC_MODEL", "claude-haiku-4-5")
+    from app.core.watcher.watcher_finalize import _resolve_cloud_model
+
+    assert _resolve_cloud_model() == "claude-haiku-4-5"
+
+
+def test_estimate_cloud_cost_opus() -> None:
+    """claude-opus-4-7: input $15/1M, output $75/1M."""
+    from app.core.watcher.watcher_finalize import _estimate_cloud_cost
+
+    cost = _estimate_cloud_cost(100000, 100000, "claude-opus-4-7")
+    expected = (100000 / 1_000_000) * 15.0 + (100000 / 1_000_000) * 75.0
+    assert cost == pytest.approx(expected)
+
+
+def test_estimate_cloud_cost_sonnet() -> None:
+    """claude-sonnet-4-6: input $3/1M, output $15/1M."""
+    from app.core.watcher.watcher_finalize import _estimate_cloud_cost
+
+    cost = _estimate_cloud_cost(200000, 50000, "claude-sonnet-4-6")
+    expected = (200000 / 1_000_000) * 3.0 + (50000 / 1_000_000) * 15.0
+    assert cost == pytest.approx(expected)
+
+
+def test_estimate_cloud_cost_haiku() -> None:
+    """claude-haiku-4-5: input $0.80/1M, output $4/1M."""
+    from app.core.watcher.watcher_finalize import _estimate_cloud_cost
+
+    cost = _estimate_cloud_cost(500000, 100000, "claude-haiku-4-5")
+    expected = (500000 / 1_000_000) * 0.80 + (100000 / 1_000_000) * 4.0
+    assert cost == pytest.approx(expected)
+
+
+def test_estimate_cloud_cost_unknown_model_returns_zero() -> None:
+    """Unknown model returns 0.0."""
+    from app.core.watcher.watcher_finalize import _estimate_cloud_cost
+
+    assert _estimate_cloud_cost(1000, 1000, "unknown-model") == 0.0
+
+
+def test_estimate_cloud_cost_none_tokens_returns_zero() -> None:
+    """None input or output tokens returns 0.0."""
+    from app.core.watcher.watcher_finalize import _estimate_cloud_cost
+
+    assert _estimate_cloud_cost(None, 1000, "claude-opus-4-7") == 0.0
+    assert _estimate_cloud_cost(1000, None, "claude-opus-4-7") == 0.0
