@@ -7,6 +7,7 @@ This module may import from watcher_types only (no other watcher siblings).
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import IO
@@ -19,6 +20,8 @@ from .watcher_types import (
     _LOCAL_MODEL,
     ActiveWorker,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Worker log parsing
@@ -56,6 +59,36 @@ def _parse_worker_usage(
     except Exception:
         return None, None, None
     return None, None, None
+
+
+def format_token_count(total: int) -> str:
+    """Format a token count for display: ``142k`` for >= 1000, raw integer below."""
+    if total < 1000:
+        return str(total)
+    k = total / 1000
+    if k == int(k):
+        return f"{int(k)}k"
+    return f"{k:.0f}k"
+
+
+def format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as ``5m12s`` (integer seconds)."""
+    mins = int(seconds) // 60
+    secs = int(seconds) % 60
+    return f"{mins}m{secs:02d}s"
+
+
+def format_worker_token_count(log_path: Path) -> str:
+    """Return ``142k tokens`` for the worker log, ``? tokens`` if unknown.
+
+    ``_parse_worker_usage`` already swallows its own errors and returns
+    ``(None, None, None)`` when the log is missing or malformed, so callers
+    do not need to wrap this in try/except.
+    """
+    input_tok, output_tok, _ = _parse_worker_usage(log_path)
+    if input_tok is None or output_tok is None:
+        return "? tokens"
+    return f"{format_token_count(input_tok + output_tok)} tokens"
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +266,42 @@ def _tee_worker_output(
             dest.flush()
     finally:
         log_file.close()
+
+
+# ---------------------------------------------------------------------------
+# Deferral-log suppression
+# ---------------------------------------------------------------------------
+
+
+def suppress_dedup(
+    ticket_id: str,
+    reason: str,
+    reason_msg: str,
+    dedup_state: dict[str, str],
+) -> str | None:
+    """Suppress repeated deferral log messages for the same (ticket, reason).
+
+    *reason* is a stable key (e.g. ``"overlap:WOR-11"`` or ``"local_pool_full"``)
+    so the same reason across poll cycles is detected.
+
+    When *reason* changes for a ticket, emits an
+    ``<ticket> dispatch unblocked, retrying`` info-line first.
+
+    Returns the message string to log, or ``None`` to suppress.
+    """
+    last = dedup_state.get(ticket_id)
+
+    if last is not None and last == reason:
+        # Same reason as last poll — suppress.
+        return None
+
+    # Reason changed (or first time seen) — emit unblock for the old
+    # reason if there was one, then record the new reason.
+    if last is not None:
+        logger.info("%s dispatch unblocked, retrying", ticket_id)
+
+    dedup_state[ticket_id] = reason
+    return reason_msg
 
 
 # ---------------------------------------------------------------------------
