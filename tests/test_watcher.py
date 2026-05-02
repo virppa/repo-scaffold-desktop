@@ -444,6 +444,105 @@ def test_check_epic_completion_empty_startup_keeps_polling(tmp_path: Path) -> No
 
 
 # ---------------------------------------------------------------------------
+# _check_epic_completion — memoization: duplicate suppression
+# ---------------------------------------------------------------------------
+
+
+def test_epic_completion_memoization_suppresses_duplicate(
+    tmp_path: Path,
+) -> None:
+    """Two consecutive _check_epic_completion calls with identical state must
+    post the Linear comment exactly once, not twice."""
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    w = Watcher(
+        linear_client=linear_mock,
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+    w._processed_tickets = [
+        _ProcessedTicket(
+            ticket_id="WOR-10",
+            epic_id="WOR-96",
+            worker_branch="wor-10-test-ticket",
+            elapsed=120.0,
+        )
+    ]
+
+    with patch.object(w, "_has_waiting_deps", return_value=False):
+        w._check_epic_completion()
+        w._check_epic_completion()
+
+    linear_mock.post_comment.assert_called_once()
+
+
+def test_epic_completion_re_emit_on_state_change(
+    tmp_path: Path,
+) -> None:
+    """When the processed-ticket state changes between calls (e.g. a new ticket
+    is added), a fresh comment IS posted."""
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    w = Watcher(
+        linear_client=linear_mock,
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+    w._processed_tickets = [
+        _ProcessedTicket(
+            ticket_id="WOR-10",
+            epic_id="WOR-96",
+            worker_branch="wor-10-test-ticket",
+            elapsed=120.0,
+        )
+    ]
+
+    with patch.object(w, "_has_waiting_deps", return_value=False):
+        w._check_epic_completion()
+        # State changed — add a second ticket
+        w._processed_tickets.append(
+            _ProcessedTicket(
+                ticket_id="WOR-11",
+                epic_id="WOR-96",
+                worker_branch="wor-11-test-ticket",
+                elapsed=60.0,
+            )
+        )
+        w._check_epic_completion()
+
+    assert linear_mock.post_comment.call_count == 2
+
+
+def test_epic_completion_failed_ticket_blocks_comment(
+    tmp_path: Path,
+) -> None:
+    """A _ProcessedTicket with succeeded=False must still block the comment
+    and NOT trigger re-posts through memoization."""
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    w = Watcher(
+        linear_client=linear_mock,
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+    w._processed_tickets = [
+        _ProcessedTicket(
+            ticket_id="WOR-10",
+            epic_id="WOR-96",
+            worker_branch="wor-10-test-ticket",
+            elapsed=120.0,
+            succeeded=False,
+        )
+    ]
+
+    with patch.object(w, "_has_waiting_deps", return_value=False):
+        w._check_epic_completion()
+        w._check_epic_completion()
+
+    linear_mock.post_comment.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _handle_signal — SIGTERM triggers LiteLLM proxy cleanup and sets _running=False
 # ---------------------------------------------------------------------------
 
