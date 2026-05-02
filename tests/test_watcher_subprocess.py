@@ -386,14 +386,16 @@ def test_launch_worker_quiet_mode_returns_popen(tmp_path: Path) -> None:
             return_value=mock_process,
         ) as mock_popen,
     ):
-        result = launch_worker(tmp_path, manifest, tmp_path, "local", verbose=False)
+        result = launch_worker(
+            tmp_path, manifest, tmp_path, "local", worker_verbose=False
+        )
 
     assert result is mock_process
     mock_popen.assert_called_once()
     assert mock_popen.call_args.kwargs.get("stdout") != subprocess.PIPE
 
 
-def test_launch_worker_verbose_mode_starts_tee_thread(tmp_path: Path) -> None:
+def test_launch_worker_worker_verbose_mode_starts_tee_thread(tmp_path: Path) -> None:
     manifest = _make_manifest()
     mock_process = MagicMock()
     mock_process.stdout = io.BytesIO(b"worker output\n")
@@ -411,7 +413,9 @@ def test_launch_worker_verbose_mode_starts_tee_thread(tmp_path: Path) -> None:
         ) as mock_popen,
         patch("app.core.watcher.watcher_subprocess.threading.Thread") as mock_thread,
     ):
-        result = launch_worker(tmp_path, manifest, tmp_path, "local", verbose=True)
+        result = launch_worker(
+            tmp_path, manifest, tmp_path, "local", worker_verbose=True
+        )
 
     assert result is mock_process
     assert mock_popen.call_args.kwargs.get("stdout") == subprocess.PIPE
@@ -455,7 +459,7 @@ def test_launch_worker_cloud_mode_with_snippets_prepends_critical_warning(
             return_value=mock_process,
         ),
     ):
-        launch_worker(tmp_path, manifest, tmp_path, "cloud", verbose=False)
+        launch_worker(tmp_path, manifest, tmp_path, "cloud", worker_verbose=False)
 
     assert len(captured_prompts) == 1
     assert isinstance(captured_prompts[0], str)
@@ -495,7 +499,7 @@ def test_launch_worker_passes_linear_mcp_config_to_build_worker_cmd(
             return_value=mock_process,
         ),
     ):
-        launch_worker(tmp_path, manifest, tmp_path, "cloud", verbose=False)
+        launch_worker(tmp_path, manifest, tmp_path, "cloud", worker_verbose=False)
 
     assert isinstance(captured_args["mcp_config_json"], str)
     assert "linear-server" in captured_args["mcp_config_json"]

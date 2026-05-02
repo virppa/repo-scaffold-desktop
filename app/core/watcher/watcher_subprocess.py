@@ -75,7 +75,7 @@ def launch_worker(
     manifest: ExecutionManifest,
     worktree_path: Path,
     effective_mode: str,
-    verbose: bool = False,
+    worker_verbose: bool = False,
 ) -> subprocess.Popen[bytes]:
     """Launch a worker subprocess and return the Popen handle."""
     prompt = expand_skill(repo_root, manifest.ticket_id)
@@ -112,7 +112,7 @@ def launch_worker(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(log_path, "wb")  # noqa: SIM115
 
-    if verbose:
+    if worker_verbose:
         prefix = f"[{manifest.ticket_id}] ".encode()
         process = subprocess.Popen(  # nosec B603 B607
             cmd,

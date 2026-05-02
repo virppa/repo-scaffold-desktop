@@ -33,7 +33,7 @@ def start_ticket(
     linear: LinearClientProtocol,
     project_id: str,
     services: ServiceManager,
-    verbose: bool,
+    worker_verbose: bool,
     retry_counters: dict[str, int],
     _local_active: list[ActiveWorker],
     _cloud_active: list[ActiveWorker],
@@ -88,7 +88,7 @@ def start_ticket(
 
     backed_up_plans = backup_plan_files()
     process = launch_worker(
-        _repo_root, manifest, worktree_path, effective_mode, verbose
+        _repo_root, manifest, worktree_path, effective_mode, worker_verbose
     )
     worker = ActiveWorker(
         ticket_id=ticket_id,

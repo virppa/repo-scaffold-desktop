@@ -172,6 +172,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
+            "Set DEBUG level on the watcher's own logger. "
+            "Does not affect worker stdout streaming."
+        ),
+    )
+    watcher.add_argument(
+        "--worker-verbose",
+        action="store_true",
+        default=False,
+        help=(
             "Stream worker stdout+stderr live to the daemon's stderr, "
             "prefixed with [WOR-NN]. Output is still written to the log file."
         ),
@@ -212,7 +221,7 @@ def _run_watcher(args: argparse.Namespace) -> int:
         worker_mode=mode,
         max_local_workers=max_local,
         max_cloud_workers=max_cloud,
-        verbose=args.verbose,
+        worker_verbose=args.worker_verbose,
         no_epic_shutdown=args.no_epic_shutdown,
     )
     try:
