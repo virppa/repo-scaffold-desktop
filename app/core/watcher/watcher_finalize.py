@@ -216,6 +216,14 @@ def finalize_worker(
             sonar_findings_count=(
                 len(sonar_findings) if sonar_findings is not None else None
             ),
+            # WOR-262: copy taxonomy fields from manifest into metrics
+            change_type=worker.manifest.change_type,
+            reasoning_demand=worker.manifest.reasoning_demand,
+            scope_clarity=worker.manifest.scope_clarity,
+            constraint_density=worker.manifest.constraint_density,
+            ac_specificity=worker.manifest.ac_specificity,
+            tech_stack=worker.manifest.tech_stack,
+            raw_extensions=worker.manifest.raw_extensions,
         )
     )
     metrics.record_run(
