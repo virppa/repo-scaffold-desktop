@@ -121,13 +121,12 @@ class WatcherDisplay:
             self._live = Live(
                 layout,
                 console=self._console,
-                refresh_per_second=2,
                 screen=True,
+                auto_refresh=False,
             )
-            self._live.start()
+            self._live.start(refresh=True)
             return
-        self._live.update(layout)
-        self._live.refresh()
+        self._live.update(layout, refresh=True)
 
     def _build_layout(self, state: TUIState) -> Layout:
         layout = Layout(name="root")
