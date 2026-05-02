@@ -115,6 +115,14 @@ If no siblings are In Progress, skip this block silently.
 - Note edge cases and overwrite behavior to consider
 - Assess local-model suitability: is the scope bounded (≤3 small/medium files, straightforward wiring)? Or does it touch large/complex modules (e.g. watcher.py, generator.py) requiring multi-step reasoning across many dependencies? Record your conclusion — it determines `implementation_mode` in the manifest.
 - Classify the ticket's effort level using this rule: simple/additive work touching ≤2 files → 'high'; bounded multi-file work → 'xhigh'; complex/large modules or deep cross-file reasoning → 'max'. Record your classification in the manifest.
+- **Taxonomy classification** (WOR-262) — record these 7 dimensions in the manifest. All optional but populate when you can:
+  - `change_type` — one of `additive` (new feature/file), `modification` (existing behavior changes), `refactor` (no behavior change), `removal` (deletion/cleanup), `docs` (markdown / comments only)
+  - `reasoning_demand` 1-5 — how much cross-file reasoning is needed (1 = local change in one function, 5 = touches many modules with non-obvious invariants)
+  - `scope_clarity` 1-5 — how explicit the AC is (1 = vague "improve X", 5 = exact file/line targets and expected behaviour)
+  - `constraint_density` 1-5 — number of hard rules in `implementation_constraints` (1 = none, 5 = many strict gates)
+  - `ac_specificity` 1-5 — how testable the AC is (1 = subjective only, 5 = each bullet maps to an assertion)
+  - `tech_stack` — comma-separated tags of the technologies involved, e.g. `python,sqlite,pydantic` or `markdown,yaml`
+  - `raw_extensions` — JSON array string of file extensions touched, e.g. `[".py",".md"]`
 
 ### 3. Create the branch and update Linear
 Using the branch name from Linear's "Copy branch name" format (usually `WOR-NNN-short-description`):
@@ -213,6 +221,13 @@ Construct the manifest from the planning context gathered in steps 1–4:
   "risk_flags": ["<any specific risk notes>"],
   "implementation_mode": "<local if ticket has local-ready label, otherwise cloud>",
   "effort": "<high|xhigh|max — effort classification from architect phase>",
+  "change_type": "<additive|modification|refactor|removal|docs — taxonomy>",
+  "reasoning_demand": <1-5: cross-file reasoning depth>,
+  "scope_clarity": <1-5: how explicit the AC is>,
+  "constraint_density": <1-5: number of hard rules>,
+  "ac_specificity": <1-5: how testable the AC is>,
+  "tech_stack": "<comma-separated tags, e.g. 'python,sqlite,pydantic'>",
+  "raw_extensions": "<JSON array string of extensions, e.g. '[\".py\",\".md\"]'>",
   "review_mode": "auto",
   "base_branch": "<epic-branch or main>",
   "worker_branch": "<sub-ticket-branch>",

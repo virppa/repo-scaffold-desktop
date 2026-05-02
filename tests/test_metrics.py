@@ -114,6 +114,45 @@ class TestCheckFailures:
         assert result.check_failures == []
 
 
+class TestTaxonomyColumns:
+    """WOR-262: 7 ticket taxonomy columns (change_type, reasoning_demand, etc.)."""
+
+    def test_taxonomy_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        m = _ticket(
+            change_type="additive",
+            reasoning_demand=4,
+            scope_clarity=5,
+            constraint_density=2,
+            ac_specificity=4,
+            tech_stack="python,sqlite,pydantic",
+            raw_extensions='[".py",".md"]',
+        )
+        store.record(m)
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.change_type == "additive"
+        assert result.reasoning_demand == 4
+        assert result.scope_clarity == 5
+        assert result.constraint_density == 2
+        assert result.ac_specificity == 4
+        assert result.tech_stack == "python,sqlite,pydantic"
+        assert result.raw_extensions == '[".py",".md"]'
+
+    def test_taxonomy_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.change_type is None
+        assert result.reasoning_demand is None
+        assert result.scope_clarity is None
+        assert result.constraint_density is None
+        assert result.ac_specificity is None
+        assert result.tech_stack is None
+        assert result.raw_extensions is None
+
+
 class TestAdditionalMetrics:
     def test_retry_and_diff_metrics_round_trip(self, tmp_path):
         store = _store(tmp_path)

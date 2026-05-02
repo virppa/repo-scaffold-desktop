@@ -290,6 +290,85 @@ def test_finalize_worker_usage_none_when_no_log(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# WOR-262: taxonomy fields propagate from manifest to ticket_metrics
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_copies_taxonomy_fields_to_metrics(tmp_path: Path) -> None:
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        change_type="additive",
+        reasoning_demand=4,
+        scope_clarity=5,
+        constraint_density=2,
+        ac_specificity=4,
+        tech_stack="python,sqlite,pydantic",
+        raw_extensions='[".py",".md"]',
+    )
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.change_type == "additive"
+    assert m.reasoning_demand == 4
+    assert m.scope_clarity == 5
+    assert m.constraint_density == 2
+    assert m.ac_specificity == 4
+    assert m.tech_stack == "python,sqlite,pydantic"
+    assert m.raw_extensions == '[".py",".md"]'
+
+
+def test_finalize_worker_taxonomy_none_when_manifest_lacks_them(tmp_path: Path) -> None:
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.change_type is None
+    assert m.reasoning_demand is None
+    assert m.scope_clarity is None
+    assert m.constraint_density is None
+    assert m.ac_specificity is None
+    assert m.tech_stack is None
+    assert m.raw_extensions is None
+
+
+# ---------------------------------------------------------------------------
 # sonar_findings_count wired to metrics
 # ---------------------------------------------------------------------------
 
