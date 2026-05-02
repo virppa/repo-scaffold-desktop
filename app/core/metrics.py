@@ -265,10 +265,10 @@ SELECT
 FROM ticket_metrics
 """
 _COST_ROLLUP_SQL_TODAY = (
-    _COST_ROLLUP_SQL_BASE + "WHERE started_at >= date('now', 'start of day')"
+    _COST_ROLLUP_SQL_BASE + "WHERE recorded_at >= date('now', 'start of day')"
 )
 _COST_ROLLUP_SQL_WEEK = (
-    _COST_ROLLUP_SQL_BASE + "WHERE started_at >= date('now', '-7 days')"
+    _COST_ROLLUP_SQL_BASE + "WHERE recorded_at >= date('now', '-7 days')"
 )
 _COST_ROLLUP_SQL_ALL = _COST_ROLLUP_SQL_BASE
 
@@ -450,8 +450,8 @@ class MetricsStore:
     def get_cost_rollup(self, period: Literal["today", "week", "all"]) -> CostRollup:
         """Return aggregated cost economics for *period*.
 
-        *today*   = rows where ``started_at >= date('now', 'start of day')``
-        *week*    = rows where ``started_at >= date('now', '-7 days')``
+        *today*   = rows where ``recorded_at >= date('now', 'start of day')``
+        *week*    = rows where ``recorded_at >= date('now', '-7 days')``
         *all*     = no filter
 
         cloud_spent  = SUM(cloud_cost_estimate) where cloud_used=1
