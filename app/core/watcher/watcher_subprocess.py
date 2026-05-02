@@ -26,6 +26,7 @@ from .watcher_helpers import (
     _tee_worker_output,
     build_worker_cmd,
     build_worker_env,
+    worker_log_path,
 )
 from .watcher_types import _CLAUDE_DIR
 
@@ -117,7 +118,7 @@ def launch_worker(
     )
     env = build_worker_env(effective_mode, dict(os.environ))
 
-    log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"
+    log_path = worker_log_path(worktree_path, manifest.ticket_id)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = open(log_path, "wb")  # noqa: SIM115
 

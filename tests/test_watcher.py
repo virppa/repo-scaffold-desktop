@@ -20,6 +20,7 @@ import pytest
 from app.core.linear_client import LinearError
 from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher.watcher import Watcher, _ProcessedTicket
+from app.core.watcher.watcher_tui import TrackedPR
 from app.core.watcher.watcher_types import ActiveWorker
 
 # ---------------------------------------------------------------------------
@@ -364,6 +365,7 @@ def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
 def test_check_epic_completion_posts_comment_and_exits(tmp_path: Path) -> None:
     linear_mock = MagicMock()
     linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.return_value = []
     w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
     w._processed_tickets = [
         _ProcessedTicket(
@@ -396,6 +398,7 @@ def test_check_epic_completion_no_epic_shutdown_keeps_running(
     _running to False. The epic-complete comment must still be posted."""
     linear_mock = MagicMock()
     linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.return_value = []
     w = Watcher(
         linear_client=linear_mock,
         repo_root=tmp_path,
@@ -427,6 +430,7 @@ def test_check_epic_completion_no_tickets_processed_no_comment_exits(
 ) -> None:
     linear_mock = MagicMock()
     linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.return_value = []
     w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
 
     with patch.object(w, "_has_waiting_deps", return_value=False):
@@ -439,6 +443,7 @@ def test_check_epic_completion_no_tickets_processed_no_comment_exits(
 def test_check_epic_completion_empty_startup_keeps_polling(tmp_path: Path) -> None:
     linear_mock = MagicMock()
     linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.return_value = []
     w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
 
     assert not w._processed_tickets
@@ -461,6 +466,7 @@ def test_epic_completion_memoization_suppresses_duplicate(
     post the Linear comment exactly once, not twice."""
     linear_mock = MagicMock()
     linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.return_value = []
     w = Watcher(
         linear_client=linear_mock,
         repo_root=tmp_path,
@@ -489,6 +495,7 @@ def test_epic_completion_re_emit_on_state_change(
     is added), a fresh comment IS posted."""
     linear_mock = MagicMock()
     linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.return_value = []
     w = Watcher(
         linear_client=linear_mock,
         repo_root=tmp_path,
@@ -526,6 +533,7 @@ def test_epic_completion_failed_ticket_blocks_comment(
     and NOT trigger re-posts through memoization."""
     linear_mock = MagicMock()
     linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.return_value = []
     w = Watcher(
         linear_client=linear_mock,
         repo_root=tmp_path,
@@ -796,6 +804,7 @@ def test_epic_completion_partial_failure_skips_comment(
     The watcher must not set _running=False."""
     linear_mock = MagicMock()
     linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.return_value = []
     w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
     w._processed_tickets = [
         _ProcessedTicket(
@@ -993,3 +1002,120 @@ def test_dispatch_proceeds_when_all_manifest_blockers_are_merged(
 
     assert len(w._local_active) == 1
     assert w._local_active[0].ticket_id == "WOR-10"
+
+
+# ---------------------------------------------------------------------------
+# WOR-305 Bug B — _lookup_pr_url consults tracked_prs cache before shelling out
+# ---------------------------------------------------------------------------
+
+
+def test_lookup_pr_url_uses_tracked_prs_cache_first(tmp_path: Path) -> None:
+    """When finalize has populated tracked_prs with a matching ticket_id+url,
+    _lookup_pr_url returns the cached URL without invoking subprocess."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    w._tracked_prs.append(
+        TrackedPR(
+            number=607,
+            base="epic/wor-302",
+            ticket_id="WOR-244",
+            url="https://github.com/owner/repo/pull/607",
+        )
+    )
+
+    with patch("app.core.watcher.watcher.subprocess.run") as mock_run:
+        result = w._lookup_pr_url("WOR-244", "wor-244-some-branch")
+
+    assert result == "https://github.com/owner/repo/pull/607"
+    mock_run.assert_not_called()
+
+
+def test_lookup_pr_url_falls_back_to_gh_when_not_in_cache(tmp_path: Path) -> None:
+    """For tickets not in tracked_prs (e.g. ran in a previous daemon session),
+    _lookup_pr_url shells out to `gh pr list` as before."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    fake_result = MagicMock()
+    fake_result.stdout = "https://github.com/owner/repo/pull/999\n"
+
+    with patch("app.core.watcher.watcher.subprocess.run", return_value=fake_result):
+        result = w._lookup_pr_url("WOR-999", "wor-999-other-branch")
+
+    assert result == "https://github.com/owner/repo/pull/999"
+
+
+def test_lookup_pr_url_cache_match_requires_both_ticket_id_and_url(
+    tmp_path: Path,
+) -> None:
+    """A TrackedPR with matching ticket_id but empty url must NOT short-circuit
+    the gh fallback — empty url means the cache entry is incomplete."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    w._tracked_prs.append(TrackedPR(number=1, base="main", ticket_id="WOR-244", url=""))
+
+    fake_result = MagicMock()
+    fake_result.stdout = "https://github.com/owner/repo/pull/1\n"
+    with patch("app.core.watcher.watcher.subprocess.run", return_value=fake_result):
+        result = w._lookup_pr_url("WOR-244", "wor-244-branch")
+
+    assert result == "https://github.com/owner/repo/pull/1"
+
+
+# ---------------------------------------------------------------------------
+# WOR-305 Bug C — _check_epic_completion gates on Linear children
+# ---------------------------------------------------------------------------
+
+
+def test_check_epic_completion_skips_when_linear_children_open(
+    tmp_path: Path,
+) -> None:
+    """If Linear reports the epic still has Todo/InProgress children, the
+    epic-complete announcement and Linear comment must NOT fire even when
+    the local manifest queue is empty (the WOR-302 misleading-comment bug)."""
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.return_value = ["WOR-245", "WOR-246", "WOR-282"]
+    w = Watcher(
+        linear_client=linear_mock,
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+    w._processed_tickets = [
+        _ProcessedTicket(
+            ticket_id="WOR-244",
+            epic_id="WOR-302",
+            worker_branch="wor-244-test-bench-store",
+            elapsed=424.0,
+        )
+    ]
+
+    with patch.object(w, "_has_waiting_deps", return_value=False):
+        w._check_epic_completion()
+
+    linear_mock.post_comment.assert_not_called()
+    linear_mock.get_open_children.assert_called_once_with("WOR-302")
+
+
+def test_check_epic_completion_get_open_children_failure_returns_silently(
+    tmp_path: Path,
+) -> None:
+    """A Linear API failure on get_open_children must not crash the daemon
+    or post a misleading 'epic complete' comment — return early instead."""
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    linear_mock.get_open_children.side_effect = RuntimeError("Linear API down")
+    w = Watcher(
+        linear_client=linear_mock,
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+    w._processed_tickets = [
+        _ProcessedTicket(
+            ticket_id="WOR-10",
+            epic_id="WOR-96",
+            worker_branch="wor-10-branch",
+            elapsed=120.0,
+        )
+    ]
+
+    with patch.object(w, "_has_waiting_deps", return_value=False):
+        w._check_epic_completion()
+
+    linear_mock.post_comment.assert_not_called()

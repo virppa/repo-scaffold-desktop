@@ -2,7 +2,8 @@
 
 All functions take repo_root as an explicit parameter — no persistent state
 is needed, so a class boundary would add no value here.
-This module may import from watcher_types only (no other watcher siblings).
+This module may import from watcher_types and watcher_helpers
+(both lower layers per .importlinter watcher-layers contract).
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from typing import Literal, NamedTuple
 
 from app.core.manifest import ExecutionManifest
 
+from .watcher_helpers import worker_log_path
 from .watcher_types import (
     _CLAUDE_DIR,
     _WORKTREE_BASE,
@@ -525,7 +527,7 @@ def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:
     artifact_dir = (repo_root / worker.manifest.artifact_paths.result_json).parent
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    log_src = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
+    log_src = worker_log_path(worker.worktree_path, worker.ticket_id)
     if log_src.exists():
         shutil.copy2(log_src, artifact_dir / log_src.name)
         logger.info("Worker log preserved at %s", artifact_dir / log_src.name)

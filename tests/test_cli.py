@@ -347,3 +347,30 @@ def test_watcher_max_local_workers_default_is_8():
     assert rc == 0
     _, kwargs = MockWatcher.call_args
     assert kwargs.get("max_local_workers") == 8
+
+
+# WOR-305 Bug D — --tui flag plumbing test (regression for the silent no-op
+# bug: argparse defined --tui but _run_watcher never threaded it into
+# Watcher(tui_mode=...). Hotfixed in PR #609; this test locks it in.
+def test_watcher_tui_flag_threads_through_to_constructor():
+    from unittest.mock import MagicMock, patch
+
+    mock_instance = MagicMock()
+    mock_instance.run.return_value = None
+    with patch("app.core.watcher.Watcher", return_value=mock_instance) as MockWatcher:
+        rc = main(["watcher", "--tui"])
+    assert rc == 0
+    _, kwargs = MockWatcher.call_args
+    assert kwargs.get("tui_mode") is True
+
+
+def test_watcher_no_tui_flag_defaults_tui_mode_false():
+    from unittest.mock import MagicMock, patch
+
+    mock_instance = MagicMock()
+    mock_instance.run.return_value = None
+    with patch("app.core.watcher.Watcher", return_value=mock_instance) as MockWatcher:
+        rc = main(["watcher"])
+    assert rc == 0
+    _, kwargs = MockWatcher.call_args
+    assert kwargs.get("tui_mode") is False

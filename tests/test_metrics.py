@@ -7,6 +7,7 @@ import pytest
 from app.core.metrics import (
     CheckRunEntry,
     CheckStats,
+    CostRollup,
     EpicSummary,
     MetricsStore,
     TicketMetrics,
@@ -492,3 +493,106 @@ class TestTicketRunLog:
         assert row["output_tokens"] is None
         assert row["output_tok_per_s"] is None
         assert row["context_compactions"] is None
+
+
+# WOR-305 Bug E — get_cost_rollup regression coverage
+# This method was hotfixed in PR #609 (started_at → recorded_at column rename)
+# but had zero test coverage; the typo against a column that never existed sat
+# dormant until --tui became the first caller. Test all three periods against
+# rows with controlled recorded_at to lock the SQL date filters in place.
+class TestGetCostRollup:
+    def _record_with_recorded_at(
+        self,
+        store: MetricsStore,
+        ticket_id: str,
+        days_ago: int,
+        local_used: bool = True,
+        cloud_used: bool = False,
+        local_input_tokens: int = 1_000_000,
+        local_output_tokens: int = 100_000,
+        cloud_cost_estimate: float = 0.0,
+    ) -> None:
+        """Insert a ticket then UPDATE recorded_at to a controlled past date."""
+        store.record(
+            _ticket(
+                ticket_id=ticket_id,
+                local_used=local_used,
+                cloud_used=cloud_used,
+                local_input_tokens=local_input_tokens if local_used else None,
+                local_output_tokens=local_output_tokens if local_used else None,
+                cloud_cost_estimate=cloud_cost_estimate if cloud_used else None,
+            )
+        )
+        with store._connect() as conn:
+            conn.execute(
+                "UPDATE ticket_metrics SET recorded_at = "
+                f"datetime('now', '-{days_ago} days') WHERE ticket_id = ?",
+                (ticket_id,),
+            )
+
+    def test_today_rollup_excludes_older_rows(self, tmp_path):
+        store = _store(tmp_path)
+        self._record_with_recorded_at(store, "WOR-1", days_ago=0)
+        self._record_with_recorded_at(store, "WOR-2", days_ago=3)
+        self._record_with_recorded_at(store, "WOR-3", days_ago=30)
+
+        result = store.get_cost_rollup("today")
+        assert isinstance(result, CostRollup)
+        assert result.local_ticket_count == 1
+        assert result.cloud_ticket_count == 0
+        # 1M input tokens × $3/M + 100K output × $15/M = $3 + $1.5 = $4.5
+        assert result.local_saved == pytest.approx(4.5)
+
+    def test_week_rollup_includes_last_7_days(self, tmp_path):
+        store = _store(tmp_path)
+        self._record_with_recorded_at(store, "WOR-1", days_ago=0)
+        self._record_with_recorded_at(store, "WOR-2", days_ago=3)
+        self._record_with_recorded_at(store, "WOR-3", days_ago=30)
+
+        result = store.get_cost_rollup("week")
+        assert result.local_ticket_count == 2
+        assert result.local_saved == pytest.approx(9.0)
+
+    def test_all_rollup_includes_every_row(self, tmp_path):
+        store = _store(tmp_path)
+        self._record_with_recorded_at(store, "WOR-1", days_ago=0)
+        self._record_with_recorded_at(store, "WOR-2", days_ago=3)
+        self._record_with_recorded_at(store, "WOR-3", days_ago=30)
+
+        result = store.get_cost_rollup("all")
+        assert result.local_ticket_count == 3
+        assert result.local_saved == pytest.approx(13.5)
+
+    def test_cloud_spent_aggregates_separately(self, tmp_path):
+        store = _store(tmp_path)
+        self._record_with_recorded_at(
+            store,
+            "WOR-1",
+            days_ago=0,
+            local_used=False,
+            cloud_used=True,
+            cloud_cost_estimate=2.50,
+        )
+        self._record_with_recorded_at(
+            store,
+            "WOR-2",
+            days_ago=0,
+            local_used=False,
+            cloud_used=True,
+            cloud_cost_estimate=1.25,
+        )
+
+        result = store.get_cost_rollup("today")
+        assert result.cloud_ticket_count == 2
+        assert result.cloud_spent == pytest.approx(3.75)
+        assert result.local_ticket_count == 0
+        assert result.local_saved == 0.0
+
+    def test_empty_db_returns_zero_rollup(self, tmp_path):
+        store = _store(tmp_path)
+        for period in ("today", "week", "all"):
+            result = store.get_cost_rollup(period)
+            assert result.cloud_spent == 0.0
+            assert result.local_saved == 0.0
+            assert result.cloud_ticket_count == 0
+            assert result.local_ticket_count == 0

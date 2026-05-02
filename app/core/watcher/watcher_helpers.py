@@ -120,6 +120,17 @@ def format_worker_token_count(log_path: Path) -> str:
     return f"{format_token_count(input_tok + output_tok)} tokens"
 
 
+def worker_log_path(worktree_path: Path, ticket_id: str) -> Path:
+    """Return the canonical path for a worker's stdout/stderr log.
+
+    Single source of truth so the heartbeat formatter, finalize metrics
+    writer, subprocess launcher, and worktree-artifact preserver never
+    drift on filename. Pattern: ``<worktree>/.claude/worker_<id>.log``
+    (lowercased ticket id).
+    """
+    return worktree_path / ".claude" / f"worker_{ticket_id.lower()}.log"
+
+
 # ---------------------------------------------------------------------------
 # Escalation-policy flag names (also used by watcher.py orchestrator)
 # ---------------------------------------------------------------------------

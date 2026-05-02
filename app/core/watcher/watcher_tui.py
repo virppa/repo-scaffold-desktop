@@ -43,6 +43,12 @@ class TrackedPR:
     last_poll: float = 0.0
     last_status: str = "PENDING"
     dropped_at: float = 0.0  # when to drop from the list after MERGED
+    # WOR-305: ticket_id + url enable the finalize summary table to look up
+    # the PR URL from in-memory state without shelling out to `gh pr list`.
+    # Defaults are empty strings so existing TrackedPR(number=, base=)
+    # constructors keep working unchanged.
+    ticket_id: str = ""
+    url: str = ""
 
 
 @dataclass
@@ -127,7 +133,9 @@ class WatcherDisplay:
     def _build_layout(self, state: TUIState) -> Layout:
         layout = Layout(name="root")
         layout.split_column(
-            Layout(name="top", size=3),
+            # WOR-305: top size was 3 — too small for box border + title +
+            # header row + 1 data row. 8 fits a typical 3-period rollup.
+            Layout(name="top", size=8),
             Layout(name="middle"),
             Layout(name="bottom", size=1),
         )
