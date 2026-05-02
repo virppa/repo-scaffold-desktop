@@ -151,7 +151,7 @@ def finalize_worker(
     repo_root: Path,
     mode: str,
     project_id: str,
-) -> None:
+) -> tuple[Outcome, bool, bool, list[str] | None, list[dict[str, int | str]]]:
     outcome, escalated, artifacts_preserved, sonar_findings, failed_checks = (
         _execute_finalization(worker, returncode, linear, escalation_policy, repo_root)
     )
@@ -249,7 +249,7 @@ def finalize_worker(
     if artifacts_preserved:
         # Success path — artifacts already saved upstream; remove worktree.
         cleanup_worktree(repo_root, worker.worktree_path)
-        return
+        return outcome, escalated, artifacts_preserved, sonar_findings, failed_checks
 
     # Failure path — preserve WIP before considering teardown (WOR-258, WOR-288).
     backup_root = repo_root / _CLAUDE_DIR / "artifacts"
@@ -280,6 +280,7 @@ def finalize_worker(
             wip_result.error or "unknown",
             worker.manifest.worker_branch,
         )
+    return outcome, escalated, artifacts_preserved, sonar_findings, failed_checks
 
 
 # ---------------------------------------------------------------------------
