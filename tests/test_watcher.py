@@ -71,18 +71,24 @@ def _make_active_worker(
 
 
 # ---------------------------------------------------------------------------
-# Watcher verbose flag
+# Watcher verbose flags
 # ---------------------------------------------------------------------------
 
 
-def test_watcher_verbose_defaults_to_false() -> None:
+def test_worker_verbose_defaults_to_false() -> None:
     w = Watcher(linear_client=MagicMock())
-    assert w._verbose is False
+    assert w._worker_verbose is False
 
 
-def test_watcher_stores_verbose_true() -> None:
-    w = Watcher(linear_client=MagicMock(), verbose=True)
-    assert w._verbose is True
+def test_worker_verbose_stores_true() -> None:
+    w = Watcher(linear_client=MagicMock(), worker_verbose=True)
+    assert w._worker_verbose is True
+
+
+def test_worker_verbose_and_no_epic_shutdown_can_be_combined() -> None:
+    """Both flags can be set simultaneously — they are independent."""
+    w = Watcher(linear_client=MagicMock(), worker_verbose=True, no_epic_shutdown=True)
+    assert w._worker_verbose is True
 
 
 # ---------------------------------------------------------------------------

@@ -85,7 +85,7 @@ class Watcher:
         metrics_store: MetricsStore | None = None,
         repo_root: Path | None = None,
         project_id: str = "repo-scaffold-desktop",
-        verbose: bool = False,
+        worker_verbose: bool = False,
         no_epic_shutdown: bool = False,
     ) -> None:
         if linear_client is None:
@@ -105,7 +105,7 @@ class Watcher:
         self._processed_tickets: list[_ProcessedTicket] = []
         self._running = True
         self._services = ServiceManager(self._repo_root)
-        self._verbose = verbose
+        self._worker_verbose = worker_verbose
         self._retry_counters: dict[str, int] = {}
         self._escalation_policy = EscalationPolicy.from_toml()
         self._no_epic_shutdown = no_epic_shutdown
@@ -536,7 +536,11 @@ class Watcher:
 
         backed_up_plans = backup_plan_files()
         process = launch_worker(
-            self._repo_root, manifest, worktree_path, effective_mode, self._verbose
+            self._repo_root,
+            manifest,
+            worktree_path,
+            effective_mode,
+            self._worker_verbose,
         )
         worker = ActiveWorker(
             ticket_id=ticket_id,
