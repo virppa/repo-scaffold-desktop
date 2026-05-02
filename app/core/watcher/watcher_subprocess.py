@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import IO
 
 from app.core.manifest import ExecutionManifest
+from app.core.metrics import CheckRunEntry, MetricsStore
 
 from .watcher_helpers import (
     _tee_worker_output,
@@ -29,6 +30,14 @@ from .watcher_helpers import (
 from .watcher_types import _CLAUDE_DIR
 
 logger = logging.getLogger(__name__)
+
+# Regex for git diff --shortstat output like:
+#   "3 files changed, 45 insertions(+), 12 deletions(-)"
+_SHORTSTAT_RE = re.compile(
+    r"(\d+) files? changed"
+    r"(?:, (\d+) insertions?\(\+\))?"
+    r"(?:, (\d+) deletions?\(-\))?"
+)
 
 _SONAR_MAX_PAGES = 10
 _LINEAR_MCP = '{"mcpServers":{"linear-server":{"type":"http","url":"https://mcp.linear.app/mcp"}}}'
@@ -145,12 +154,20 @@ _LAST_FAILURE_FILENAME = "last_failure.json"
 
 
 def run_checks(
-    manifest: ExecutionManifest, worktree_path: Path
+    manifest: ExecutionManifest,
+    worktree_path: Path,
+    *,
+    metrics: MetricsStore | None = None,
+    ticket_id: str = "",
+    project_id: str = "",
 ) -> tuple[bool, list[dict[str, int | str]]]:
     """Run manifest.required_checks in the worktree.
 
     Returns (all_passed, failed_checks) where *failed_checks* is a list of
     ``{check: str, exit_code: int}`` for each check that returned non-zero.
+
+    When *metrics* is provided, each check execution is recorded to the
+    check_run_log table via ``MetricsStore.record_check_run``.
     """
     artifact_dir = worktree_path / Path(manifest.artifact_paths.result_json).parent
     failure_artifact = artifact_dir / _LAST_FAILURE_FILENAME
@@ -158,12 +175,24 @@ def run_checks(
     failed_checks: list[dict[str, int | str]] = []
     for check_cmd in manifest.required_checks:
         logger.info("Running check: %s", check_cmd)
+        start = datetime.now(timezone.utc).timestamp()
         result = subprocess.run(  # nosec B603
             shlex.split(check_cmd),
             cwd=str(worktree_path),
             capture_output=True,
             text=True,
         )
+        duration = datetime.now(timezone.utc).timestamp() - start
+        if metrics is not None and ticket_id:
+            metrics.record_check_run(
+                CheckRunEntry(
+                    ticket_id=ticket_id,
+                    project_id=project_id,
+                    check_cmd=check_cmd,
+                    outcome="passed" if result.returncode == 0 else "failed",
+                    duration_s=round(duration, 3),
+                )
+            )
         if result.returncode != 0:
             logger.error(
                 "Check failed: %s\n%s", check_cmd, result.stdout + result.stderr
@@ -351,3 +380,20 @@ def fetch_sonar_findings(branch: str) -> list[str] | None:
             break
 
     return all_severities
+
+
+def parse_git_shortstat(diff_output: str) -> tuple[int, int]:
+    """Parse ``git diff --shortstat`` output into (lines_changed, files_changed).
+
+    Returns ``(0, 0)`` when the diff output is empty or does not match the
+    expected pattern (e.g. no commits since base).
+    """
+    if not diff_output.strip():
+        return 0, 0
+    m = _SHORTSTAT_RE.search(diff_output)
+    if m is None:
+        return 0, 0
+    files = int(m.group(1))
+    ins = int(m.group(2)) if m.group(2) is not None else 0
+    dels = int(m.group(3)) if m.group(3) is not None else 0
+    return ins + dels, files
