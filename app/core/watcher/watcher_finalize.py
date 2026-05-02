@@ -22,6 +22,7 @@ from .watcher_helpers import (
     _parse_worker_usage,
     _read_result_flags,
     resolve_effective_mode,
+    worker_log_path,
 )
 from .watcher_subprocess import (
     create_pr,
@@ -157,6 +158,8 @@ def attempt_pr(
                     TrackedPR(
                         number=pr_number,
                         base=manifest.base_branch,
+                        ticket_id=manifest.ticket_id,
+                        url=pr_url,
                     )
                 )
         except (IndexError, ValueError):
@@ -191,7 +194,7 @@ def finalize_worker(
         )
     )
 
-    log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
+    log_path = worker_log_path(worker.worktree_path, worker.ticket_id)
     input_tokens, output_tokens, context_compactions = _parse_worker_usage(log_path)
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
 

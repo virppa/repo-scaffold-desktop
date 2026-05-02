@@ -38,6 +38,7 @@ from .watcher_helpers import (
     format_worker_token_count,
     resolve_effective_mode,
     suppress_dedup,
+    worker_log_path,
 )
 from .watcher_services import ServiceManager
 from .watcher_subprocess import launch_worker
@@ -616,12 +617,7 @@ class Watcher:
             # Build single-line finish summary with elapsed + token count
             status = "success" if rc == 0 else "failed"
             elapsed_str = format_elapsed(elapsed)
-            log_path = (
-                worker.worktree_path
-                / ".claude"
-                / "logs"
-                / f"{worker.ticket_id.replace('-', '_')}.jsonl"
-            )
+            log_path = worker_log_path(worker.worktree_path, worker.ticket_id)
             token_str = format_worker_token_count(log_path)
             logger.info(
                 "%s done (%s, %s, %s)",
@@ -674,7 +670,15 @@ class Watcher:
                 logger.warning("Could not read manifest at %s: %s", manifest_path, exc)
         return False
 
-    def _lookup_pr_url(self, branch: str) -> str:
+    def _lookup_pr_url(self, ticket_id: str, branch: str) -> str:
+        # WOR-305 Bug B: in-memory cache check first. finalize_worker
+        # populates tracked_prs with ticket_id+url at PR creation time,
+        # so the summary table can render the URL it just logged. Fall
+        # back to `gh pr list` for tickets that ran in a previous daemon
+        # session (no tracked_prs entry yet).
+        for tpr in self._tracked_prs:
+            if tpr.ticket_id == ticket_id and tpr.url:
+                return tpr.url
         try:
             cmd = [
                 "gh",
@@ -722,6 +726,29 @@ class Watcher:
             epic_id = next(
                 (t.epic_id for t in self._processed_tickets if t.epic_id), None
             )
+            # WOR-305 Bug C: gate the epic-complete announcement on Linear
+            # ground truth, not just an empty local manifest queue. The
+            # daemon's queue can go empty when a single ticket was
+            # dispatched while sibling sub-tickets are still Todo; without
+            # this check the daemon falsely declares the epic complete.
+            if epic_id:
+                try:
+                    open_children = self._linear.get_open_children(epic_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Epic completion check: get_open_children failed for %s: %s",
+                        epic_id,
+                        exc,
+                    )
+                    return
+                if open_children:
+                    logger.debug(
+                        "Epic %s has %d open child(ren) — skipping epic-complete: %s",
+                        epic_id,
+                        len(open_children),
+                        open_children,
+                    )
+                    return
             if epic_id and self._last_epic_complete_announced.get(epic_id) == state_key:
                 return
             if epic_id:
@@ -739,7 +766,9 @@ class Watcher:
             logger.info("%-15s  %-55s  %s", "Ticket", "PR URL", "Elapsed")
             for t in self._processed_tickets:
                 pr_url = (
-                    self._lookup_pr_url(t.worker_branch) if t.succeeded else "(failed)"
+                    self._lookup_pr_url(t.ticket_id, t.worker_branch)
+                    if t.succeeded
+                    else "(failed)"
                 )
                 logger.info("%-15s  %-55s  %.0fs", t.ticket_id, pr_url, t.elapsed)
             if epic_id and not failed:

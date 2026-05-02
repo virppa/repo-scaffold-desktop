@@ -12,6 +12,7 @@ from app.core.watcher.watcher_helpers import (
     build_worker_env,
     check_allowed_paths_overlap,
     resolve_effective_mode,
+    worker_log_path,
 )
 from tests.conftest import make_active_worker, make_manifest
 
@@ -512,3 +513,31 @@ def test_parse_worker_usage_missing_output_token_returns_none(
     input_tok, output_tok, _ = _parse_worker_usage(log)
     assert input_tok is None
     assert output_tok is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-305 Bug A — worker_log_path single source of truth
+# ---------------------------------------------------------------------------
+
+
+def test_worker_log_path_uses_lowercase_ticket_id(tmp_path: Path) -> None:
+    """The path must lowercase the ticket id segment so all callers
+    (heartbeat formatter, finalize writer, subprocess launcher,
+    worktree-artifact preserver) compute the same path."""
+    p = worker_log_path(tmp_path, "WOR-244")
+    assert p == tmp_path / ".claude" / "worker_wor-244.log"
+
+
+def test_worker_log_path_handles_already_lowercase(tmp_path: Path) -> None:
+    p = worker_log_path(tmp_path, "wor-7")
+    assert p.name == "worker_wor-7.log"
+
+
+def test_worker_log_path_used_consistently_across_call_sites(tmp_path: Path) -> None:
+    """Regression guard: the bug this fixes was 4 callers building the path
+    inline with subtly different patterns. Assert the helper's output
+    matches the canonical pattern that finalize/subprocess/worktrees
+    callers expect."""
+    expected = tmp_path / ".claude" / "worker_wor-99.log"
+    assert worker_log_path(tmp_path, "WOR-99") == expected
+    assert worker_log_path(tmp_path, "wor-99") == expected

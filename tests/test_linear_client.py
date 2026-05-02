@@ -128,6 +128,63 @@ def test_get_open_blockers_returns_empty_when_no_issue() -> None:
 
 
 # ---------------------------------------------------------------------------
+# WOR-305 Bug C — get_open_children
+# ---------------------------------------------------------------------------
+
+
+def test_get_open_children_filters_terminal_states() -> None:
+    """Children in completed or cancelled state are excluded; everything else
+    is returned. Mirrors get_open_blockers' DONE_STATE_TYPES filter."""
+    response = {
+        "data": {
+            "issues": {
+                "nodes": [
+                    {"identifier": "WOR-244", "state": {"type": "completed"}},
+                    {"identifier": "WOR-245", "state": {"type": "unstarted"}},
+                    {"identifier": "WOR-246", "state": {"type": "started"}},
+                    {"identifier": "WOR-247", "state": {"type": "cancelled"}},
+                    {"identifier": "WOR-282", "state": {"type": "backlog"}},
+                ]
+            }
+        }
+    }
+
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        open_children = _client().get_open_children("WOR-302")
+
+    assert open_children == ["WOR-245", "WOR-246", "WOR-282"]
+
+
+def test_get_open_children_returns_empty_when_no_children() -> None:
+    response = {"data": {"issues": {"nodes": []}}}
+
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        children = _client().get_open_children("WOR-99")
+
+    assert children == []
+
+
+def test_get_open_children_returns_empty_when_all_terminal() -> None:
+    """Epic where every child is Done/Cancelled returns empty list — that's
+    the signal _check_epic_completion uses to fire the announcement."""
+    response = {
+        "data": {
+            "issues": {
+                "nodes": [
+                    {"identifier": "WOR-100", "state": {"type": "completed"}},
+                    {"identifier": "WOR-101", "state": {"type": "cancelled"}},
+                ]
+            }
+        }
+    }
+
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        children = _client().get_open_children("WOR-99")
+
+    assert children == []
+
+
+# ---------------------------------------------------------------------------
 # set_state
 # ---------------------------------------------------------------------------
 

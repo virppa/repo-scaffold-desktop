@@ -141,6 +141,34 @@ class LinearClient:
         )
         self._check_success(data, "commentCreate", issue_id)
 
+    def get_open_children(self, epic_id: str) -> list[str]:
+        """Return identifiers of children of *epic_id* that are not yet done.
+
+        Filters out children whose state.type is in DONE_STATE_TYPES
+        (``completed`` or ``cancelled``). The watcher's epic-completion
+        check uses this to gate the "epic complete" announcement on
+        Linear ground truth, not just the local manifest queue (WOR-305).
+        """
+        data = self._query(
+            """
+            query GetChildren($parentId: String!) {
+              issues(filter: { parent: { id: { eq: $parentId } } }, first: 100) {
+                nodes {
+                  identifier
+                  state { type }
+                }
+              }
+            }
+            """,
+            {"parentId": epic_id},
+        )
+        nodes = data.get("issues", {}).get("nodes", [])
+        return [
+            node["identifier"]
+            for node in nodes
+            if node["state"]["type"] not in DONE_STATE_TYPES
+        ]
+
     def get_issue_state_type(self, identifier: str) -> str | None:
         """Return the Linear state.type for a ticket by its human identifier.
 
