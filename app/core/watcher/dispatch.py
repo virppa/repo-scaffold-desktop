@@ -31,13 +31,10 @@ logger = logging.getLogger(__name__)
 def start_ticket(
     manifest: ExecutionManifest,
     linear: LinearClientProtocol,
-    project_id: str,
     services: ServiceManager,
     worker_verbose: bool,
-    retry_counters: dict[str, int],
     _local_active: list[ActiveWorker],
     _cloud_active: list[ActiveWorker],
-    max_local_workers: int,
     max_cloud_workers: int,
     _repo_root: Path,
     _processed_tickets: list[object],
