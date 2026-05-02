@@ -195,6 +195,16 @@ def _build_parser() -> argparse.ArgumentParser:
             "get added to the epic."
         ),
     )
+    watcher.add_argument(
+        "--tui",
+        action="store_true",
+        default=False,
+        help=(
+            "Show a live rich-based TUI with per-worker status, cost "
+            "economics, historical rollups, and PR auto-merge tracking. "
+            "Falls back to line-based logging when stderr is piped."
+        ),
+    )
 
     return parser
 

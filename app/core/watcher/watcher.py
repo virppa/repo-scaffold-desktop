@@ -24,12 +24,12 @@ import signal
 import subprocess  # nosec B404
 import time
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import MetricsStore
+from app.core.metrics import CostRollup, MetricsStore
 
 from .watcher_finalize import finalize_worker, safe_set_state
 from .watcher_helpers import (
@@ -41,6 +41,7 @@ from .watcher_helpers import (
 )
 from .watcher_services import ServiceManager
 from .watcher_subprocess import launch_worker
+from .watcher_tui import TrackedPR, TUIState, WatcherDisplay, WorkerState
 from .watcher_types import (
     _CLAUDE_DIR,
     _PID_FILE,
@@ -87,6 +88,7 @@ class Watcher:
         project_id: str = "repo-scaffold-desktop",
         worker_verbose: bool = False,
         no_epic_shutdown: bool = False,
+        tui_mode: bool = False,
     ) -> None:
         if linear_client is None:
             from app.core.linear_client import LinearClient  # lazy import
@@ -112,6 +114,9 @@ class Watcher:
         self._last_deferral_state: dict[str, str] = {}
         self._last_idle_state: tuple[int, int, int, bool] | None = None
         self._heartbeat: dict[str, tuple[float, int]] = {}
+        self._tui_mode = tui_mode
+        self._display: Any | None = None
+        self._tracked_prs: list[TrackedPR] = []
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -122,6 +127,9 @@ class Watcher:
         self._write_pid_file()
         self._register_signals()
         self._cleanup_orphaned_worktrees()
+
+        if self._tui_mode:
+            self._display = WatcherDisplay()
 
         if self._mode in ("local", "default"):
             self._services.probe_vllm_health()
@@ -134,6 +142,8 @@ class Watcher:
         try:
             while self._running:
                 self._reap_finished_workers()
+                if self._display is not None:
+                    self._display.update_state(self._build_tui_state())
                 self._promote_waiting_tickets()
                 local_has_capacity = len(self._local_active) < self._max_local_workers
                 cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
@@ -149,6 +159,8 @@ class Watcher:
             self._wait_for_active_workers()
             self._services.stop()
             self._remove_pid_file()
+            if self._display is not None:
+                self._display.stop()
             logger.info("Watcher stopped cleanly")
 
     def _log_startup_info(self) -> None:
@@ -250,6 +262,40 @@ class Watcher:
                 continue
             logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
             cleanup_worktree(self._repo_root, worktree_dir)
+
+    # ------------------------------------------------------------------
+    # TUI state
+    # ------------------------------------------------------------------
+
+    def _build_tui_state(self) -> TUIState:
+        """Build the current TUI snapshot for the display."""
+        workers: list[WorkerState] = []
+        for w in self._local_active:
+            elapsed = time.monotonic() - w.start_time
+            workers.append(
+                WorkerState(
+                    ticket_id=w.ticket_id,
+                    mode="local",
+                    status="running",
+                    elapsed_s=elapsed,
+                )
+            )
+        for w in self._cloud_active:
+            elapsed = time.monotonic() - w.start_time
+            workers.append(
+                WorkerState(
+                    ticket_id=w.ticket_id,
+                    mode="cloud",
+                    status="running",
+                    elapsed_s=elapsed,
+                )
+            )
+        rollups: dict[str, CostRollup] = {}
+        for period in ("today", "week", "all"):
+            rollups[period] = self._metrics.get_cost_rollup(period)
+        return TUIState(
+            workers=workers, cost_rollups=rollups, tracked_prs=self._tracked_prs
+        )
 
     # ------------------------------------------------------------------
     # WaitingForDeps promotion
@@ -602,6 +648,7 @@ class Watcher:
                 repo_root=self._repo_root,
                 mode=self._mode,
                 project_id=self._project_id,
+                tracked_prs=self._tracked_prs,
             )
             self._processed_tickets.append(
                 _ProcessedTicket(
