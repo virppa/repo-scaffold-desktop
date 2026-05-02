@@ -553,7 +553,9 @@ def test_commit_wip_state_creates_and_pushes_on_dirty_tree(
     ):
         result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
 
-    assert result == sha
+    assert result.status == "pushed"
+    assert result.sha == sha
+    assert result.backup_path is None
     assert call_count[0] == 5
     assert any("WIP commit" in r.message for r in caplog.records)
     assert any("a1b2c3d4" in r.message for r in caplog.records)
@@ -571,7 +573,9 @@ def test_commit_wip_state_no_op_on_clean_tree(
         )
         result = commit_wip_state(Path("/tmp"), "WOR-10", "wor-10-test")
 
-    assert result is None
+    assert result.status == "clean"
+    assert result.sha is None
+    assert result.backup_path is None
     assert any("no wip commit needed" in r.message for r in caplog.records)
 
 
@@ -607,29 +611,32 @@ def test_commit_wip_state_returns_none_on_git_error(
     ):
         result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
 
-    assert result is None
-    assert any("WIP commit failed" in r.message for r in caplog.records)
+    # No backup_root passed → cannot fall back to backup → status is "failed"
+    assert result.status == "failed"
+    assert result.sha is None
+    assert any("WIP commit/push failed" in r.message for r in caplog.records)
 
 
 def test_commit_wip_state_returns_none_on_push_failure(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # status → dirty, add → ok, commit → ok, push → fail
-    mock_results = [
-        _completed_process(stdout="M test.txt\n"),  # status
-        _completed_process(),  # add
-        _completed_process(),  # commit
-        _completed_process(
-            returncode=1, stderr="remote: Authentication failed"
-        ),  # push
-    ]
+    # status → dirty, add → ok, commit → ok, push → raises CalledProcessError
+    # (real subprocess.run with check=True raises on non-zero; the mock must
+    # raise too for the path to behave correctly)
     call_count = [0]
 
     def _side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
         idx = call_count[0]
         call_count[0] += 1
-        return mock_results[idx]
+        # 1: status (dirty), 2: add, 3: commit, 4: push raises
+        if idx == 0:
+            return _completed_process(stdout="M test.txt\n")
+        if idx == 3:
+            raise subprocess.CalledProcessError(
+                1, "git push", stderr="remote: Authentication failed"
+            )
+        return _completed_process()
 
     with (
         patch(
@@ -638,10 +645,13 @@ def test_commit_wip_state_returns_none_on_push_failure(
         ),
         caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"),
     ):
+        # No backup_root → status == "failed"
         result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
 
-    assert result is None
-    assert any("wip commit not pushed" in r.message for r in caplog.records)
+    assert result.status == "failed"
+    assert result.sha is None
+    assert "remote: Authentication failed" in (result.error or "")
+    assert any("WIP commit/push failed" in r.message for r in caplog.records)
 
 
 def test_commit_wip_state_skips_commit_when_staged_but_not_committed(
@@ -662,7 +672,8 @@ def test_commit_wip_state_skips_commit_when_staged_but_not_committed(
         )
         result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
 
-    assert result is None
+    assert result.status == "clean"
+    assert result.sha is None
     assert any("no wip commit needed" in r.message for r in caplog.records)
 
 
@@ -670,7 +681,7 @@ def test_commit_wip_state_handles_status_error(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    # git status fails (non-zero returncode) → log warning and return None
+    # git status fails (non-zero returncode) → log warning and return failed
     # status uses check=False so it returns a CompletedProcess, not a
     # CalledProcessError — the error is handled manually in the function.
     with (
@@ -687,8 +698,104 @@ def test_commit_wip_state_handles_status_error(
     ):
         result = commit_wip_state(tmp_path, "WOR-10", "wor-10-test")
 
-    assert result is None
+    assert result.status == "failed"
+    assert result.sha is None
+    assert "error: invalid option" in (result.error or "")
     assert any("git status failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# WOR-288 — backup_root fallback when commit/push fails
+# ---------------------------------------------------------------------------
+
+
+def test_commit_wip_state_falls_back_to_backup_when_push_fails(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Push failure + backup_root → dirty worktree contents copied to backup."""
+    # Set up a fake worktree with one file
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "test.txt").write_text("dirty content")
+    backup_root = tmp_path / "backup_root"
+
+    call_count = [0]
+
+    def _side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        idx = call_count[0]
+        call_count[0] += 1
+        # 1: status (dirty), 2: add, 3: commit, 4: push raises
+        if idx == 0:
+            return _completed_process(stdout="M test.txt\n")
+        if idx == 3:
+            raise subprocess.CalledProcessError(
+                1, "git push", stderr="remote: Authentication failed"
+            )
+        return _completed_process()
+
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+            side_effect=_side_effect,
+        ),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        result = commit_wip_state(
+            worktree, "WOR-10", "wor-10-test", backup_root=backup_root
+        )
+
+    assert result.status == "backup"
+    assert result.sha is None
+    assert result.backup_path is not None
+    assert result.backup_path == backup_root / "wor_10" / "wip"
+    # Backed-up file is present
+    assert (result.backup_path / "test.txt").read_text() == "dirty content"
+    assert any("backed up to" in r.message for r in caplog.records)
+
+
+def test_commit_wip_state_clean_tree_with_backup_root_still_clean(
+    tmp_path: Path,
+) -> None:
+    """Clean tree + backup_root → status remains 'clean', no backup created."""
+    backup_root = tmp_path / "backup_root"
+    with patch("app.core.watcher.watcher_worktrees.subprocess.run") as mock_run:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args="", returncode=0, stdout="", stderr=""
+        )
+        result = commit_wip_state(
+            Path("/tmp"), "WOR-10", "wor-10-test", backup_root=backup_root
+        )
+
+    assert result.status == "clean"
+    assert result.backup_path is None
+    assert not backup_root.exists()
+
+
+def test_save_dirty_worktree_to_backup_helper_returns_path(
+    tmp_path: Path,
+) -> None:
+    """Direct test of the backup helper used by commit_wip_state on push failure."""
+    from app.core.watcher.watcher_worktrees import _save_dirty_worktree_to_backup
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    (worktree / "a.py").write_text("print('a')")
+    (worktree / "b.py").write_text("print('b')")
+    # .git and __pycache__ should be ignored by the copytree filter
+    (worktree / ".git").mkdir()
+    (worktree / ".git" / "config").write_text("ignore me")
+    (worktree / "__pycache__").mkdir()
+    (worktree / "__pycache__" / "a.cpython-313.pyc").write_text("bytecode")
+
+    backup_root = tmp_path / "backup_root"
+    result = _save_dirty_worktree_to_backup(worktree, "WOR-10", backup_root)
+
+    assert result == backup_root / "wor_10" / "wip"
+    assert (result / "a.py").read_text() == "print('a')"
+    assert (result / "b.py").read_text() == "print('b')"
+    assert not (result / ".git").exists()
+    assert not (result / "__pycache__").exists()
 
 
 # ---------------------------------------------------------------------------
