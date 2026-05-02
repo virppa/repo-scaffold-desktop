@@ -18,6 +18,7 @@ from app.core.watcher.watcher_subprocess import (
     expand_skill,
     fetch_sonar_findings,
     launch_worker,
+    parse_git_shortstat,
     run_checks,
 )
 
@@ -507,6 +508,44 @@ def test_launch_worker_passes_linear_mcp_config_to_build_worker_cmd(
 
 
 # ---------------------------------------------------------------------------
+# parse_git_shortstat
+# ---------------------------------------------------------------------------
+
+
+def test_parse_git_shortstat_normal_output() -> None:
+    """Standard shortstat output is parsed correctly."""
+    line = "3 files changed, 45 insertions(+), 12 deletions(-)"
+    assert parse_git_shortstat(line) == (
+        57,
+        3,
+    )
+
+
+def test_parse_git_shortstat_no_insertions() -> None:
+    """Only deletions are handled when insertions are missing."""
+    assert parse_git_shortstat("2 files changed, 0 insertions(+), 30 deletions(-)") == (
+        30,
+        2,
+    )
+
+
+def test_parse_git_shortstat_no_deletions() -> None:
+    """Only insertions are handled when deletions are missing."""
+    assert parse_git_shortstat("1 file changed, 100 insertions(+)") == (100, 1)
+
+
+def test_parse_git_shortstat_empty_string() -> None:
+    """Empty or whitespace input returns zeros."""
+    assert parse_git_shortstat("") == (0, 0)
+    assert parse_git_shortstat("   \n  ") == (0, 0)
+
+
+def test_parse_git_shortstat_no_match() -> None:
+    """Unrecognised output returns zeros."""
+    assert parse_git_shortstat("nothing here") == (0, 0)
+
+
+# ---------------------------------------------------------------------------
 # run_checks
 # ---------------------------------------------------------------------------
 
@@ -670,6 +709,42 @@ def test_run_checks_last_failure_overwritten_by_last_failing_check(
     # Last failing check (mypy) should overwrite the first (ruff)
     assert data["check"] == "mypy app/"
     assert data["stdout"] == "output from check 2"
+
+
+def test_run_checks_records_check_run_per_check(tmp_path: Path) -> None:
+    """When metrics is provided, record_check_run is called once per check."""
+    manifest = _make_manifest(required_checks=["ruff check .", "mypy app/", "pytest"])
+    metrics_mock = MagicMock()
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
+        run_checks(
+            manifest,
+            tmp_path,
+            metrics=metrics_mock,
+            ticket_id="WOR-10",
+            project_id="test-project",
+        )
+
+    assert metrics_mock.record_check_run.call_count == 3
+    called_calls = [
+        c.args[0].model_dump() for c in metrics_mock.record_check_run.call_args_list
+    ]
+    check_cmds = [c["check_cmd"] for c in called_calls]
+    assert check_cmds == ["ruff check .", "mypy app/", "pytest"]
+    for c in called_calls:
+        assert c["ticket_id"] == "WOR-10"
+        assert c["project_id"] == "test-project"
+        assert c["outcome"] == "passed"
+        assert c["duration_s"] is not None
 
 
 # ---------------------------------------------------------------------------
