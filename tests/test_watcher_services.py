@@ -96,7 +96,7 @@ def test_probe_vllm_health_logs_short_message_on_repeat_failure(
     with (
         patch("http.client.HTTPConnection") as mock_conn_cls,
         patch("sys.platform", "linux"),
-        caplog.at_level(logging.WARNING, logger="app.core.watcher_services"),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_services"),
     ):
         mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
         mgr.probe_vllm_health()  # first call — logs full command

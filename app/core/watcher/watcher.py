@@ -869,7 +869,7 @@ class Watcher:
             pass
 
     def _cleanup_orphaned_worktrees(self) -> None:
-        from app.core.watcher_types import _WORKTREE_BASE
+        from app.core.watcher.watcher_types import _WORKTREE_BASE
 
         base = self._repo_root.parent / _WORKTREE_BASE
         if not base.exists():
