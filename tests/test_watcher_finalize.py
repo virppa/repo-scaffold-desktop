@@ -787,7 +787,7 @@ def test_execute_finalization_nonzero_returncode_returns_failure(
     )
     from app.core.watcher.watcher_finalize import _execute_finalization
 
-    outcome, escalated, preserved, findings, _ = _execute_finalization(
+    outcome, escalated, preserved, findings, _, _ = _execute_finalization(
         worker, 1, linear_mock, EscalationPolicy.from_toml(), tmp_path
     )
 
@@ -820,7 +820,7 @@ def test_execute_finalization_check_failure_abort_returns_failure(
         "app.core.watcher.watcher_finalize.run_checks",
         return_value=(False, []),
     ):
-        outcome, escalated, preserved, findings, _ = _execute_finalization(
+        outcome, escalated, preserved, findings, _, _ = _execute_finalization(
             worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path
         )
 
@@ -850,7 +850,7 @@ def test_handle_policy_outcome_escalate_returns_escalated(
     )
     from app.core.watcher.watcher_finalize import _handle_policy_outcome
 
-    outcome, escalated, findings = _handle_policy_outcome(
+    outcome, escalated, findings, pr_url = _handle_policy_outcome(
         "escalate",
         {"scope_drift": True},
         worker,
@@ -861,6 +861,7 @@ def test_handle_policy_outcome_escalate_returns_escalated(
     assert outcome == "escalated"
     assert escalated is True
     assert findings is None
+    assert pr_url is None
 
 
 def test_handle_policy_outcome_human_returns_aborted(tmp_path: Path) -> None:
@@ -876,7 +877,7 @@ def test_handle_policy_outcome_human_returns_aborted(tmp_path: Path) -> None:
     )
     from app.core.watcher.watcher_finalize import _handle_policy_outcome
 
-    outcome, escalated, findings = _handle_policy_outcome(
+    outcome, escalated, findings, pr_url = _handle_policy_outcome(
         "human",
         {"scope_drift": True},
         worker,
@@ -887,6 +888,7 @@ def test_handle_policy_outcome_human_returns_aborted(tmp_path: Path) -> None:
     assert outcome == "aborted"
     assert escalated is False
     assert findings is None
+    assert pr_url is None
 
 
 # ---------------------------------------------------------------------------
@@ -1006,7 +1008,7 @@ def test_attempt_pr_success_returns_success(
     ):
         result = attempt_pr(manifest, worker, linear_mock)
 
-    assert result == "success"
+    assert result[0] == "success"
     linear_mock.set_state.assert_not_called()
     linear_mock.post_comment.assert_not_called()
 
@@ -1034,7 +1036,7 @@ def test_attempt_pr_called_process_error_returns_failure(
     with patch("app.core.watcher.watcher_finalize.create_pr", side_effect=exc):
         result = attempt_pr(manifest, worker, linear_mock)
 
-    assert result == "failure"
+    assert result[0] == "failure"
     linear_mock.set_state.assert_called_with("fake-linear-id", "Blocked")
     linear_mock.post_comment.assert_called_once()
     comment_body = linear_mock.post_comment.call_args[0][1]
@@ -1075,7 +1077,7 @@ def test_attempt_pr_calls_commit_wip_state_on_failure(
     ):
         result = attempt_pr(manifest, worker, linear_mock)
 
-    assert result == "failure"
+    assert result[0] == "failure"
     mock_commit.assert_called_once_with(
         tmp_path,
         "WOR-10",
