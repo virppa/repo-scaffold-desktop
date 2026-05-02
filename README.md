@@ -23,10 +23,17 @@ python -m app.cli generate --preset python_basic --repo-name myrepo --output ./o
 python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out \
   --git-init --install-precommit
 
+# With GitHub integration (creates repo + initial push)
+python -m app.cli generate --preset python_basic --repo-name myrepo --output ./out \
+  --github-create --git-push                     # create repo on GitHub, push initial commit
+# Optional: --private (default) | --public, --remote-url <url> for existing repos
+
 # User preferences
 python -m app.cli config get
 python -m app.cli config set author-name "Your Name"
 python -m app.cli config set github-username "your-username"
+python -m app.cli config set github-token        # silent prompt; stored in OS keyring
+python -m app.cli config delete github-token
 
 # Watcher daemon (local worker orchestrator)
 python -m app.cli watcher                        # respects each manifest's implementation_mode
@@ -35,6 +42,7 @@ python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy)
 python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concurrency
 python -m app.cli watcher --max-cloud-workers 3  # default 3
 python -m app.cli watcher --verbose              # stream worker output live to stderr
+python -m app.cli watcher --no-epic-shutdown     # keep daemon running past current epic
 
 # Metrics
 python -m app.cli metrics browse   # open metrics DB in Datasette browser UI
@@ -70,19 +78,23 @@ Module responsibilities:
 - `config.py` — Pydantic input models and validation
 - `presets.py` — preset definitions (maps preset name → file list + toggles)
 - `generator.py` — renders templates and writes files to disk
-- `post_setup.py` — side effects: `git init`, `pre-commit install`
+- `post_setup.py` — side effects: `git init`, `pre-commit install`, GitHub repo create/configure/push
 - `user_prefs.py` — `UserPreferences` model + `PrefsStore` (platform-aware JSON persistence)
-- `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract
-- `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules
-- `watcher_finalize.py` — worker finalization: outcome classification, PR creation, escalation
-- `watcher_subprocess.py` — worker subprocess lifecycle, checks, Sonar integration
-- `watcher_worktrees.py` — git worktree setup, teardown, artifact preservation
-- `watcher_helpers.py` — pure stateless helpers used by watcher sub-modules
-- `watcher_services.py` — LiteLLM proxy and Ollama process management
+- `credentials.py` — GitHub token storage via OS keyring; `GITHUB_TOKEN` env var fallback
+- `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract; carries `effort` and 7 ticket taxonomy fields
 - `linear_client.py` — thin Linear GraphQL client (stdlib `urllib` only); requires `LINEAR_API_KEY`
-- `metrics.py` — SQLite-backed per-ticket cost and execution metrics store
+- `metrics.py` — SQLite-backed per-ticket cost and execution metrics; tables `ticket_metrics`, `ticket_run_log`, `check_run_log`, `rework_events`
 - `bench_store.py` — SQLite-backed benchmark run records store (`bench.db`)
 - `escalation_policy.py` — loads `config/escalation_policy.toml`, classifies failures into watcher actions
+- `watcher/` — orchestrator subpackage (`app/core/watcher/`):
+  - `watcher.py` — main loop; polls Linear, delegates dispatch
+  - `watcher_dispatch.py` — `start_ticket` extracted dispatch logic
+  - `watcher_finalize.py` — worker finalization: outcome classification, PR creation, metrics record, escalation
+  - `watcher_subprocess.py` — worker subprocess lifecycle, checks, Sonar integration
+  - `watcher_worktrees.py` — git worktree setup, teardown, artifact preservation, wip-state preservation, wip squash
+  - `watcher_helpers.py` — pure stateless helpers (cmd builder, env, log parsing)
+  - `watcher_services.py` — LiteLLM proxy and Ollama process management
+  - `watcher_types.py` — shared types: `ActiveWorker`, `LinearClientProtocol`
 - `cli.py` — CLI entry point
 - `main.py` — PySide6 app entry point (V2)
 
@@ -110,20 +122,25 @@ Data flows one way: CLI → config model → generator → disk. Post-setup runs
 | `--linear-mcp` / `--no-linear-mcp` | Include/exclude Linear MCP server in `.mcp.json` |
 | `--git-init` | Run `git init` in the output directory after generation |
 | `--install-precommit` | Run `pre-commit install` in the output directory |
+| `--github-create` | Create a GitHub repository for the scaffolded output (requires `config set github-token` first) |
+| `--private` / `--public` | Visibility for `--github-create` (default `--private`) |
+| `--git-push` | Stage, commit, and push initial scaffold to a remote (requires `--github-create` or `--remote-url`) |
+| `--remote-url <url>` | Existing remote URL for `--git-push` when not pairing with `--github-create` |
 
 ## Stack
 
 - Python 3.12+
 - Pydantic — config validation
 - Jinja2 — template rendering
-- PyYAML — YAML parsing
-- PySide6 — desktop UI (V2)
+- python-dotenv — env-var loading
+- keyring — OS credential store for GitHub token
+- PySide6 — desktop UI (V2, `requirements-ui.txt`)
 - pytest + pytest-cov — testing
 - Ruff — linting and formatting
 - mypy — type checking
 - bandit — security scanning
 - Import Linter — architecture contract enforcement
-- pre-commit — git hooks
+- pre-commit — git hooks (ruff, mypy, bandit, semgrep, detect-secrets, check-patch-paths)
 
 ## Local model development
 
@@ -145,10 +162,10 @@ litellm --config litellm-local.yaml --port 8082 --drop_params
 # 3. Launch Claude Code in a new terminal
 set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
 set ANTHROPIC_API_KEY=sk-dummy
-claude --model qwen3-coder:30b
+claude --model claude-sonnet-4-6
 ```
 
-`litellm-local.yaml` is gitignored. See [`docs/spikes/local-model-setup.md`](docs/spikes/local-model-setup.md) for VRAM budget, model selection, and benchmark results.
+`litellm-local.yaml` is gitignored. See [`docs/spikes/vllm-benchmark-plan.md`](docs/spikes/vllm-benchmark-plan.md) for the production vLLM model config and benchmark results. [`docs/spikes/local-model-setup.md`](docs/spikes/local-model-setup.md) covers the historical Ollama setup.
 
 ## Claude Code and MCP setup
 

@@ -18,11 +18,15 @@ python -m app.cli generate --preset python_basic --repo-name myrepo --output ./o
 # With optional toggles: --pre-commit --ci --pr-template --issue-templates --codeowners --claude-files
 #                        --playwright (full_agentic only) --linear-mcp / --no-linear-mcp
 # With post-setup:       --git-init --install-precommit
+# With GitHub:           --github-create [--private | --public]    # create repo via API
+#                        --git-push [--remote-url <url>]            # initial commit + push
 
 # CLI — user preferences
 python -m app.cli config get
 python -m app.cli config set author-name "Your Name"
 python -m app.cli config set github-username "your-username"
+python -m app.cli config set github-token        # silent prompt; stored in OS keyring
+python -m app.cli config delete github-token
 
 # CLI — watcher (local worker orchestrator daemon)
 python -m app.cli watcher                        # respects each manifest's implementation_mode
@@ -34,6 +38,7 @@ python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concu
 python -m app.cli watcher --max-cloud-workers 3  # default 3; parallelisable
 python -m app.cli watcher --max-workers 2        # backward-compat alias: sets both to 2
 python -m app.cli watcher --verbose              # stream worker stdout/stderr live, prefixed with [WOR-NN]
+python -m app.cli watcher --no-epic-shutdown     # keep daemon running after current epic completes
 
 # Benchmark runner (do not run without explicit instruction)
 python scripts/bench/run_bench.py --tier speed
@@ -80,12 +85,13 @@ Module responsibilities:
 - `config.py` — Pydantic input models (repo name, output path, preset, option toggles)
 - `presets.py` — preset definitions (maps preset name → file list + options)
 - `generator.py` — renders templates and writes files to disk
-- `post_setup.py` — side effects: `git init`, `pre-commit install`, etc.
+- `post_setup.py` — side effects: `git init`, `pre-commit install`, GitHub repo create/configure/push (`create_github_repo`, `configure_github_repo`, `run_initial_push`)
 - `user_prefs.py` — `UserPreferences` model + `PrefsStore` (platform-aware JSON persistence)
-- `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract for hybrid execution
+- `credentials.py` — GitHub token storage via OS keyring (`save_token`, `get_token`, `delete_token`); falls back to `GITHUB_TOKEN` env var when keyring unavailable
+- `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract; includes `effort` (low/medium/high/xhigh/max) and 7 taxonomy fields (`change_type`, `reasoning_demand`, `scope_clarity`, `constraint_density`, `ac_specificity`, `tech_stack`, `raw_extensions`) populated at /start-ticket plan time
 - `escalation_policy.py` — `EscalationPolicy` Pydantic model: loads `config/escalation_policy.toml`, classifies result-artifact flags and Sonar findings into watcher actions
 - `linear_client.py` — thin Linear GraphQL client (stdlib `urllib` only, no third-party HTTP deps); requires `LINEAR_API_KEY` env var
-- `metrics.py` — SQLite-backed store for per-ticket cost and execution metrics; watcher is sole writer, workers emit JSON result files only
+- `metrics.py` — SQLite-backed store for per-ticket cost and execution metrics; watcher is sole writer, workers emit JSON result files only. Tables: `ticket_metrics` (per-ticket summary, includes 7 taxonomy + cost columns), `ticket_run_log` (per-attempt records for retry analysis), `check_run_log` (per-check timing/outcome), `rework_events`
 - `watcher/` — watcher subpackage (subpackage boundary, not flat files):
   - `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
   - `watcher_dispatch.py` — extracted ticket start logic: `start_ticket` module function plus thin class wrappers
@@ -222,6 +228,12 @@ The informational scan runs on `github.base_ref != 'main'`; the blocking scan ru
 - **PostToolUse** — `lint-imports` architecture contract check after any Python file edit
 - **PostToolUse** — pytest (no coverage) on the edited test file after changes to `tests/` files only
 - **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)
+
+`.pre-commit-config.yaml` adds repo-level checks (run on `git commit`):
+
+- **trailing-whitespace / end-of-file-fixer / check-yaml / check-toml / check-merge-conflict**
+- **ruff** + **ruff-format** + **bandit** + **mypy** + **semgrep** + **detect-secrets**
+- **check-patch-paths** — local hook (`scripts/check_patch_paths.py`) that validates `unittest.mock.patch("app...")` strings against the actual module structure (catches stale paths after package reorganization before commit)
 
 No setup needed — hooks activate as soon as Claude Code loads the project.
 
