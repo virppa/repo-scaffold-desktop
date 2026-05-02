@@ -235,6 +235,7 @@ def _run_watcher(args: argparse.Namespace) -> int:
         max_cloud_workers=max_cloud,
         worker_verbose=args.worker_verbose,
         no_epic_shutdown=args.no_epic_shutdown,
+        tui_mode=args.tui,
     )
     try:
         watcher.run()
