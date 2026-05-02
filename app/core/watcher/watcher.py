@@ -253,16 +253,6 @@ class Watcher:
 
             elapsed_str = format_elapsed(elapsed)
             logger.info("[%s] %s", worker.ticket_id, elapsed_str)
-        from .watcher_types import _WORKTREE_BASE
-
-        base = self._repo_root.parent / _WORKTREE_BASE
-        if not base.exists():
-            return
-        for worktree_dir in base.iterdir():
-            if not worktree_dir.is_dir():
-                continue
-            logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
-            cleanup_worktree(self._repo_root, worktree_dir)
 
     # ------------------------------------------------------------------
     # TUI state

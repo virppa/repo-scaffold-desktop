@@ -581,7 +581,7 @@ def cleanup_worktree(repo_root: Path, worktree_path: Path) -> None:
         stderr = exc.stderr or ""
         if "is not a working tree" in stderr and worktree_path.exists():
             try:
-                shutil.rmtree(worktree_path)
+                _rmtree_force(worktree_path)
                 logger.info(
                     "Untracked worktree directory removed via rmtree: %s",
                     worktree_path,
@@ -601,6 +601,20 @@ def cleanup_worktree(repo_root: Path, worktree_path: Path) -> None:
                 )
                 return
         logger.warning("Failed to remove worktree %s: %s", worktree_path, stderr)
+
+
+def _rmtree_force(path: Path) -> None:
+    """``shutil.rmtree`` that handles Windows read-only files (e.g. ``.git`` entries
+    inside a git worktree directory).
+    """
+    import os
+    import stat
+
+    def _on_rm_error(func: object, p: str, _exc_info: object) -> None:
+        os.chmod(p, stat.S_IWRITE)
+        func(p)  # type: ignore[operator]
+
+    shutil.rmtree(path, onexc=_on_rm_error)
 
 
 def cleanup_orphaned_worktrees(repo_root: Path) -> None:
