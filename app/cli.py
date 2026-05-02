@@ -215,11 +215,13 @@ def _run_watcher(args: argparse.Namespace) -> int:
     from app.core.watcher import Watcher
     from app.core.watcher.log_format import ColorFormatter
 
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        ColorFormatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
+    )
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
-        stream=sys.stderr,
-        cls=ColorFormatter,  # type: ignore[call-overload]
+        handlers=[handler],
     )
     mode = args.worker_mode or os.environ.get("WORKER_MODE", "default")
     max_local = args.max_local_workers
