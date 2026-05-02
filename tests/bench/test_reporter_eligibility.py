@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+from contextlib import redirect_stdout
 from typing import Any
 
 from scripts.bench.reporter import (
@@ -9,7 +11,15 @@ from scripts.bench.reporter import (
     _cv,
     _is_eligible,
     _percentile,
+    print_ranking,
 )
+
+
+def _capture(rows: list[dict[str, Any]], **kwargs: Any) -> str:
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_ranking(rows, **kwargs)
+    return buf.getvalue()
 
 
 def _row(
@@ -340,3 +350,179 @@ class TestVramHeadroomGate:
     def test_oom_risk_constant_is_float(self) -> None:
         assert isinstance(OOM_RISK_HEADROOM_GB, float)
         assert OOM_RISK_HEADROOM_GB == 0.5
+
+
+# ── Parametrized threshold configurability tests ──────────────────────────────
+
+
+class TestParametrizedThresholdConfig:
+    """Verify that min_useful_ctx and min_throughput_toks_per_s work independently
+    — config that passes at default fails when raised, vice versa, and both args
+    respected independently in both _is_eligible and print_ranking."""
+
+    def _row(self, **kwargs: Any) -> dict[str, Any]:
+        defaults = dict(
+            repeat_index=1,
+            outcome="ok",
+            cpu_offload_detected=False,
+            context_size=4096,
+            throughput_tok_s=80.0,
+            tier="speed",
+            quality_task_success=None,
+        )
+        defaults.update(kwargs)
+        return defaults
+
+    # ── _is_eligible ───────────────────────────────────────────────────────────
+
+    def test_ctx_threshold_default_passes(self) -> None:
+        assert _is_eligible([self._row(context_size=4096)]) is None
+
+    def test_ctx_threshold_raises_at_default(self) -> None:
+        rows = [self._row(context_size=2048)]
+        reason = _is_eligible(rows, min_useful_ctx=4096)
+        assert reason is not None
+        assert "context too small" in reason
+
+    def test_throughput_threshold_default_passes(self) -> None:
+        assert _is_eligible([self._row(throughput_tok_s=80.0)]) is None
+
+    def test_throughput_threshold_raises_at_default(self) -> None:
+        rows = [self._row(throughput_tok_s=3.0)]
+        reason = _is_eligible(rows, min_throughput_toks_per_s=5.0)
+        assert reason is not None
+        assert "throughput too low" in reason
+
+    def test_increasing_ctx_floor_always_stricter(self) -> None:
+        """Raising min_useful_ctx should never make previously-eligible configs
+        become eligible — only stricter."""
+        rows_ctx_ok = [self._row(context_size=4096)]
+        assert _is_eligible(rows_ctx_ok) is None
+        assert _is_eligible(rows_ctx_ok, min_useful_ctx=8192) is not None, (
+            "Raised floor should disqualify"
+        )
+
+    def test_increasing_throughput_floor_always_stricter(self) -> None:
+        rows = [self._row(throughput_tok_s=80.0)]
+        assert _is_eligible(rows) is None
+        assert _is_eligible(rows, min_throughput_toks_per_s=100.0) is not None, (
+            "Raised floor should disqualify"
+        )
+
+    def test_decreasing_ctx_floor_relaxes_strict(self) -> None:
+        rows = [self._row(context_size=1024)]
+        assert _is_eligible(rows, min_useful_ctx=4096) is not None
+        assert _is_eligible(rows, min_useful_ctx=512) is None, (
+            "Lowered floor should re-qualify"
+        )
+
+    def test_decreasing_throughput_floor_relaxes_strict(self) -> None:
+        rows = [self._row(throughput_tok_s=3.0)]
+        assert _is_eligible(rows, min_throughput_toks_per_s=5.0) is not None
+        assert _is_eligible(rows, min_throughput_toks_per_s=1.0) is None, (
+            "Lowered floor should re-qualify"
+        )
+
+    def test_ctx_and_throughput_respected_independently(self) -> None:
+        """Raising only one threshold should not affect the other gate."""
+        rows = [
+            self._row(context_size=1024, throughput_tok_s=2.0),
+        ]
+        # Both thresholds high → rejected by ctx gate first
+        reason = _is_eligible(rows, min_useful_ctx=4096, min_throughput_toks_per_s=5.0)
+        assert reason is not None
+        assert "context too small" in reason
+
+        # Lower ctx threshold → ctx passes, throughput gate fires
+        reason = _is_eligible(rows, min_useful_ctx=512, min_throughput_toks_per_s=5.0)
+        assert reason is not None
+        assert "throughput too low" in reason
+
+        # Lower throughput threshold → both pass
+        assert (
+            _is_eligible(rows, min_useful_ctx=512, min_throughput_toks_per_s=1.0)
+            is None
+        )
+
+    def test_print_ranking_respects_min_useful_ctx(self) -> None:
+        rows = [
+            dict(
+                backend_id="b",
+                model_id="m",
+                context_size=2048,
+                concurrency=1,
+                repeat_index=1,
+                ttft_s=0.3,
+                throughput_tok_s=80.0,
+                outcome="ok",
+                cpu_offload_detected=False,
+                tier="speed",
+                quality_task_success=None,
+            )
+        ]
+        output_default = _capture(rows)  # min_useful_ctx=4096 → ineligible
+        assert "context too small" in output_default
+
+        output_relaxed = _capture(rows, min_useful_ctx=1024)  # → eligible
+        assert "INELIGIBLE CONFIGS" not in output_relaxed
+        assert "RECOMMENDED" in output_relaxed
+
+    def test_print_ranking_respects_min_throughput(self) -> None:
+        rows = [
+            dict(
+                backend_id="b",
+                model_id="m",
+                context_size=4096,
+                concurrency=1,
+                repeat_index=1,
+                ttft_s=0.3,
+                throughput_tok_s=3.0,
+                outcome="ok",
+                cpu_offload_detected=False,
+                tier="speed",
+                quality_task_success=None,
+            )
+        ]
+        output_default = _capture(rows)  # min_throughput=5.0 → ineligible
+        assert "throughput too low" in output_default
+
+        output_relaxed = _capture(rows, min_throughput_toks_per_s=1.0)  # → eligible
+        assert "RECOMMENDED" in output_relaxed
+        assert "INELIGIBLE CONFIGS" not in output_relaxed
+
+    def test_both_thresholds_respected_independently_in_print_ranking(self) -> None:
+        """Both parameters must work independently: raising one should not
+        silently affect the other gate."""
+        rows = [
+            dict(
+                backend_id="b",
+                model_id="m",
+                context_size=2048,
+                concurrency=1,
+                repeat_index=1,
+                ttft_s=0.3,
+                throughput_tok_s=3.0,
+                outcome="ok",
+                cpu_offload_detected=False,
+                tier="speed",
+                quality_task_success=None,
+            )
+        ]
+        # Both strict → rejected by ctx gate first
+        output_both_strict = _capture(
+            rows, min_useful_ctx=4096, min_throughput_toks_per_s=5.0
+        )
+        assert "context too small" in output_both_strict
+
+        # Relaxed ctx, strict throughput → ctx passes, throughput gate fires
+        output_relaxed_ctx = _capture(
+            rows, min_useful_ctx=1024, min_throughput_toks_per_s=5.0
+        )
+        assert "throughput too low" in output_relaxed_ctx
+        assert "context too small" not in output_relaxed_ctx
+
+        # Relaxed both → eligible
+        output_both_relaxed = _capture(
+            rows, min_useful_ctx=1024, min_throughput_toks_per_s=1.0
+        )
+        assert "RECOMMENDED" in output_both_relaxed

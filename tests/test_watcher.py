@@ -19,8 +19,8 @@ import pytest
 
 from app.core.linear_client import LinearError
 from app.core.manifest import ArtifactPaths, ExecutionManifest
-from app.core.watcher import Watcher, _ProcessedTicket
-from app.core.watcher_types import ActiveWorker
+from app.core.watcher.watcher import Watcher, _ProcessedTicket
+from app.core.watcher.watcher_types import ActiveWorker
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -102,9 +102,13 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.watcher.create_worktree"),
+        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
+        patch(
+            "app.core.watcher.watcher.launch_worker",
+            return_value=fake_process,
+        ),
         patch.object(w._services, "ensure_ollama_running"),
         patch.object(w._services, "ensure_litellm_running"),
         patch.object(w._services, "probe_vllm_health"),
@@ -237,13 +241,16 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
 
     with (
         patch.object(watcher, "_load_manifest", return_value=local_manifest),
-        patch("app.core.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher.write_worker_pytest_config"),
         patch.object(watcher._services, "ensure_ollama_running"),
         patch.object(watcher._services, "ensure_litellm_running"),
         patch.object(watcher._services, "probe_vllm_health"),
-        patch("app.core.watcher.launch_worker", return_value=fake_local_process),
+        patch(
+            "app.core.watcher.watcher.launch_worker",
+            return_value=fake_local_process,
+        ),
     ):
         watcher._start_ticket("WOR-10", "fake-local-id")
 
@@ -277,12 +284,17 @@ def test_dispatch_calls_ensure_litellm_but_not_ollama_for_local_effective_mode(
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.safe_set_state"),
-        patch("app.core.watcher.backup_plan_files", return_value=[]),
-        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch(
+            "app.core.watcher.watcher_worktrees.create_worktree", return_value=tmp_path
+        ),
+        patch("app.core.watcher.watcher_worktrees.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher_worktrees.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher_finalize.safe_set_state"),
+        patch("app.core.watcher.watcher_worktrees.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.watcher_subprocess.launch_worker",
+            return_value=fake_process,
+        ),
         patch.object(w._services, "ensure_ollama_running") as mock_ollama,
         patch.object(w._services, "ensure_litellm_running") as mock_litellm,
         patch.object(w._services, "probe_vllm_health") as mock_probe,
@@ -311,12 +323,17 @@ def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.safe_set_state"),
-        patch("app.core.watcher.backup_plan_files", return_value=[]),
-        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch(
+            "app.core.watcher.watcher_worktrees.create_worktree", return_value=tmp_path
+        ),
+        patch("app.core.watcher.watcher_worktrees.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher_worktrees.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher_finalize.safe_set_state"),
+        patch("app.core.watcher.watcher_worktrees.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.watcher_subprocess.launch_worker",
+            return_value=fake_process,
+        ),
         patch.object(w._services, "ensure_ollama_running") as mock_ollama,
         patch.object(w._services, "ensure_litellm_running") as mock_litellm,
         patch.object(w._services, "probe_vllm_health") as mock_probe,
@@ -364,6 +381,39 @@ def test_check_epic_completion_posts_comment_and_exits(tmp_path: Path) -> None:
         "All sub-tickets merged — ready for `/close-epic WOR-96`",
     )
     assert w._running is False
+
+
+def test_check_epic_completion_no_epic_shutdown_keeps_running(
+    tmp_path: Path,
+) -> None:
+    """When no_epic_shutdown=True, _check_epic_completion must NOT set
+    _running to False. The epic-complete comment must still be posted."""
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = []
+    w = Watcher(
+        linear_client=linear_mock,
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+    w._processed_tickets = [
+        _ProcessedTicket(
+            ticket_id="WOR-10",
+            epic_id="WOR-96",
+            worker_branch="wor-10-test-ticket",
+            elapsed=120.0,
+        )
+    ]
+
+    with (
+        patch.object(w, "_has_waiting_deps", return_value=False),
+        patch.object(
+            w, "_lookup_pr_url", return_value="https://github.com/org/repo/pull/1"
+        ),
+    ):
+        w._check_epic_completion()
+
+    linear_mock.post_comment.assert_called_once()
+    assert w._running is True
 
 
 def test_check_epic_completion_no_tickets_processed_no_comment_exits(
@@ -510,12 +560,15 @@ def test_dispatch_deferred_when_vllm_not_ready(tmp_path: Path) -> None:
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.create_worktree") as mock_create,
-        patch("app.core.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.safe_set_state") as mock_set_state,
-        patch("app.core.watcher.backup_plan_files", return_value=[]),
-        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch("app.core.watcher.watcher.create_worktree") as mock_create,
+        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher.safe_set_state") as mock_set_state,
+        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.watcher.launch_worker",
+            return_value=fake_process,
+        ),
         patch.object(w._services, "probe_vllm_health", return_value=False),
     ):
         w._dispatch_next_ticket()
@@ -555,12 +608,17 @@ def test_dispatch_proceeds_when_vllm_ready(tmp_path: Path) -> None:
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.create_worktree", return_value=tmp_path) as mock_create,
-        patch("app.core.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.safe_set_state"),
-        patch("app.core.watcher.backup_plan_files", return_value=[]),
-        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch(
+            "app.core.watcher.watcher.create_worktree", return_value=tmp_path
+        ) as mock_create,
+        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher.safe_set_state"),
+        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.watcher.launch_worker",
+            return_value=fake_process,
+        ),
         patch.object(w._services, "probe_vllm_health", return_value=True),
         patch.object(w._services, "ensure_ollama_running"),
         patch.object(w._services, "ensure_litellm_running"),
@@ -599,12 +657,17 @@ def test_cloud_mode_skips_vllm_probe(tmp_path: Path) -> None:
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.safe_set_state"),
-        patch("app.core.watcher.backup_plan_files", return_value=[]),
-        patch("app.core.watcher.launch_worker", return_value=fake_process),
+        patch(
+            "app.core.watcher.watcher_worktrees.create_worktree", return_value=tmp_path
+        ),
+        patch("app.core.watcher.watcher_worktrees.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher_worktrees.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher_finalize.safe_set_state"),
+        patch("app.core.watcher.watcher_worktrees.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.watcher_subprocess.launch_worker",
+            return_value=fake_process,
+        ),
         patch.object(
             w._services, "probe_vllm_health", return_value=False
         ) as mock_probe,
@@ -712,3 +775,116 @@ def test_enrich_with_retry_context_noop_without_failure_file(tmp_path: Path) -> 
     enriched = w._enrich_with_retry_context(manifest)
 
     assert enriched.implementation_constraints == ["original constraint"]
+
+
+# ---------------------------------------------------------------------------
+# Manifest blocker check — dispatch skips when manifest declares an unmerged blocker
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_skipped_when_manifest_declares_unmerged_blocker(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Dispatch must be skipped when the manifest declares a blocker that is not yet
+    in a Linear completed state, even if Linear's own blockedBy is empty."""
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        blocked_by_tickets=["WOR-266"],
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.get_issue_state_type.return_value = "started"  # not done
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        caplog.at_level(logging.INFO, logger="app.core.watcher"),
+    ):
+        w._start_ticket("WOR-10", "fake-linear-id")
+
+    # No worktree should have been created — the ticket stays in ReadyForLocal
+    assert w._local_active == []
+    assert any(
+        "WOR-266" in msg and "unmerged blocker" in msg for msg in caplog.messages
+    )
+
+
+def test_dispatch_proceeds_when_manifest_blocked_by_tickets_is_empty(
+    tmp_path: Path,
+) -> None:
+    """Dispatch must proceed when the manifest declares no blocked_by_tickets."""
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        blocked_by_tickets=[],
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.get_issue_state_type.return_value = "started"
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+    w._processed_tickets = []
+
+    fake_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher.safe_set_state"),
+        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.watcher.launch_worker",
+            return_value=fake_process,
+        ),
+        patch.object(w._services, "ensure_ollama_running"),
+        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "probe_vllm_health"),
+    ):
+        w._start_ticket("WOR-10", "fake-linear-id")
+
+    assert len(w._local_active) == 1
+    assert w._local_active[0].ticket_id == "WOR-10"
+
+
+def test_dispatch_proceeds_when_all_manifest_blockers_are_merged(
+    tmp_path: Path,
+) -> None:
+    """Dispatch must proceed when every manifest-declared blocker has reached
+    a Linear completed state (MergedToEpic / Done → state type 'completed')."""
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        blocked_by_tickets=["WOR-266", "WOR-267"],
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.get_issue_state_type.side_effect = lambda x: "completed"  # both done
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+    w._processed_tickets = []
+
+    fake_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher.safe_set_state"),
+        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.watcher.launch_worker",
+            return_value=fake_process,
+        ),
+        patch.object(w._services, "ensure_ollama_running"),
+        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "probe_vllm_health"),
+    ):
+        w._start_ticket("WOR-10", "fake-linear-id")
+
+    assert len(w._local_active) == 1
+    assert w._local_active[0].ticket_id == "WOR-10"

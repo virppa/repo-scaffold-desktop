@@ -1,4 +1,4 @@
-"""Tests for app.core.watcher_subprocess."""
+"""Tests for app.core.watcher.watcher_subprocess."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.manifest import ArtifactPaths, ExecutionManifest
-from app.core.watcher_helpers import _tee_worker_output
-from app.core.watcher_subprocess import (
+from app.core.watcher.watcher_helpers import _tee_worker_output
+from app.core.watcher.watcher_subprocess import (
     build_snippet_tool_restrictions,
     create_pr,
     expand_skill,
@@ -68,7 +68,9 @@ def test_create_pr_pushes_branch_before_gh_pr(tmp_path: Path) -> None:
         result.stdout = "https://github.com/example/pr/1"
         return result
 
-    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
         create_pr(manifest, tmp_path)
 
     assert call_order == ["push", "gh_pr"]
@@ -97,8 +99,10 @@ def test_create_pr_logs_warning_on_auto_merge_failure(
         return result
 
     with (
-        patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run),
-        caplog.at_level(logging.WARNING, logger="app.core.watcher_subprocess"),
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_subprocess"),
     ):
         returned_url = create_pr(manifest, tmp_path)
 
@@ -371,14 +375,15 @@ def test_launch_worker_quiet_mode_returns_popen(tmp_path: Path) -> None:
     mock_process = MagicMock()
 
     with (
-        patch("app.core.watcher_subprocess.expand_skill", return_value=None),
+        patch("app.core.watcher.watcher_subprocess.expand_skill", return_value=None),
         patch(
-            "app.core.watcher_subprocess.build_worker_cmd",
+            "app.core.watcher.watcher_subprocess.build_worker_cmd",
             return_value=["claude", "--dangerously-skip-permissions"],
         ),
-        patch("app.core.watcher_subprocess.build_worker_env", return_value={}),
+        patch("app.core.watcher.watcher_subprocess.build_worker_env", return_value={}),
         patch(
-            "app.core.watcher_subprocess.subprocess.Popen", return_value=mock_process
+            "app.core.watcher.watcher_subprocess.subprocess.Popen",
+            return_value=mock_process,
         ) as mock_popen,
     ):
         result = launch_worker(tmp_path, manifest, tmp_path, "local", verbose=False)
@@ -394,16 +399,17 @@ def test_launch_worker_verbose_mode_starts_tee_thread(tmp_path: Path) -> None:
     mock_process.stdout = io.BytesIO(b"worker output\n")
 
     with (
-        patch("app.core.watcher_subprocess.expand_skill", return_value=None),
+        patch("app.core.watcher.watcher_subprocess.expand_skill", return_value=None),
         patch(
-            "app.core.watcher_subprocess.build_worker_cmd",
+            "app.core.watcher.watcher_subprocess.build_worker_cmd",
             return_value=["claude"],
         ),
-        patch("app.core.watcher_subprocess.build_worker_env", return_value={}),
+        patch("app.core.watcher.watcher_subprocess.build_worker_env", return_value={}),
         patch(
-            "app.core.watcher_subprocess.subprocess.Popen", return_value=mock_process
+            "app.core.watcher.watcher_subprocess.subprocess.Popen",
+            return_value=mock_process,
         ) as mock_popen,
-        patch("app.core.watcher_subprocess.threading.Thread") as mock_thread,
+        patch("app.core.watcher.watcher_subprocess.threading.Thread") as mock_thread,
     ):
         result = launch_worker(tmp_path, manifest, tmp_path, "local", verbose=True)
 
@@ -427,22 +433,26 @@ def test_launch_worker_cloud_mode_with_snippets_prepends_critical_warning(
         wt: Path,
         prompt: object,
         disallowed: object,
+        mcp_config_json: object = None,
+        *,
+        effort: object = None,
     ) -> list[str]:
         captured_prompts.append(prompt)
         return ["claude"]
 
     with (
         patch(
-            "app.core.watcher_subprocess.expand_skill",
+            "app.core.watcher.watcher_subprocess.expand_skill",
             return_value="Run /implement-ticket WOR-10",
         ),
         patch(
-            "app.core.watcher_subprocess.build_worker_cmd",
+            "app.core.watcher.watcher_subprocess.build_worker_cmd",
             side_effect=capture_cmd,
         ),
-        patch("app.core.watcher_subprocess.build_worker_env", return_value={}),
+        patch("app.core.watcher.watcher_subprocess.build_worker_env", return_value={}),
         patch(
-            "app.core.watcher_subprocess.subprocess.Popen", return_value=mock_process
+            "app.core.watcher.watcher_subprocess.subprocess.Popen",
+            return_value=mock_process,
         ),
     ):
         launch_worker(tmp_path, manifest, tmp_path, "cloud", verbose=False)
@@ -451,6 +461,45 @@ def test_launch_worker_cloud_mode_with_snippets_prepends_critical_warning(
     assert isinstance(captured_prompts[0], str)
     assert "CRITICAL" in captured_prompts[0]
     assert "watcher.py" in captured_prompts[0]
+
+
+def test_launch_worker_passes_linear_mcp_config_to_build_worker_cmd(
+    tmp_path: Path,
+) -> None:
+    manifest = _make_manifest()
+    mock_process = MagicMock()
+    captured_args: dict = {}
+
+    def capture_cmd(
+        ticket_id: str,
+        mode: str,
+        wt: Path,
+        prompt: object,
+        disallowed: object,
+        mcp_config_json: object = None,
+        *,
+        effort: object = None,
+    ) -> list[str]:
+        captured_args["mcp_config_json"] = mcp_config_json
+        return ["claude"]
+
+    with (
+        patch("app.core.watcher.watcher_subprocess.expand_skill", return_value=None),
+        patch(
+            "app.core.watcher.watcher_subprocess.build_worker_cmd",
+            side_effect=capture_cmd,
+        ),
+        patch("app.core.watcher.watcher_subprocess.build_worker_env", return_value={}),
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.Popen",
+            return_value=mock_process,
+        ),
+    ):
+        launch_worker(tmp_path, manifest, tmp_path, "cloud", verbose=False)
+
+    assert isinstance(captured_args["mcp_config_json"], str)
+    assert "linear-server" in captured_args["mcp_config_json"]
+    assert "mcp.linear.app" in captured_args["mcp_config_json"]
 
 
 # ---------------------------------------------------------------------------
@@ -468,8 +517,12 @@ def test_run_checks_returns_true_when_all_pass(tmp_path: Path) -> None:
         result.stderr = ""
         return result
 
-    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
-        assert run_checks(manifest, tmp_path) is True
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
+        passed, failures = run_checks(manifest, tmp_path)
+        assert passed is True
+        assert failures == []
 
 
 def test_run_checks_returns_false_on_check_failure(
@@ -488,12 +541,17 @@ def test_run_checks_returns_false_on_check_failure(
         return result
 
     with (
-        patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run),
-        caplog.at_level(logging.ERROR, logger="app.core.watcher_subprocess"),
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
+        caplog.at_level(logging.ERROR, logger="app.core.watcher.watcher_subprocess"),
     ):
-        passed = run_checks(manifest, tmp_path)
+        passed, failures = run_checks(manifest, tmp_path)
 
     assert passed is False
+    assert len(failures) == 1
+    assert failures[0]["check"] == "ruff check ."
+    assert failures[0]["exit_code"] == 1
     assert any("Check failed" in msg for msg in caplog.messages)
     assert call_count == 2
 
@@ -508,7 +566,9 @@ def test_run_checks_writes_last_failure_json_on_failure(tmp_path: Path) -> None:
         result.stderr = "some stderr"
         return result
 
-    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
         run_checks(manifest, tmp_path)
 
     artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
@@ -535,7 +595,9 @@ def test_run_checks_stdout_trimmed_to_4000_chars(tmp_path: Path) -> None:
         result.stderr = ""
         return result
 
-    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
         run_checks(manifest, tmp_path)
 
     artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
@@ -563,8 +625,12 @@ def test_run_checks_deletes_last_failure_json_on_success(tmp_path: Path) -> None
         result.stderr = ""
         return result
 
-    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
-        assert run_checks(manifest, tmp_path) is True
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
+        passed, failures = run_checks(manifest, tmp_path)
+        assert passed is True
+        assert failures == []
 
     assert not stale.exists(), (
         "last_failure.json should be deleted after successful run"
@@ -586,7 +652,9 @@ def test_run_checks_last_failure_overwritten_by_last_failing_check(
         result.stderr = ""
         return result
 
-    with patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run):
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
         run_checks(manifest, tmp_path)
 
     artifact_dir = tmp_path / Path(manifest.artifact_paths.result_json).parent
@@ -623,8 +691,10 @@ def test_create_pr_skips_auto_merge_when_targeting_main(
         return result
 
     with (
-        patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run),
-        caplog.at_level(logging.INFO, logger="app.core.watcher_subprocess"),
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_subprocess"),
     ):
         returned_url = create_pr(manifest, tmp_path)
 
@@ -649,7 +719,9 @@ def test_create_pr_raises_when_no_commits_ahead(tmp_path: Path) -> None:
         return result
 
     with (
-        patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run),
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
         pytest.raises(subprocess.CalledProcessError, match="git log"),
     ):
         create_pr(manifest, tmp_path)
@@ -676,8 +748,10 @@ def test_create_pr_falls_back_to_immediate_merge_on_auto_merge_api_error(
         return result
 
     with (
-        patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run),
-        caplog.at_level(logging.INFO, logger="app.core.watcher_subprocess"),
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_subprocess"),
     ):
         returned_url = create_pr(manifest, tmp_path)
 
@@ -708,8 +782,10 @@ def test_create_pr_warns_when_immediate_merge_also_fails(
         return result
 
     with (
-        patch("app.core.watcher_subprocess.subprocess.run", side_effect=fake_run),
-        caplog.at_level(logging.WARNING, logger="app.core.watcher_subprocess"),
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_subprocess"),
     ):
         returned_url = create_pr(manifest, tmp_path)
 

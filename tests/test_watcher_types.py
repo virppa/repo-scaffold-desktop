@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.core.watcher import Watcher
-from app.core.watcher_types import is_watcher_running
+from app.core.watcher.watcher_types import is_watcher_running
 
 
 def test_is_watcher_running_no_pid_file(tmp_path: Path) -> None:
@@ -41,7 +41,8 @@ def test_write_and_remove_pid_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid_file = tmp_path / ".claude/watcher.pid"
-    monkeypatch.setattr("app.core.watcher._PID_FILE", pid_file)
+    monkeypatch.setattr("app.core.watcher.watcher_types._PID_FILE", pid_file)
+    monkeypatch.setattr("app.core.watcher.watcher._PID_FILE", pid_file)
 
     mock_linear = MagicMock()
     watcher = Watcher(linear_client=mock_linear, repo_root=tmp_path)

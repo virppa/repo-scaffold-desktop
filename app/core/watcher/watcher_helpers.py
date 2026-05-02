@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import IO
 
 from app.core.manifest import ExecutionManifest
-from app.core.watcher_types import (
+
+from .watcher_types import (
     _ENV_VARS_TO_STRIP_FOR_CLOUD,
     _LITELLM_BASE_URL,
     _LOCAL_MODEL,
@@ -149,6 +150,9 @@ def build_worker_cmd(
     worktree_path: Path,
     prompt: str | None = None,
     disallowed_tools: list[str] | None = None,
+    mcp_config_json: str | None = None,
+    *,
+    effort: str | None = None,
 ) -> list[str]:
     """Return the claude subprocess command list for the given mode.
 
@@ -157,11 +161,14 @@ def build_worker_cmd(
 
     disallowed_tools — list of tool-call patterns passed to --disallowed-tools
     (e.g. ["Read(*watcher.py)", "Read(*metrics.py)"]) to enforce context_snippets.
+
+    mcp_config_json — JSON string for --mcp-config. When None, uses an empty
+    server map ('{"mcpServers":{}}') to disable all MCP servers. Pass a
+    non-empty value to enable specific MCP servers (e.g. Linear).
     """
     if prompt is None:
         prompt = f"/implement-ticket {ticket_id}"
-    # --strict-mcp-config + empty config prevents the Linear HTTP MCP server
-    # from blocking ~180s on OAuth in non-interactive mode.
+    mcp_config = mcp_config_json if mcp_config_json is not None else '{"mcpServers":{}}'
     base = [
         "claude",
         "--dangerously-skip-permissions",
@@ -169,18 +176,19 @@ def build_worker_cmd(
         str(worktree_path),
         "--strict-mcp-config",
         "--mcp-config",
-        '{"mcpServers":{}}',
+        mcp_config,
         "--verbose",
         "--output-format",
         "stream-json",
     ]
+    _effort = effort if effort is not None else ("xhigh" if mode == "local" else "max")
     if mode == "local":
-        # --effort xhigh: interim default pending WOR-265 adaptive effort scaling.
         # (CLI values: low|medium|high|xhigh|max — "normal" was removed)
-        base += ["--effort", "xhigh"]
+        # When effort=None, fall back to xhigh for local, max for cloud.
+        base += ["--effort", _effort]
         base += ["--model", _LOCAL_MODEL]
     else:
-        base += ["--effort", "max"]
+        base += ["--effort", _effort]
     if disallowed_tools:
         base += ["--disallowed-tools", ",".join(disallowed_tools)]
     return base + ["-p", prompt]

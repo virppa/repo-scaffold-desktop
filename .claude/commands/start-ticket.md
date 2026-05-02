@@ -114,6 +114,15 @@ If no siblings are In Progress, skip this block silently.
 - Flag any security surface introduced: new I/O, user input handling, file operations, subprocess calls
 - Note edge cases and overwrite behavior to consider
 - Assess local-model suitability: is the scope bounded (≤3 small/medium files, straightforward wiring)? Or does it touch large/complex modules (e.g. watcher.py, generator.py) requiring multi-step reasoning across many dependencies? Record your conclusion — it determines `implementation_mode` in the manifest.
+- Classify the ticket's effort level using this rule: simple/additive work touching ≤2 files → 'high'; bounded multi-file work → 'xhigh'; complex/large modules or deep cross-file reasoning → 'max'. Record your classification in the manifest.
+- **Taxonomy classification** (WOR-262) — record these 7 dimensions in the manifest. All optional but populate when you can:
+  - `change_type` — one of `additive` (new feature/file), `modification` (existing behavior changes), `refactor` (no behavior change), `removal` (deletion/cleanup), `docs` (markdown / comments only)
+  - `reasoning_demand` 1-5 — how much cross-file reasoning is needed (1 = local change in one function, 5 = touches many modules with non-obvious invariants)
+  - `scope_clarity` 1-5 — how explicit the AC is (1 = vague "improve X", 5 = exact file/line targets and expected behaviour)
+  - `constraint_density` 1-5 — number of hard rules in `implementation_constraints` (1 = none, 5 = many strict gates)
+  - `ac_specificity` 1-5 — how testable the AC is (1 = subjective only, 5 = each bullet maps to an assertion)
+  - `tech_stack` — comma-separated tags of the technologies involved, e.g. `python,sqlite,pydantic` or `markdown,yaml`
+  - `raw_extensions` — JSON array string of file extensions touched, e.g. `[".py",".md"]`
 
 ### 3. Create the branch and update Linear
 Using the branch name from Linear's "Copy branch name" format (usually `WOR-NNN-short-description`):
@@ -176,7 +185,24 @@ If all four apply, note it explicitly: *"This ticket is a good candidate for int
 
 ---
 
-### 4.5. After human approves the plan — generate the execution manifest
+### 2.5. Populate context_snippets from related_files_hint
+
+Before writing the manifest (step 4.6), populate the `context_snippets` field so the
+local worker can read file headers without round-trip Read calls.
+
+For each file path listed in `related_files_hint` (the architect populates this in step 2):
+1. Read the first ~60 lines of the file using the **Read** tool — one Read call per file.
+2. If the file has fewer than 80 lines, read the entire file.
+3. Cap each snippet at **min(80 lines, 3000 characters)** — truncate at whichever limit is hit first.
+4. Store as a JSON object keyed by file path: `{ "<file_path>": "<snippet_content>" }`.
+5. If `related_files_hint` has **more than 10 files**, take only the first 10.
+
+If `related_files_hint` is empty, leave `context_snippets` as null (omit it from the manifest).
+
+Write the populated `context_snippets` object into the manifest at `context_snippets` key
+(see step 4.6 for the full manifest structure).
+
+### 4.6. After human approves the plan — generate the execution manifest
 
 Once the human says to proceed, generate and write an `ExecutionManifest` JSON to disk. This is the handoff artifact the local worker reads — it must not require re-reading Linear or re-planning.
 
@@ -194,6 +220,14 @@ Construct the manifest from the planning context gathered in steps 1–4:
   "risk_level": "<low|medium|high — from security surface assessment>",
   "risk_flags": ["<any specific risk notes>"],
   "implementation_mode": "<local if ticket has local-ready label, otherwise cloud>",
+  "effort": "<high|xhigh|max — effort classification from architect phase>",
+  "change_type": "<additive|modification|refactor|removal|docs — taxonomy>",
+  "reasoning_demand": <1-5: cross-file reasoning depth>,
+  "scope_clarity": <1-5: how explicit the AC is>,
+  "constraint_density": <1-5: number of hard rules>,
+  "ac_specificity": <1-5: how testable the AC is>,
+  "tech_stack": "<comma-separated tags, e.g. 'python,sqlite,pydantic'>",
+  "raw_extensions": "<JSON array string of extensions, e.g. '[\".py\",\".md\"]'>",
   "review_mode": "auto",
   "base_branch": "<epic-branch or main>",
   "worker_branch": "<sub-ticket-branch>",
@@ -216,6 +250,9 @@ Construct the manifest from the planning context gathered in steps 1–4:
     "in_progress_local": "InProgressLocal",
     "failed": "Blocked"
   },
+  "context_snippets": {
+    "<file_path>": "<snippet content, capped at 80 lines / 3000 chars>"
+  },
   "artifact_paths": {
     "result_json": ".claude/artifacts/<ticket_id_lower>/result.json",
     "manifest_copy": ".claude/artifacts/<ticket_id_lower>/manifest.json"
@@ -226,6 +263,8 @@ Construct the manifest from the planning context gathered in steps 1–4:
 Write this JSON to `.claude/artifacts/<ticket_id_lower>/manifest.json` (e.g. `.claude/artifacts/wor_80/manifest.json`). Create parent dirs as needed.
 
 > **Path normalization:** `<ticket_id_lower>` is `ticket_id.lower().replace("-", "_")` — hyphens become underscores (e.g. `WOR-127` → `wor_127`). This matches `ArtifactPaths.from_ticket_id()` in `app/core/manifest.py`. Using `wor-127` (hyphen) will cause a "No such file or directory" error at watcher startup.
+
+**Sync Linear blockedBy with the manifest.** If the manifest's `blocked_by_tickets` field is non-empty (e.g. `"blocked_by_tickets": ["WOR-266"]`), call `save_issue(id: "$ARGUMENTS", blockedBy: [...])` with the same set of ticket identifiers so that Linear's relation matches the manifest. If the list is empty, do not call `save_issue` for blockedBy.
 
 Then:
 1. Set the ticket to **ReadyForLocal** in Linear: `save_issue(id: "$ARGUMENTS", state: "ReadyForLocal")`

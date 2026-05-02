@@ -26,6 +26,36 @@ a pre-loaded code excerpt — do NOT re-read these sections from disk unless you
 need context beyond what is shown. The snippets are verbatim source with file
 path and line numbers in the header comment.
 
+Log the snippet count on startup: `"Loading {N} context snippets from manifest."`
+
+### 0.1. Inspect last_failure.json for WIP state (WOR-258)
+
+If `.claude/artifacts/<ticket_id_lower>/last_failure.json` exists in the
+worktree, read it for a `wip_commit_sha` value. When present:
+
+```bash
+git log --oneline -5   # see recent commits, including wip(failed) commits
+git show --stat <wip_commit_sha>  # diff of that commit
+```
+
+If the worktree contains a commit whose message matches `wip(failed): <ticket_id>`:
+- Inspect what code was already written by that commit.
+- **Resume from the WIP commit state** without redoing completed work.
+- If the WIP commit has conflicts with the current branch tip, resolve them
+  before continuing.
+
+Also inspect git log for wip commits from previous workers (WOR-267):
+
+```bash
+git log --oneline --grep="^wip: <ticket_id>$"  # find wip commits
+```
+
+If wip commits are found on the branch, inspect them and **resume from the last
+committed phase** without redoing completed work. The squash_wip_commits function
+(worker-side) will squash them into a single commit on success.
+
+This allows retry workers to pick up where the previous worker left off.
+
 ### 1. Verify branch
 
 Confirm the current git branch matches `worker_branch` from the manifest:
@@ -41,7 +71,7 @@ Check out the correct branch before running /implement-ticket.
 
 ### 2. Set ticket state to InProgressLocal
 
-**Skip this step in watcher-managed sessions.** The watcher calls `set_state("InProgressLocal")` before launching the worker. MCP is disabled in worker processes (`--mcp-config '{"mcpServers":{}}'`), so `save_issue` is not available and any attempt (including spawning an Agent) will fail silently. Do not call it and do not spawn a subagent for it.
+Call `save_issue(id: "<ticket_id>", state: "InProgressLocal")` at startup to signal that local implementation has begun.
 
 ### 3. Implement
 
@@ -95,6 +125,26 @@ grep -rn 'patch\.object' tests/ | grep '<ClassName>'
 ```
 
 `patch.object` patches the method on the instance; once the function is module-level it no longer exists on the class and the patch silently does nothing or raises `AttributeError`. Convert every match to a string-path `patch("new.module.path.function_name")`.
+
+### 3.5. Commit WIP state (WOR-267)
+
+After completing all implementation (step 3), make an unconditional WIP commit
+so that squash_wip_commits can squash it on the success path:
+
+```bash
+git add -A && git commit -m "wip: <ticket_id> implementation complete"
+```
+
+After writing any new test files, make a separate WIP commit for tests:
+
+```bash
+git add tests/ && git commit -m "wip: <ticket_id> tests written"
+```
+
+These instructions are UNCONDITIONAL — do not gate on check results or
+implementation quality. The squash_wip_commits function (worker-side) will
+squash all wip commits since the diverge point into a single commit before
+the PR is created, giving fine-grained retry resume.
 
 ### 4. Run required checks
 

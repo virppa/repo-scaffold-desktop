@@ -379,3 +379,35 @@ def test_linear_id_roundtrip():
     m = _make_manifest(linear_id="uuid-abc-123")
     m2 = ExecutionManifest.model_validate_json(m.model_dump_json())
     assert m2.linear_id == "uuid-abc-123"
+
+
+# ---------------------------------------------------------------------------
+# New fields: effort (WOR-214)
+# ---------------------------------------------------------------------------
+
+
+def test_effort_defaults_to_none():
+    m = _make_manifest()
+    assert m.effort is None
+
+
+@pytest.mark.parametrize("value", ["low", "medium", "high", "xhigh", "max"])
+def test_effort_accepts_valid_values(value: str) -> None:
+    m = _make_manifest(effort=value)
+    assert m.effort == value
+
+
+def test_effort_rejects_invalid_value():
+    with pytest.raises(ValidationError, match="Input should be"):
+        _make_manifest(effort="invalid")
+
+
+def test_effort_roundtrip():
+    m = _make_manifest(effort="high")
+    m2 = ExecutionManifest.model_validate_json(m.model_dump_json())
+    assert m2.effort == "high"
+
+
+def test_effort_none_is_valid():
+    m = _make_manifest(effort=None)
+    assert m.effort is None

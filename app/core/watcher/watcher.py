@@ -30,17 +30,18 @@ from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import MetricsStore
-from app.core.watcher_finalize import finalize_worker, safe_set_state
-from app.core.watcher_helpers import check_allowed_paths_overlap, resolve_effective_mode
-from app.core.watcher_services import ServiceManager
-from app.core.watcher_subprocess import launch_worker
-from app.core.watcher_types import (
+
+from .watcher_finalize import finalize_worker, safe_set_state
+from .watcher_helpers import check_allowed_paths_overlap, resolve_effective_mode
+from .watcher_services import ServiceManager
+from .watcher_subprocess import launch_worker
+from .watcher_types import (
     _CLAUDE_DIR,
     _PID_FILE,
     ActiveWorker,
     LinearClientProtocol,
 )
-from app.core.watcher_worktrees import (
+from .watcher_worktrees import (
     backup_plan_files,
     cleanup_worktree,
     copy_manifest_to_worktree,
@@ -79,6 +80,7 @@ class Watcher:
         repo_root: Path | None = None,
         project_id: str = "repo-scaffold-desktop",
         verbose: bool = False,
+        no_epic_shutdown: bool = False,
     ) -> None:
         if linear_client is None:
             from app.core.linear_client import LinearClient  # lazy import
@@ -100,6 +102,7 @@ class Watcher:
         self._verbose = verbose
         self._retry_counters: dict[str, int] = {}
         self._escalation_policy = EscalationPolicy.from_toml()
+        self._no_epic_shutdown = no_epic_shutdown
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -160,7 +163,7 @@ class Watcher:
             )
 
     def _cleanup_orphaned_worktrees(self) -> None:
-        from app.core.watcher_types import _WORKTREE_BASE
+        from .watcher_types import _WORKTREE_BASE
 
         base = self._repo_root.parent / _WORKTREE_BASE
         if not base.exists():
@@ -370,6 +373,18 @@ class Watcher:
             logger.info("Skipping %s — open blockers: %s", ticket_id, open_blockers)
             return
 
+        # Manifest-based blocker check — defense-in-depth alongside Linear check.
+        for blocker_id in manifest.blocked_by_tickets:
+            state_type = self._linear.get_issue_state_type(blocker_id)
+            if state_type not in DONE_STATE_TYPES:
+                logger.info(
+                    "Skipping %s — manifest declares unmerged blocker %s (state=%s)",
+                    ticket_id,
+                    blocker_id,
+                    state_type,
+                )
+                return
+
         all_active = self._local_active + self._cloud_active
         conflicts = check_allowed_paths_overlap(all_active, manifest)
         if conflicts:
@@ -569,7 +584,8 @@ class Watcher:
                     logger.warning(
                         "Could not post epic-complete comment on %s: %s", epic_id, exc
                     )
-            self._running = False
+            if not self._no_epic_shutdown:
+                self._running = False
 
     # ------------------------------------------------------------------
     # Manifest loading

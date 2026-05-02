@@ -8,12 +8,14 @@ This module may import from watcher_types only (no other watcher siblings).
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess  # nosec B404
 from pathlib import Path
 
 from app.core.manifest import ExecutionManifest
-from app.core.watcher_types import (
+
+from .watcher_types import (
     _CLAUDE_DIR,
     _WORKTREE_BASE,
     ActiveWorker,
@@ -148,6 +150,277 @@ def write_worker_pytest_config(worktree_path: Path) -> None:
     is still enforced by CI on the PR.
     """
     (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
+
+
+def commit_wip_state(
+    worktree_path: Path,
+    ticket_id: str,
+    worker_branch: str,
+) -> str | None:
+    """Stage and commit all work-in-progress for post-failure retry.
+
+    Returns the short commit SHA (12 chars) on success, or None if the tree
+    is clean or any git step fails. Never raises — logs warnings instead.
+    """
+    try:
+        # Check if tree is clean
+        status = subprocess.run(  # nosec B603 B607
+            ["git", "-C", str(worktree_path), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if status.returncode != 0 or not status.stdout.strip():
+            if status.returncode != 0:
+                logger.warning(
+                    "git status failed in %s for %s — skipping wip commit",
+                    worktree_path,
+                    ticket_id,
+                )
+            else:
+                logger.info(
+                    "No working tree changes for %s — no wip commit needed",
+                    ticket_id,
+                )
+            return None
+
+        # Stage all changes
+        subprocess.run(  # nosec B603 B607
+            ["git", "-C", str(worktree_path), "add", "-A"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Commit with the wip message
+        subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "commit",
+                "-m",
+                f"wip(failed): {ticket_id} pre-failure state "
+                "— retry may resume from here",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Push the branch
+        push = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "push",
+                "-u",
+                "origin",
+                worker_branch,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if push.returncode != 0:
+            logger.warning(
+                "git push failed for %s — wip commit not pushed: %s",
+                ticket_id,
+                (push.stderr or push.stdout or "").strip(),
+            )
+            return None
+
+        # Get short SHA
+        rev = subprocess.run(  # nosec B603 B607
+            ["git", "-C", str(worktree_path), "rev-parse", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        sha = rev.stdout.strip()
+        logger.info(
+            "WIP commit %s created for %s on %s",
+            sha,
+            ticket_id,
+            worker_branch,
+        )
+        return sha
+
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "WIP commit failed for %s: %s",
+            ticket_id,
+            (exc.stderr or exc.stdout or str(exc)).strip(),
+        )
+        return None
+    except OSError as exc:
+        logger.warning("WIP commit failed for %s (OSError): %s", ticket_id, exc)
+        return None
+
+
+def squash_wip_commits(
+    worktree_path: Path,
+    ticket_id: str,
+    base_branch: str,
+    final_message: str,
+) -> str | None:
+    """Squash all wip commits since the diverge point into a single commit.
+
+    Finds all commits whose message matches ``wip: <ticket_id>`` since the
+    branch diverged from *base_branch*. If any exist, does a
+    ``git reset --soft <diverge>`` followed by ``git commit -m <final_message>``
+    and pushes the result.
+
+    Returns the new short commit SHA on success, or ``None`` when no wip
+    commits are found (no-op) or any git step fails.  Never raises — logs
+    warnings instead.
+    """
+    try:
+        # Find diverge point
+        merge_base = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "merge-base",
+                "HEAD",
+                base_branch,
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        diverge = merge_base.stdout.strip()
+
+        # Check for wip commits
+        log = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "log",
+                "--oneline",
+                f"{diverge}..HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        wip_commits: list[str] = []
+        for line in log.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # Match: <hex-sha> wip: <ticket_id>
+            # git log --oneline: sha (8+ chars) + space + title
+            sha_part = stripped[:7]
+            if re.match(r"^[0-9a-f]{7,}", sha_part) and f"wip: {ticket_id}" in stripped:
+                wip_commits.append(stripped)
+
+        if not wip_commits:
+            logger.info(
+                "No wip commits for %s since %s — nothing to squash",
+                ticket_id,
+                base_branch,
+            )
+            return None
+
+        logger.info(
+            "Found %d wip commit(s) for %s — squashing into single commit",
+            len(wip_commits),
+            ticket_id,
+        )
+
+        # Squash: soft reset to diverge point
+        subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "reset",
+                "--soft",
+                diverge,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Commit with final message
+        subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "commit",
+                "-m",
+                final_message,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Push — the current branch (worker branch) now has the squashed commit
+        push = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "push",
+                "-u",
+                "origin",
+                "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if push.returncode != 0:
+            logger.warning(
+                "git push failed after squashing wip commits for %s — "
+                "commit was created locally but not pushed: %s",
+                ticket_id,
+                (push.stderr or push.stdout or "").strip(),
+            )
+            return None
+
+        # Get short SHA
+        rev = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "rev-parse",
+                "--short",
+                "HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        sha = rev.stdout.strip()
+        logger.info(
+            "WIP commits squashed for %s — new commit %s",
+            ticket_id,
+            sha,
+        )
+        return sha
+
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "squash_wip_commits failed for %s: %s",
+            ticket_id,
+            (exc.stderr or exc.stdout or str(exc)).strip(),
+        )
+        return None
+    except OSError as exc:
+        logger.warning(
+            "squash_wip_commits failed for %s (OSError): %s",
+            ticket_id,
+            exc,
+        )
+        return None
 
 
 def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:

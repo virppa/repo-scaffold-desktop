@@ -6,38 +6,86 @@ Extracted from Watcher._finalize_worker to reduce watcher.py LOC toward the
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import subprocess  # nosec B404
 from pathlib import Path
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import MetricsStore, Outcome, TicketMetrics
-from app.core.watcher_helpers import (
+from app.core.metrics import MetricsStore, Outcome, TicketMetrics, TicketRunLog
+
+from .watcher_helpers import (
     _POLICY_FLAGS,
     _parse_worker_usage,
     _read_result_flags,
     resolve_effective_mode,
 )
-from app.core.watcher_subprocess import (
+from .watcher_subprocess import (
     create_pr,
     fetch_sonar_findings,
     run_checks,
 )
-from app.core.watcher_types import (
+from .watcher_types import (
     _LOCAL_MODEL,
     ActiveWorker,
     LinearClientProtocol,
     _to_metrics_mode,
 )
-from app.core.watcher_worktrees import (
+from .watcher_worktrees import (
     cleanup_worktree,
+    commit_wip_state,
     preserve_worker_artifacts,
     restore_plan_files,
+    squash_wip_commits,
 )
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Cloud pricing — per million tokens, keyed on model name
+# ---------------------------------------------------------------------------
+
+_CLOUD_PRICING: dict[str, dict[str, float]] = {
+    "claude-opus-4-7": {"input": 15.0, "output": 75.0},
+    "claude-sonnet-4-6": {"input": 3.0, "output": 15.0},
+    "claude-haiku-4-5": {"input": 0.80, "output": 4.0},
+}
+
+_DEFAULT_CLOUD_MODEL = "claude-opus-4-7"
+
+
+def _resolve_cloud_model() -> str:
+    """Return the cloud model name.
+
+    Checks ANTHROPIC_MODEL env-var first, falls back to ``_DEFAULT_CLOUD_MODEL``.
+    """
+    return os.environ.get("ANTHROPIC_MODEL") or _DEFAULT_CLOUD_MODEL
+
+
+def _estimate_cloud_cost(
+    input_tokens: int | None,
+    output_tokens: int | None,
+    model: str,
+) -> float:
+    """Estimate the cloud API cost for the given token counts.
+
+    Input tokens are billed at the model's input rate, output tokens at the
+    output rate.  Prices are per million tokens.
+
+    Returns 0.0 when the model is not found in the pricing table or either
+    token count is None.
+    """
+    if input_tokens is None or output_tokens is None:
+        return 0.0
+    pricing = _CLOUD_PRICING.get(model)
+    if pricing is None:
+        return 0.0
+    return (input_tokens / 1_000_000) * pricing["input"] + (
+        output_tokens / 1_000_000
+    ) * pricing["output"]
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +117,13 @@ def attempt_pr(
     except subprocess.CalledProcessError as exc:
         err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
         logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
+        # Preserve any uncommitted worktree changes so a retry worker can
+        # resume from them (WOR-267).
+        commit_wip_state(
+            worker.worktree_path,
+            ticket_id,
+            manifest.worker_branch,
+        )
         safe_set_state(linear, linear_id, manifest.ticket_state_map.failed, ticket_id)
         _try_post_comment(
             linear,
@@ -93,23 +148,49 @@ def finalize_worker(
     mode: str,
     project_id: str,
 ) -> None:
-    outcome, escalated, artifacts_preserved, sonar_findings = _execute_finalization(
-        worker, returncode, linear, escalation_policy, repo_root
+    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks = (
+        _execute_finalization(worker, returncode, linear, escalation_policy, repo_root)
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
     input_tokens, output_tokens, context_compactions = _parse_worker_usage(log_path)
-    # Backward-compat: local_tokens = input + output (None when either is None)
-    local_tokens: int | None = (
-        (input_tokens or 0) + (output_tokens or 0)
-        if input_tokens is not None and output_tokens is not None
-        else None
-    )
-    # Derive throughput when both output tokens and wall time are available
-    local_output_tokens_per_second: float | None = None
-    if output_tokens is not None and wall_time and wall_time > 0:
-        local_output_tokens_per_second = output_tokens / wall_time
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
+
+    # Cloud metrics — populated only when eff == "cloud"
+    cloud_model: str | None = None
+    cloud_tokens: int | None = None
+    cloud_cost_estimate: float | None = None
+    if eff == "cloud" and input_tokens is not None and output_tokens is not None:
+        cloud_model = _resolve_cloud_model()
+        cloud_tokens = input_tokens + output_tokens
+        cloud_cost_estimate = _estimate_cloud_cost(
+            input_tokens, output_tokens, cloud_model
+        )
+
+    # Local metrics — populated only when eff == "local"
+    local_tokens: int | None = None
+    local_input_tokens: int | None = None
+    local_output_tokens: int | None = None
+    local_output_tokens_per_second: float | None = None
+    local_model_str: str | None = None
+    if eff == "local":
+        local_tokens = (
+            (input_tokens or 0) + (output_tokens or 0)
+            if input_tokens is not None and output_tokens is not None
+            else None
+        )
+        local_input_tokens = input_tokens
+        local_output_tokens = output_tokens
+        local_model_str = _LOCAL_MODEL
+        if output_tokens is not None and wall_time and wall_time > 0:
+            local_output_tokens_per_second = output_tokens / wall_time
+    # Derive the first failed check name for TicketRunLog (WOR-261)
+    first_failed_check: str | None = (
+        str(failed_checks[0]["check"]) if failed_checks else None
+    )
+    # check_failures: store the list when non-empty, else None
+    check_failures = failed_checks if failed_checks else None
+
     metrics.record(
         TicketMetrics(
             ticket_id=worker.ticket_id,
@@ -117,10 +198,13 @@ def finalize_worker(
             epic_id=worker.manifest.epic_id,
             implementation_mode=_to_metrics_mode(eff),
             local_used=(eff == "local"),
-            local_model=(_LOCAL_MODEL if eff == "local" else None),
+            local_model=local_model_str,
             cloud_used=(eff == "cloud"),
-            local_input_tokens=input_tokens,
-            local_output_tokens=output_tokens,
+            cloud_model=cloud_model,
+            cloud_tokens=cloud_tokens,
+            cloud_cost_estimate=cloud_cost_estimate,
+            local_input_tokens=local_input_tokens,
+            local_output_tokens=local_output_tokens,
             local_tokens=local_tokens,
             local_wall_time=wall_time,
             local_output_tokens_per_second=local_output_tokens_per_second,
@@ -128,14 +212,45 @@ def finalize_worker(
             outcome=outcome,
             retry_count=worker.retry_count,
             context_compactions=context_compactions,
+            check_failures=check_failures,
             sonar_findings_count=(
                 len(sonar_findings) if sonar_findings is not None else None
             ),
+            # WOR-262: copy taxonomy fields from manifest into metrics
+            change_type=worker.manifest.change_type,
+            reasoning_demand=worker.manifest.reasoning_demand,
+            scope_clarity=worker.manifest.scope_clarity,
+            constraint_density=worker.manifest.constraint_density,
+            ac_specificity=worker.manifest.ac_specificity,
+            tech_stack=worker.manifest.tech_stack,
+            raw_extensions=worker.manifest.raw_extensions,
+        )
+    )
+    metrics.record_run(
+        TicketRunLog(
+            ticket_id=worker.ticket_id,
+            attempt=worker.retry_count + 1,
+            implementation_mode=_to_metrics_mode(eff),
+            outcome=outcome,
+            failed_check=first_failed_check,
+            wall_time_s=wall_time,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            output_tok_per_s=local_output_tokens_per_second,
+            context_compactions=context_compactions,
         )
     )
 
     restore_plan_files(worker.backed_up_plans)
     if not artifacts_preserved:
+        # Preserve work-in-progress state for retry workers (WOR-258)
+        wip_sha = commit_wip_state(
+            worker.worktree_path,
+            worker.ticket_id,
+            worker.manifest.worker_branch,
+        )
+        if wip_sha is not None:
+            _write_wip_sha_to_last_failure(worker, wip_sha)
         preserve_worker_artifacts(repo_root, worker)
     cleanup_worktree(repo_root, worker.worktree_path)
 
@@ -151,10 +266,11 @@ def _execute_finalization(
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
     repo_root: Path,
-) -> tuple[Outcome, bool, bool, list[str] | None]:
+) -> tuple[Outcome, bool, bool, list[str] | None, list[dict[str, int | str]]]:
     """Determine outcome, escalation status, and artifact state.
 
-    Returns (outcome, escalated, artifacts_preserved, sonar_findings).
+    Returns (outcome, escalated, artifacts_preserved, sonar_findings,
+             failed_checks).
     """
     manifest = worker.manifest
     ticket_id = worker.ticket_id
@@ -177,9 +293,9 @@ def _execute_finalization(
             safe_set_state(
                 linear, linear_id, manifest.ticket_state_map.failed, ticket_id
             )
-        return "failure", escalated, False, None
+        return "failure", escalated, False, None, []
 
-    checks_ok = run_checks(manifest, worker.worktree_path)
+    checks_ok, failed_checks = run_checks(manifest, worker.worktree_path)
     if not checks_ok:
         worker.retry_count += 1
     if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
@@ -198,16 +314,16 @@ def _execute_finalization(
             safe_set_state(
                 linear, linear_id, manifest.ticket_state_map.failed, ticket_id
             )
-        return "failure", escalated, False, None
+        return "failure", escalated, False, None, failed_checks
 
     preserve_worker_artifacts(repo_root, worker)
     flags = _read_result_flags(repo_root / manifest.artifact_paths.result_json)
     action = escalation_policy.classify_result(**flags)
 
     outcome, escalated, sonar_findings = _handle_policy_outcome(
-        action, flags, worker, linear, escalation_policy
+        action, flags, worker, linear, escalation_policy, manifest.objective
     )
-    return outcome, escalated, True, sonar_findings
+    return outcome, escalated, True, sonar_findings, []
 
 
 def _handle_policy_outcome(
@@ -216,6 +332,7 @@ def _handle_policy_outcome(
     worker: ActiveWorker,
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
+    final_message: str = "Implementation complete",
 ) -> tuple[Outcome, bool, list[str] | None]:
     """Map a policy action to an outcome, posting Linear comments as needed."""
     ticket_id = worker.ticket_id
@@ -261,6 +378,15 @@ def _handle_policy_outcome(
         )
         return "escalated", True, sonar_findings
 
+    # Squash any wip commits into a single commit so retry workers can
+    # diff the final_message commit and resume from a clean state.
+    squash_wip_commits(
+        worker.worktree_path,
+        ticket_id,
+        manifest.base_branch,
+        final_message,
+    )
+
     outcome = attempt_pr(manifest, worker, linear)
     return outcome, False, sonar_findings
 
@@ -282,6 +408,38 @@ def _sonar_requires_escalation(
             "Sonar finding for %s: severity=%s — fix_locally", ticket_id, severity
         )
     return False
+
+
+def _write_wip_sha_to_last_failure(
+    worker: ActiveWorker,
+    wip_sha: str,
+) -> None:
+    """Add wip_commit_sha to last_failure.json in the worktree artifact dir."""
+    artifact_dir = (
+        worker.worktree_path / worker.manifest.artifact_paths.result_json
+    ).parent
+    failure_file = artifact_dir / "last_failure.json"
+    try:
+        data: dict[str, object] = {}
+        if failure_file.exists():
+            data.update(json.loads(failure_file.read_text(encoding="utf-8")))
+        data["wip_commit_sha"] = wip_sha
+        failure_file.write_text(
+            json.dumps(data, indent=2),
+            encoding="utf-8",
+        )
+        logger.debug(
+            "WIP commit SHA written to %s for %s",
+            failure_file,
+            worker.ticket_id,
+        )
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(
+            "Could not write wip_commit_sha to %s for %s: %s",
+            failure_file,
+            worker.ticket_id,
+            exc,
+        )
 
 
 def _try_post_comment(

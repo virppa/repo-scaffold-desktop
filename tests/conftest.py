@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from app.core.manifest import ArtifactPaths, ExecutionManifest
-from app.core.watcher_types import ActiveWorker
+from app.core.watcher.watcher_types import ActiveWorker
 
 
 def make_manifest(**overrides: object) -> ExecutionManifest:

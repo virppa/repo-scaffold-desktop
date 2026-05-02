@@ -130,6 +130,38 @@ class ExecutionManifest(BaseModel):
     """auto — PR auto-merges to epic branch when CI passes.
     human — PR requires explicit human approval."""
 
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    """Per-ticket effort level for the worker. When None the caller falls
+    back to the default xhigh (local) / max (cloud). Allowed values:
+    low, medium, high, xhigh, max."""
+
+    # ------------------------------------------------------------------
+    # Ticket taxonomy (WOR-262) — written by /start-ticket architect phase,
+    # copied to ticket_metrics by finalize_worker. All optional.
+    # ------------------------------------------------------------------
+    change_type: (
+        Literal["additive", "modification", "refactor", "removal", "docs"] | None
+    ) = None
+    """Top-level change type."""
+
+    reasoning_demand: Annotated[int, Field(ge=1, le=5)] | None = None
+    """1-5: depth of cross-file reasoning needed."""
+
+    scope_clarity: Annotated[int, Field(ge=1, le=5)] | None = None
+    """1-5: how explicit the acceptance criteria are."""
+
+    constraint_density: Annotated[int, Field(ge=1, le=5)] | None = None
+    """1-5: number of hard rules in implementation_constraints."""
+
+    ac_specificity: Annotated[int, Field(ge=1, le=5)] | None = None
+    """1-5: how testable the acceptance criteria are."""
+
+    tech_stack: str | None = None
+    """Comma-separated tags, e.g. 'python,sqlite,pydantic'."""
+
+    raw_extensions: str | None = None
+    """JSON array string of file extensions touched, e.g. '[".py",".md"]'."""
+
     # ------------------------------------------------------------------
     # Branch / worktree
     # ------------------------------------------------------------------

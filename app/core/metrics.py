@@ -35,6 +35,23 @@ CREATE TABLE IF NOT EXISTS check_run_log (
 )
 """
 
+_CREATE_RUN_LOG = """
+CREATE TABLE IF NOT EXISTS ticket_run_log (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id       TEXT NOT NULL,
+    attempt         INTEGER NOT NULL,
+    implementation_mode TEXT NOT NULL,
+    outcome         TEXT NOT NULL,
+    failed_check    TEXT,
+    wall_time_s     REAL,
+    input_tokens    INTEGER,
+    output_tokens   INTEGER,
+    output_tok_per_s REAL,
+    context_compactions INTEGER,
+    recorded_at     TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
+
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS ticket_metrics (
     ticket_id             TEXT NOT NULL,
@@ -60,6 +77,13 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     files_changed         INTEGER,
     sonar_findings_count  INTEGER,
     context_compactions   INTEGER,
+    change_type           TEXT,
+    reasoning_demand      INTEGER,
+    scope_clarity         INTEGER,
+    constraint_density    INTEGER,
+    ac_specificity        INTEGER,
+    tech_stack            TEXT,
+    raw_extensions        TEXT,
     recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
@@ -91,9 +115,10 @@ class TicketMetrics(BaseModel):
     escalated_to_cloud: bool = False
     outcome: Outcome
     retry_count: int = 0
-    check_failures: dict[str, int] | None = Field(
+    check_failures: list[dict[str, int | str]] | None = Field(
         default=None,
-        description="Per-check failure counts, e.g. {'mypy': 2, 'pytest': 1}",
+        description="Per-check failures from run_checks, e.g. "
+        "[{'check': 'mypy', 'exit_code': 1}]",
     )
     lines_changed: int | None = Field(
         default=None, description="Lines added + removed in the PR diff"
@@ -107,6 +132,37 @@ class TicketMetrics(BaseModel):
     context_compactions: int | None = Field(
         default=None,
         description="Claude Code context compaction count during the session",
+    )
+    # Ticket taxonomy fields (WOR-262) — populated at /start-ticket plan time and
+    # copied into the metrics row by finalize_worker. All Optional; no ticket is
+    # ever blocked by missing taxonomy.
+    change_type: str | None = Field(
+        default=None,
+        description="One of: additive, modification, refactor, removal, docs",
+    )
+    reasoning_demand: int | None = Field(
+        default=None,
+        description="1-5: depth of cross-file reasoning needed",
+    )
+    scope_clarity: int | None = Field(
+        default=None,
+        description="1-5: how explicit the acceptance criteria are",
+    )
+    constraint_density: int | None = Field(
+        default=None,
+        description="1-5: number of hard rules in the manifest",
+    )
+    ac_specificity: int | None = Field(
+        default=None,
+        description="1-5: how testable the acceptance criteria are",
+    )
+    tech_stack: str | None = Field(
+        default=None,
+        description="Comma-separated tags, e.g. 'python,sqlite,pydantic'",
+    )
+    raw_extensions: str | None = Field(
+        default=None,
+        description="JSON array string of file extensions touched",
     )
 
 
@@ -127,6 +183,28 @@ class EpicSummary(BaseModel):
     lines_changed_total: int
     files_changed_total: int
     sonar_findings_total: int
+
+
+class TicketRunLog(BaseModel):
+    """Per-attempt run log for a single ticket execution."""
+
+    model_config = {"extra": "forbid"}
+
+    ticket_id: str
+    attempt: int = Field(description="1-based attempt number (retry_count + 1)")
+    implementation_mode: ImplementationMode
+    outcome: Outcome
+    failed_check: str | None = None
+    wall_time_s: float | None = Field(default=None, description="Wall time in seconds")
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    output_tok_per_s: float | None = Field(
+        default=None, description="output_tokens / wall_time when both present"
+    )
+    context_compactions: int | None = Field(
+        default=None,
+        description="Claude Code context compaction count during the session",
+    )
 
 
 class CheckRunEntry(BaseModel):
@@ -177,6 +255,7 @@ class MetricsStore:
         with self._connect() as conn:
             conn.execute(_CREATE_TABLE)
             conn.execute(_CREATE_CHECK_RUN_LOG)
+            conn.execute(_CREATE_RUN_LOG)
             self._migrate(conn)
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
@@ -198,6 +277,25 @@ class MetricsStore:
                 "ALTER TABLE ticket_metrics "
                 "ADD COLUMN local_output_tokens_per_second REAL"
             )
+        # WOR-262 taxonomy columns
+        if "change_type" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN change_type TEXT")
+        if "reasoning_demand" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN reasoning_demand INTEGER"
+            )
+        if "scope_clarity" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN scope_clarity INTEGER")
+        if "constraint_density" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN constraint_density INTEGER"
+            )
+        if "ac_specificity" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN ac_specificity INTEGER")
+        if "tech_stack" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN tech_stack TEXT")
+        if "raw_extensions" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN raw_extensions TEXT")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -222,7 +320,9 @@ class MetricsStore:
                     escalated_to_cloud, outcome,
                     retry_count, check_failures_json,
                     lines_changed, files_changed,
-                    sonar_findings_count, context_compactions
+                    sonar_findings_count, context_compactions,
+                    change_type, reasoning_demand, scope_clarity,
+                    constraint_density, ac_specificity, tech_stack, raw_extensions
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -233,7 +333,9 @@ class MetricsStore:
                     :escalated_to_cloud, :outcome,
                     :retry_count, :check_failures_json,
                     :lines_changed, :files_changed,
-                    :sonar_findings_count, :context_compactions
+                    :sonar_findings_count, :context_compactions,
+                    :change_type, :reasoning_demand, :scope_clarity,
+                    :constraint_density, :ac_specificity, :tech_stack, :raw_extensions
                 )
                 """,
                 {
@@ -304,6 +406,23 @@ class MetricsStore:
             files_changed_total=row["files_changed_total"],
             sonar_findings_total=row["sonar_findings_total"],
         )
+
+    def record_run(self, entry: TicketRunLog) -> None:
+        """Append a single run-log row per attempt (append-only, not upsert)."""
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO ticket_run_log
+                    (ticket_id, attempt, implementation_mode, outcome,
+                     failed_check, wall_time_s, input_tokens, output_tokens,
+                     output_tok_per_s, context_compactions)
+                VALUES
+                    (:ticket_id, :attempt, :implementation_mode, :outcome,
+                     :failed_check, :wall_time_s, :input_tokens, :output_tokens,
+                     :output_tok_per_s, :context_compactions)
+                """,
+                entry.model_dump(),
+            )
 
     def record_check_run(self, entry: CheckRunEntry) -> None:
         """Append a single check execution row to check_run_log."""

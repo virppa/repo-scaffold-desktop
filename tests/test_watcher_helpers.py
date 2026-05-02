@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from app.core.watcher_helpers import (
+from app.core.watcher.watcher_helpers import (
     _parse_ollama_model,
     _parse_worker_usage,
     build_worker_cmd,
@@ -141,6 +141,56 @@ def test_cmd_disallowed_tools_appended(tmp_path: Path) -> None:
 def test_cmd_no_disallowed_tools_when_none(tmp_path: Path) -> None:
     cmd = build_worker_cmd("WOR-10", "cloud", tmp_path, disallowed_tools=None)
     assert "--disallowed-tools" not in cmd
+
+
+def test_cmd_uses_empty_mcp_config_by_default(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path)
+    assert "--mcp-config" in cmd
+    idx = cmd.index("--mcp-config")
+    assert cmd[idx + 1] == '{"mcpServers":{}}'
+
+
+def test_cmd_uses_custom_mcp_config_when_provided(tmp_path: Path) -> None:
+    config = '{"mcpServers":{"linear-server":{"type":"http","url":"https://mcp.linear.app/mcp"}}}'
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path, mcp_config_json=config)
+    assert "--mcp-config" in cmd
+    idx = cmd.index("--mcp-config")
+    assert cmd[idx + 1] == config
+
+
+# ---------------------------------------------------------------------------
+# build_worker_cmd — effort (WOR-214)
+# ---------------------------------------------------------------------------
+
+
+def test_build_worker_cmd_with_explicit_effort(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "local", tmp_path, effort="high")
+    assert "--effort" in cmd
+    idx = cmd.index("--effort")
+    assert cmd[idx + 1] == "high"
+
+
+def test_build_worker_cmd_effort_none_local_falls_back_to_xhigh(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "local", tmp_path, effort=None)
+    assert "--effort" in cmd
+    idx = cmd.index("--effort")
+    assert cmd[idx + 1] == "xhigh"
+
+
+def test_build_worker_cmd_effort_none_cloud_falls_back_to_max(tmp_path: Path) -> None:
+    cmd = build_worker_cmd("WOR-10", "cloud", tmp_path, effort=None)
+    assert "--effort" in cmd
+    idx = cmd.index("--effort")
+    assert cmd[idx + 1] == "max"
+
+
+def test_build_worker_cmd_explicit_effort_ignored_by_mode(tmp_path: Path) -> None:
+    """Explicit effort value is used regardless of mode."""
+    for mode in ("local", "cloud"):
+        cmd = build_worker_cmd("WOR-10", mode, tmp_path, effort="low")
+        assert "--effort" in cmd
+        idx = cmd.index("--effort")
+        assert cmd[idx + 1] == "low"
 
 
 # ---------------------------------------------------------------------------
