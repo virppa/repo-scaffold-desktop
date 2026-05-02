@@ -1676,6 +1676,93 @@ def test_finalize_worker_local_run_keeps_local_fields(
 
 
 # ---------------------------------------------------------------------------
+# WOR-263 — local_model always populated for local runs
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_local_model_non_null_for_local_run(
+    tmp_path: Path,
+) -> None:
+    """local_model is non-null for local runs and matches _LOCAL_MODEL constant."""
+    manifest = make_manifest(
+        ticket_id="WOR-263",
+        worker_branch="wor-263-test-ticket",
+    )
+    metrics_mock = MagicMock()
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-263.log"
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 15000, "output_tokens": 600},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-263",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, wall_time=10.0, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    from app.core.watcher.watcher_types import _LOCAL_MODEL
+
+    assert m.local_model == _LOCAL_MODEL
+    assert m.local_model is not None
+    assert m.local_used is True
+
+
+def test_finalize_worker_local_model_is_none_for_cloud_run(
+    tmp_path: Path,
+) -> None:
+    """local_model is None for cloud runs."""
+    manifest = make_manifest(
+        ticket_id="WOR-263",
+        worker_branch="wor-263-test-ticket",
+    )
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-263",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, mode="cloud", metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.local_model is None
+
+
+# ---------------------------------------------------------------------------
 # WOR-260 — _resolve_cloud_model and _estimate_cloud_cost unit tests
 # ---------------------------------------------------------------------------
 
