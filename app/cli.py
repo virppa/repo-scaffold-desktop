@@ -1,16 +1,26 @@
 import argparse
+import getpass
 import os
 import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from keyring.errors import KeyringError, NoKeyringError
 from pydantic import ValidationError
 
 from app.core.config import RepoConfig
+from app.core.credentials import cli_delete_token, save_token
 from app.core.generator import generate
 from app.core.metrics import MetricsStore
-from app.core.post_setup import fetch_skills, run_git_init, run_precommit_install
+from app.core.post_setup import (
+    configure_github_repo,
+    create_github_repo,
+    fetch_skills,
+    run_git_init,
+    run_initial_push,
+    run_precommit_install,
+)
 from app.core.presets import _PRESETS, get_preset
 from app.core.user_prefs import PrefsStore, UserPreferences
 
@@ -33,10 +43,17 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_set = cfg_sub.add_parser("set", help="Set a preference value.")
     cfg_set.add_argument(
         "key",
-        choices=sorted(_KEY_TO_FIELD),
+        choices=set(sorted(_KEY_TO_FIELD)) | {"github-token"},
         help="Preference key (use hyphens, e.g. author-name).",
     )
-    cfg_set.add_argument("value", help="Value to store.")
+    cfg_set.add_argument("value", nargs="?", default=None, help="Value to store.")
+
+    cfg_del = cfg_sub.add_parser("delete", help="Delete a credential.")
+    cfg_del.add_argument(
+        "key",
+        choices=set(sorted(_KEY_TO_FIELD)) | {"github-token"},
+        help="Credential key to delete.",
+    )
 
     gen = sub.add_parser("generate", help="Generate scaffold files.")
     gen.add_argument(
@@ -90,6 +107,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "--install-precommit",
         action="store_true",
         help="Run pre-commit install in the output directory.",
+    )
+    gen.add_argument(
+        "--github-create", action="store_true", help="Create a GitHub repository."
+    )
+    gen.add_argument(
+        "--git-push", action="store_true", help="Push initial commit to remote."
+    )
+    gen.add_argument(
+        "--remote-url",
+        default=None,
+        help="Remote URL to push to (used with --git-push).",
+    )
+    github_group = gen.add_mutually_exclusive_group()
+    github_group.add_argument(
+        "--private", action="store_true", help="Create a private GitHub repository."
+    )
+    github_group.add_argument(
+        "--public", action="store_true", help="Create a public GitHub repository."
     )
 
     metrics = sub.add_parser("metrics", help="Metrics DB commands.")
@@ -219,6 +254,27 @@ def _run_config(args: argparse.Namespace) -> int:
         return 0
 
     if args.config_cmd == "set":
+        if args.key == "github-token":
+            raw = args.value
+            if not raw:
+                raw = getpass.getpass(
+                    "GitHub token: ",
+                    stream=sys.stderr,
+                )
+            if not raw:
+                print("Error: empty token", file=sys.stderr)
+                return 1
+            try:
+                save_token(raw)
+                print("Done.", file=sys.stderr)
+            except (NoKeyringError, KeyringError) as exc:
+                print(
+                    f"Error: unable to store token ({type(exc).__name__})",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
+
         field = _KEY_TO_FIELD[args.key]
         prefs = PrefsStore.load()
         raw = args.value
@@ -238,8 +294,17 @@ def _run_config(args: argparse.Namespace) -> int:
         print(f"✓ {args.key} = {value}")
         return 0
 
+    if args.config_cmd == "delete":
+        if args.key == "github-token":
+            return cli_delete_token()
+        print(
+            f"Error: unknown credential '{args.key}'",
+            file=sys.stderr,
+        )
+        return 1
+
     # config with no sub-subcommand
-    print("Usage: scaffold config {get,set}", file=sys.stderr)
+    print("Usage: scaffold config {get,set,delete}", file=sys.stderr)
     return 1
 
 
@@ -249,6 +314,7 @@ def _run_generate(args: argparse.Namespace) -> int:
         include_linear_mcp = get_preset(args.preset).context_defaults.get(
             "include_linear_mcp", False
         )
+
     try:
         config = RepoConfig(
             repo_name=args.repo_name,
@@ -305,6 +371,37 @@ def _run_generate(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    clone_url: str | None = None
+    if args.github_create:
+        prefs = PrefsStore.load()
+        github_private = not args.public
+        try:
+            clone_url = create_github_repo(
+                repo_name=config.repo_name,
+                prefs=prefs,
+                private=github_private,
+            )
+            print(f"✓ Created GitHub repo: {clone_url}")
+            repo_full_name = clone_url.replace("https://github.com/", "").rstrip("/")
+            try:
+                configure_github_repo(repo_full_name, config.preset, config.include_ci)
+                print("✓ Configured GitHub repository settings")
+            except RuntimeError as exc:
+                print(f"Warning: {exc}", file=sys.stderr)
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.git_push:
+        push_url = clone_url if clone_url is not None else args.remote_url
+        prefs = PrefsStore.load()
+        try:
+            run_initial_push(args.output, push_url, prefs)
+            print(f"✓ Pushed initial commit to {push_url}")
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     return 0
 
 
@@ -323,6 +420,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 1
+
+    if args.command == "generate":
+        # --git-push implies --git-init
+        if getattr(args, "git_push", False):
+            args.git_init = True
+        # --git-push requires either --github-create or --remote-url
+        has_remote = args.github_create or getattr(args, "remote_url", None)
+        if getattr(args, "git_push", False) and not has_remote:
+            parser.error(
+                "argument --git-push: must also specify --github-create or --remote-url"
+            )
 
     if args.command == "config":
         return _run_config(args)
