@@ -29,6 +29,7 @@ from .watcher_subprocess import (
     run_checks,
 )
 from .watcher_types import (
+    _CLAUDE_DIR,
     _LOCAL_MODEL,
     ActiveWorker,
     LinearClientProtocol,
@@ -118,7 +119,10 @@ def attempt_pr(
         err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
         logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
         # Preserve any uncommitted worktree changes so a retry worker can
-        # resume from them (WOR-267).
+        # resume from them (WOR-267, WOR-288). attempt_pr does not own the
+        # worktree teardown decision — finalize_worker handles that based on
+        # the returned WipPreservationResult — but we still call commit_wip_state
+        # here so the WIP commit happens before checks/PR phase artifacts diverge.
         commit_wip_state(
             worker.worktree_path,
             ticket_id,
@@ -242,22 +246,70 @@ def finalize_worker(
     )
 
     restore_plan_files(worker.backed_up_plans)
-    if not artifacts_preserved:
-        # Preserve work-in-progress state for retry workers (WOR-258)
-        wip_sha = commit_wip_state(
-            worker.worktree_path,
+    if artifacts_preserved:
+        # Success path — artifacts already saved upstream; remove worktree.
+        cleanup_worktree(repo_root, worker.worktree_path)
+        return
+
+    # Failure path — preserve WIP before considering teardown (WOR-258, WOR-288).
+    backup_root = repo_root / _CLAUDE_DIR / "artifacts"
+    wip_result = commit_wip_state(
+        worker.worktree_path,
+        worker.ticket_id,
+        worker.manifest.worker_branch,
+        backup_root=backup_root,
+    )
+    if wip_result.sha is not None:
+        _write_wip_sha_to_last_failure(worker, wip_result.sha)
+    preserve_worker_artifacts(repo_root, worker)
+
+    if wip_result.status in ("clean", "pushed", "backup"):
+        cleanup_worktree(repo_root, worker.worktree_path)
+    else:
+        # WOR-288: WIP preservation failed (commit_wip_state could not push
+        # AND could not back up the dirty tree). Removing the worktree now
+        # would destroy uncommitted work — leave it in place for human
+        # salvage. The worktree path appears in the ERROR log so the
+        # operator can git status / commit / push manually.
+        logger.error(
+            "WIP preservation failed for %s — leaving worktree in place at %s "
+            "for manual recovery (error: %s). Run `git -C <path> status` to "
+            "inspect, then commit + push to %s manually.",
             worker.ticket_id,
+            worker.worktree_path,
+            wip_result.error or "unknown",
             worker.manifest.worker_branch,
         )
-        if wip_sha is not None:
-            _write_wip_sha_to_last_failure(worker, wip_sha)
-        preserve_worker_artifacts(repo_root, worker)
-    cleanup_worktree(repo_root, worker.worktree_path)
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers (reduce cognitive complexity of finalize_worker)
 # ---------------------------------------------------------------------------
+
+
+def _read_result_status(repo_root: Path, manifest: ExecutionManifest) -> str | None:
+    """Return the worker's self-reported status from result.json, or None.
+
+    Workers write a ``status`` field of ``"success"`` or ``"failure"`` (or
+    similar) to ``result.json`` immediately before exiting. This is the
+    in-band signal of how the work actually went, distinct from the OS-level
+    subprocess exit code (which can be non-zero even after a successful run
+    due to Claude Code CLI teardown quirks — see WOR-286).
+
+    Returns None when the file is missing or unreadable; callers should treat
+    that as "no in-band signal" rather than success.
+    """
+    result_path = repo_root / manifest.artifact_paths.result_json
+    try:
+        raw = result_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    status = data.get("status") if isinstance(data, dict) else None
+    return status if isinstance(status, str) else None
 
 
 def _execute_finalization(
@@ -276,24 +328,46 @@ def _execute_finalization(
     ticket_id = worker.ticket_id
     linear_id = worker.linear_id
 
+    # WOR-286: Trust the worker's in-band success signal (result.json) over
+    # the subprocess exit code. Claude Code CLI sometimes exits non-zero
+    # during teardown after a fully successful run — that should not destroy
+    # the work. Only treat non-zero exit as failure when result.json is
+    # missing or also reports failure.
+    result_status = _read_result_status(repo_root, manifest)
     if returncode != 0:
-        logger.error("Worker %s exited non-zero (%d)", ticket_id, returncode)
-        escalated = bool(manifest.failure_policy.escalate_to_cloud)
-        if escalated:
-            logger.info("Escalating %s to cloud per failure policy", ticket_id)
-            safe_set_state(linear, linear_id, "In Progress", ticket_id)
-            _try_post_comment(
-                linear,
-                linear_id,
+        if result_status == "success":
+            logger.warning(
+                "Worker %s exited non-zero (%d) but result.json reports "
+                "status=success — trusting in-band signal and proceeding "
+                "with checks.",
                 ticket_id,
-                f"Local worker failed for `{ticket_id}` (non-zero exit). "
-                f"Escalating to cloud per failure policy.",
+                returncode,
             )
+            # Fall through to run_checks; treat as if returncode == 0.
         else:
-            safe_set_state(
-                linear, linear_id, manifest.ticket_state_map.failed, ticket_id
+            logger.error(
+                "Worker %s exited non-zero (%d); result.json status=%s — "
+                "routing to failure path",
+                ticket_id,
+                returncode,
+                result_status if result_status is not None else "missing",
             )
-        return "failure", escalated, False, None, []
+            escalated = bool(manifest.failure_policy.escalate_to_cloud)
+            if escalated:
+                logger.info("Escalating %s to cloud per failure policy", ticket_id)
+                safe_set_state(linear, linear_id, "In Progress", ticket_id)
+                _try_post_comment(
+                    linear,
+                    linear_id,
+                    ticket_id,
+                    f"Local worker failed for `{ticket_id}` (non-zero exit). "
+                    f"Escalating to cloud per failure policy.",
+                )
+            else:
+                safe_set_state(
+                    linear, linear_id, manifest.ticket_state_map.failed, ticket_id
+                )
+            return "failure", escalated, False, None, []
 
     checks_ok, failed_checks = run_checks(manifest, worker.worktree_path)
     if not checks_ok:
