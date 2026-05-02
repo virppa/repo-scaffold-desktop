@@ -118,7 +118,12 @@ class WatcherDisplay:
             return
         layout = self._build_layout(self._state)
         if self._live is None:
-            self._live = Live(layout, console=self._console, refresh_per_second=2)
+            self._live = Live(
+                layout,
+                console=self._console,
+                refresh_per_second=2,
+                screen=True,
+            )
             self._live.start()
             return
         self._live.update(layout)
