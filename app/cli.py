@@ -14,6 +14,7 @@ from app.core.credentials import cli_delete_token, save_token
 from app.core.generator import generate
 from app.core.metrics import MetricsStore
 from app.core.post_setup import (
+    configure_github_repo,
     create_github_repo,
     fetch_skills,
     run_git_init,
@@ -370,6 +371,12 @@ def _run_generate(args: argparse.Namespace) -> int:
                 private=github_private,
             )
             print(f"✓ Created GitHub repo: {clone_url}")
+            repo_full_name = clone_url.replace("https://github.com/", "").rstrip("/")
+            try:
+                configure_github_repo(repo_full_name, config.preset, config.include_ci)
+                print("✓ Configured GitHub repository settings")
+            except RuntimeError as exc:
+                print(f"Warning: {exc}", file=sys.stderr)
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
