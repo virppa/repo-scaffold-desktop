@@ -446,6 +446,43 @@ def test_cleanup_worktree_logs_warning_on_failure(
     assert any("Failed to remove" in r.message for r in caplog.records)
 
 
+def test_cleanup_worktree_rmtree_fallback_when_not_a_working_tree(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Untracked worktree directories on disk get rmtree'd as fallback."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    orphan = tmp_path / "worktrees" / "wor-99-orphan"
+    orphan.mkdir(parents=True)
+    (orphan / "leftover.txt").write_text("stale", encoding="utf-8")
+
+    call_count = {"n": 0}
+
+    def _side_effect(*args: object, **kwargs: object) -> MagicMock:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise subprocess.CalledProcessError(
+                128,
+                "git",
+                stderr=f"fatal: '{orphan}' is not a working tree",
+            )
+        mock = MagicMock()
+        mock.returncode = 0
+        return mock
+
+    with (
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_worktrees"),
+        patch("subprocess.run", side_effect=_side_effect),
+    ):
+        cleanup_worktree(repo_root, orphan)
+
+    assert not orphan.exists(), "orphan directory should have been rmtree'd"
+    assert any(
+        "Untracked worktree directory removed via rmtree" in r.message
+        for r in caplog.records
+    )
+
+
 # ---------------------------------------------------------------------------
 # cleanup_orphaned_worktrees
 # ---------------------------------------------------------------------------

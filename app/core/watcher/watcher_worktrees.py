@@ -554,7 +554,13 @@ def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:
 
 
 def cleanup_worktree(repo_root: Path, worktree_path: Path) -> None:
-    """Remove a git worktree, logging a warning on failure."""
+    """Remove a git worktree, logging a warning on failure.
+
+    Falls back to ``shutil.rmtree`` when ``git worktree remove`` reports the
+    directory is not a registered worktree — that happens when a previous
+    cleanup failed mid-run, leaving a directory on disk that git no longer
+    tracks.
+    """
     try:
         subprocess.run(  # nosec B603 B607
             [
@@ -572,7 +578,29 @@ def cleanup_worktree(repo_root: Path, worktree_path: Path) -> None:
         )
         logger.info("Worktree removed: %s", worktree_path)
     except subprocess.CalledProcessError as exc:
-        logger.warning("Failed to remove worktree %s: %s", worktree_path, exc.stderr)
+        stderr = exc.stderr or ""
+        if "is not a working tree" in stderr and worktree_path.exists():
+            try:
+                shutil.rmtree(worktree_path)
+                logger.info(
+                    "Untracked worktree directory removed via rmtree: %s",
+                    worktree_path,
+                )
+                subprocess.run(  # nosec B603 B607
+                    ["git", "-C", str(repo_root), "worktree", "prune"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                return
+            except OSError as rmtree_exc:
+                logger.warning(
+                    "Failed to rmtree untracked worktree %s: %s",
+                    worktree_path,
+                    rmtree_exc,
+                )
+                return
+        logger.warning("Failed to remove worktree %s: %s", worktree_path, stderr)
 
 
 def cleanup_orphaned_worktrees(repo_root: Path) -> None:

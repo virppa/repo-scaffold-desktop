@@ -608,6 +608,7 @@ class Watcher:
 
     def _reap_pool(self, workers: list[ActiveWorker]) -> tuple[list[ActiveWorker], str]:
         still_running: list[ActiveWorker] = []
+        outcome = ""
         for worker in workers:
             rc = worker.process.poll()
             if rc is None:
