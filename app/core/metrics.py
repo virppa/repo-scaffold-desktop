@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     compact_duration_ms   INTEGER,
     api_retry_count       INTEGER,
     subagent_spawns       INTEGER,
+    dispatch_concurrency  INTEGER,
     recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
@@ -221,6 +222,14 @@ class TicketMetrics(BaseModel):
         description=(
             "Count of Task-tool invocations (WOR-364). Each spawns a subagent "
             "with its own LLM stream — multiplies effective vLLM concurrency."
+        ),
+    )
+    dispatch_concurrency: int | None = Field(
+        default=None,
+        description=(
+            "Count of OTHER active workers (local + cloud) at the moment this "
+            "worker launched (WOR-363). 0 = solo dispatch. Empirical input for "
+            "throughput-vs-concurrency analysis."
         ),
     )
 
@@ -429,6 +438,10 @@ class MetricsStore:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN subagent_spawns INTEGER"
             )
+        if "dispatch_concurrency" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN dispatch_concurrency INTEGER"
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -457,7 +470,8 @@ class MetricsStore:
                     change_type, reasoning_demand, scope_clarity,
                     constraint_density, ac_specificity, tech_stack, raw_extensions,
                     waste_score, waste_breakdown_json, tags, notes, effort,
-                    compact_duration_ms, api_retry_count, subagent_spawns
+                    compact_duration_ms, api_retry_count, subagent_spawns,
+                    dispatch_concurrency
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -472,7 +486,8 @@ class MetricsStore:
                     :change_type, :reasoning_demand, :scope_clarity,
                     :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
                     :waste_score, :waste_breakdown_json, :tags, :notes, :effort,
-                    :compact_duration_ms, :api_retry_count, :subagent_spawns
+                    :compact_duration_ms, :api_retry_count, :subagent_spawns,
+                    :dispatch_concurrency
                 )
                 """,
                 {

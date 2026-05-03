@@ -66,6 +66,9 @@ class ActiveWorker:
     start_time: float = field(default_factory=time.monotonic)
     backed_up_plans: list[Path] = field(default_factory=list)
     retry_count: int = 0
+    # WOR-363: count of OTHER active workers at the moment this one launched.
+    # Captured by dispatch.start_ticket BEFORE adding self to the active pool.
+    dispatch_concurrency: int = 0
 
 
 # ---------------------------------------------------------------------------
