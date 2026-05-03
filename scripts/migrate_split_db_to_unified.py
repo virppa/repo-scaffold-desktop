@@ -128,13 +128,35 @@ def migrate(metrics_db: Path, bench_db: Path, target_db: Path) -> None:
                 if not _table_exists(dst, table):
                     dst.execute(info["ddl"])
                 if info["rows"]:
-                    col_list = ", ".join(info["cols"])
-                    placeholders = ", ".join("?" for _ in info["cols"])
+                    # Defensive: handle schema drift between source and target.
+                    # If the source DB has columns the target doesn't (e.g. an
+                    # earlier code version added columns later removed), only
+                    # copy the intersection. Phantom columns get logged + dropped.
+                    src_cols = info["cols"]
+                    dst_pragma = f"PRAGMA table_info({table})"  # nosemgrep
+                    dst_cols = {
+                        row[1]
+                        for row in dst.execute(dst_pragma).fetchall()  # nosemgrep
+                    }
+                    common_cols = [c for c in src_cols if c in dst_cols]
+                    skipped = [c for c in src_cols if c not in dst_cols]
+                    if skipped:
+                        print(
+                            f"  {table}: skipping {len(skipped)} column(s) not in "
+                            f"target schema: {', '.join(skipped)}"
+                        )
+                    if not common_cols:
+                        continue
+
+                    idx_map = [src_cols.index(c) for c in common_cols]
+                    col_list = ", ".join(common_cols)
+                    placeholders = ", ".join("?" for _ in common_cols)
                     for row in info["rows"]:
+                        projected = tuple(row[i] for i in idx_map)
                         dst.execute(
                             f"INSERT OR IGNORE INTO {table} ({col_list}) "
                             f"VALUES ({placeholders})",
-                            row,
+                            projected,
                         )
 
             dst.commit()
