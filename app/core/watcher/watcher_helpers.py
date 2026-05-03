@@ -108,6 +108,42 @@ def _parse_worker_usage(
     return None, None, None, None
 
 
+def _parse_worker_subagent_spawns(log_path: Path) -> int | None:
+    """Count Task-tool invocations in the worker log (WOR-364).
+
+    Each Task tool_use spawns a subagent (a separate Claude Code session
+    with its own LLM stream). High counts contribute to vLLM concurrency
+    even when the watcher's pool only shows one active worker.
+
+    Returns ``None`` if the log cannot be opened/parsed; ``0`` for
+    parseable logs with no Task tool_use events.
+    """
+    try:
+        with log_path.open(encoding="utf-8") as f:
+            count = 0
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") != "assistant":
+                    continue
+                msg = obj.get("message", {}) or {}
+                for block in msg.get("content", []):
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_use"
+                        and block.get("name") == "Task"
+                    ):
+                        count += 1
+            return count
+    except Exception:
+        return None
+
+
 def _parse_worker_api_retries(log_path: Path) -> int | None:
     """Count ``type=system, subtype=api_retry`` events in the worker log (WOR-360).
 
