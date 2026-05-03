@@ -58,6 +58,12 @@ litellm-local.yaml
 # Claude Code watcher logs
 .claude/*.log
 .claude/*.pid
+.claude/*.lock
+
+# Forensic log dumps under retros/ (raw worker logs + manifests captured during
+# post-mortem analysis). The retro markdown itself is committed; raw evidence
+# lives in private gists or Linear attachments instead.
+docs/retros/*_logs/
 
 # Benchmark fixtures (generated locally, not committed)
 scripts/bench/fixtures/
