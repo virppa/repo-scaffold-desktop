@@ -96,18 +96,22 @@ This covers the "tool_use → tool_result handshake works in Anthropic format" A
 
 ## Live test results
 
-Fill in after running the probe + the claude smoke test.
+Captured 2026-05-04 against the production vLLM 0.20.0 launch (Qwen3.6-35B-A3B-NVFP4, served as `qwen3-coder`).
 
 | Check | Status | Notes |
 |---|---|---|
-| `/v1/models` returns served name | ☐ | |
-| `/v1/messages` non-streaming | ☐ | |
-| `/v1/messages` streaming SSE | ☐ | |
-| `/v1/messages` tool_use | ☐ | |
-| `/v1/messages` tool_result followup | ☐ | |
-| `/v1/messages/count_tokens` | ☐ | |
-| `claude --model claude-sonnet-4-6 -p` smoke | ☐ | |
-| Reasoning blocks (Qwen3 thinking) flow through | ☐ | check that `<think>` content shows up as a `thinking` block, not silently dropped |
+| `/v1/models` returns served name | ✅ | `served: ['qwen3-coder']`, 2045 ms (cold) |
+| `/v1/messages` non-streaming | ✅ | After probe v2 fix (raised `max_tokens`, accept `thinking`-only): emits a Qwen3 `thinking` block with a `signature` field — Anthropic extended-thinking shape preserved end-to-end. v1 probe rejected this because it only inspected `text` blocks |
+| `/v1/messages` streaming SSE | ✅ | All required events plus `content_block_stop` + `message_delta`: `['content_block_delta', 'content_block_start', 'content_block_stop', 'message_delta', 'message_start', 'message_stop']` |
+| `/v1/messages` tool_use | ✅ | `stop_reason=tool_use`, `id=chatcmpl-tool-…`, `input={'city': 'Helsinki'}` — qwen3_coder parser produced clean Anthropic-shaped `tool_use` block |
+| `/v1/messages` tool_result followup | ✅ | `stop_reason=end_turn`, model reads back: *"The current weather in Helsinki is 4°C and partly cloudy."* — the full tool-use → tool_result handshake works without LiteLLM in the path |
+| `/v1/messages/count_tokens` | ✅ | `input_tokens=13` for the 3-word probe |
+| Reasoning blocks (Qwen3 thinking) flow through | ✅ | Confirmed via the v1 probe failure log — `content[0]` is `{"type": "thinking", "thinking": "…", "signature": "ab3a9a17…"}`. vLLM synthesises the `signature` per response so Claude Code's signature-passthrough invariant holds |
+| `claude --model claude-sonnet-4-6 -p` smoke | ☐ | Operator step — fill in after running the PowerShell snippet in the runbook |
+
+### Key observation
+
+vLLM's `AnthropicServingMessages` doesn't strip the qwen3 `<think>` block. It promotes it to a first-class `thinking` content block alongside any text the model emits. That means moving from LiteLLM to direct vLLM is **strictly more capable** for our stack — LiteLLM didn't preserve Qwen3 thinking blocks in Anthropic format at all.
 
 ## Decision criteria
 
@@ -116,19 +120,9 @@ Fill in after running the probe + the claude smoke test.
 - **Streaming FAIL but non-streaming PASS** → block migration; LiteLLM stays. Open an upstream issue with the missing-event diagnostic from the probe.
 - **count_tokens FAIL** → not blocking. Claude Code rarely calls it; document as a known gap.
 
-## Implementation ticket (file only after live tests pass)
+## Implementation ticket
 
-Title: `Drop LiteLLM proxy — point Claude Code directly at vLLM /v1/messages`
-
-Scope:
-- Remove `app/core/watcher/watcher_services.py` LiteLLM lifecycle (`ensure_litellm_running`, port 8082 plumbing). Replace with `ensure_vllm_anthropic_mode` that just health-checks `/v1/messages` on port 8000.
-- Delete `litellm-local.yaml.example` and the `.gitignore` entry for `litellm-local.yaml`.
-- Strip `litellm` from `requirements*.txt`.
-- Update CLAUDE.md "Local model development" to single-daemon (drop LiteLLM step, change `ANTHROPIC_BASE_URL` from `:8082` to `:8000`, add the three `ANTHROPIC_DEFAULT_*_MODEL` vars).
-- Update `--served-model-name` requirement in the documented vllm command.
-- Smoke-test the watcher end-to-end against a single ReadyForLocal ticket.
-
-Out of scope: any benchmark re-runs (sibling spikes WOR-345 / WOR-346 own that).
+Filed as **WOR-368** — *Drop LiteLLM proxy — point Claude Code directly at vLLM /v1/messages*. Watcher-routed (`Fix` + `local-ready`), P3, related to WOR-344 + WOR-339. Live results above were the unblock; the full scope and AC live on the ticket.
 
 ## References
 

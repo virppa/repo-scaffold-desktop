@@ -146,7 +146,7 @@ def test_messages_basic(base_url: str, model: str) -> Result:
     r = Result("/v1/messages — non-streaming")
     payload = {
         "model": model,
-        "max_tokens": 64,
+        "max_tokens": 512,
         "messages": [{"role": "user", "content": "Reply with the single word: pong"}],
     }
     (code, body), r.elapsed_ms = _time(_post, f"{base_url}/v1/messages", payload)
@@ -162,12 +162,19 @@ def test_messages_basic(base_url: str, model: str) -> Result:
         r.failed(f"expected type=message, got {data.get('type')!r}; full={data!r}")
         return r
     blocks = data.get("content", [])
+    block_types = [b.get("type") for b in blocks]
     text = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-    if not text:
-        r.failed(f"no text block in response: {data!r}")
+    thinking = "".join(
+        b.get("thinking", "") for b in blocks if b.get("type") == "thinking"
+    )
+    if not text and not thinking:
+        r.failed(
+            f"no text or thinking block in response: blocks={block_types} full={data!r}"
+        )
         return r
+    snippet = text[:80] if text else f"thinking_only={thinking[:80]!r}"
     r.passed(
-        f"stop_reason={data.get('stop_reason')} usage={data.get('usage')} text={text[:80]!r}"
+        f"stop_reason={data.get('stop_reason')} usage={data.get('usage')} blocks={block_types} text={snippet!r}"
     )
     return r
 
@@ -176,7 +183,7 @@ def test_messages_stream(base_url: str, model: str) -> Result:
     r = Result("/v1/messages — streaming SSE")
     payload = {
         "model": model,
-        "max_tokens": 64,
+        "max_tokens": 256,
         "stream": True,
         "messages": [{"role": "user", "content": "Count to three."}],
     }
