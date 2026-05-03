@@ -335,6 +335,8 @@ def finalize_worker(
             api_retry_count=api_retry_count,
             # WOR-364: persist Task-tool subagent count
             subagent_spawns=subagent_spawns,
+            # WOR-363: persist dispatch-time worker pool size
+            dispatch_concurrency=worker.dispatch_concurrency,
         )
     )
     metrics.record_run(

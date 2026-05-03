@@ -287,6 +287,39 @@ class TestSubagentSpawnsColumn:
             store._migrate(conn)
 
 
+class TestDispatchConcurrencyColumn:
+    """WOR-363: persist count of OTHER active workers at dispatch time."""
+
+    def test_dispatch_concurrency_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(dispatch_concurrency=3))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.dispatch_concurrency == 3
+
+    def test_dispatch_concurrency_solo_is_zero(self, tmp_path):
+        """Zero (solo dispatch) is a valid value, distinct from None."""
+        store = _store(tmp_path)
+        store.record(_ticket(dispatch_concurrency=0))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.dispatch_concurrency == 0
+        assert result.dispatch_concurrency is not None
+
+    def test_dispatch_concurrency_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.dispatch_concurrency is None
+
+    def test_dispatch_concurrency_migration_idempotent(self, tmp_path):
+        store = _store(tmp_path)
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
 class TestAdditionalMetrics:
     def test_retry_and_diff_metrics_round_trip(self, tmp_path):
         store = _store(tmp_path)
