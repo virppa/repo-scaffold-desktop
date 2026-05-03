@@ -243,7 +243,10 @@ def build_worker_cmd(
         "--output-format",
         "stream-json",
     ]
-    _effort = effort if effort is not None else ("xhigh" if mode == "local" else "max")
+    if effort is not None:
+        _effort = effort
+    else:
+        _effort = "xhigh" if mode == "local" else "max"
     if mode == "local":
         # (CLI values: low|medium|high|xhigh|max — "normal" was removed)
         # When effort=None, fall back to xhigh for local, max for cloud.
