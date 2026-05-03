@@ -267,7 +267,7 @@ def create_github_repo(
         err_body = ""
         try:
             err_body = json.loads(exc.read()).get("message", str(exc))
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):  # noqa: BLE001
             err_body = str(exc)
         if exc.code == 422:
             raise RuntimeError(
@@ -366,14 +366,14 @@ def _put(url: str, body: dict[str, object], headers: dict[str, str]) -> None:
                 err_body = ""
                 try:
                     err_body = json.loads(resp.read()).get("message", str(resp))
-                except Exception:  # noqa: BLE001
+                except (OSError, ValueError):  # noqa: BLE001
                     err_body = str(resp)
                 raise RuntimeError(f"GitHub API error ({resp.status}): {err_body}")
     except urllib.error.HTTPError as exc:
         err_body = ""
         try:
             err_body = json.loads(exc.read()).get("message", str(exc))
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):  # noqa: BLE001
             err_body = str(exc)
         raise RuntimeError(f"GitHub API error: {err_body}") from exc
 
@@ -393,14 +393,14 @@ def _patch(url: str, body: dict[str, object], headers: dict[str, str]) -> None:
                 err_body = ""
                 try:
                     err_body = json.loads(resp.read()).get("message", str(resp))
-                except Exception:  # noqa: BLE001
+                except (OSError, ValueError):  # noqa: BLE001
                     err_body = str(resp)
                 raise RuntimeError(f"GitHub API error ({resp.status}): {err_body}")
     except urllib.error.HTTPError as exc:
         err_body = ""
         try:
             err_body = json.loads(exc.read()).get("message", str(exc))
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):  # noqa: BLE001
             err_body = str(exc)
         raise RuntimeError(f"GitHub API error: {err_body}") from exc
 
@@ -437,7 +437,7 @@ def _set_branch_protection(owner: str, repo: str, headers: dict[str, str]) -> No
                 err_body = ""
                 try:
                     err_body = json.loads(resp.read()).get("message", str(resp))
-                except Exception:  # noqa: BLE001
+                except (OSError, ValueError):  # noqa: BLE001
                     err_body = str(resp)
                 print(
                     f"Warning: branch protection for main failed: {err_body}",
@@ -447,7 +447,7 @@ def _set_branch_protection(owner: str, repo: str, headers: dict[str, str]) -> No
         err_body = ""
         try:
             err_body = json.loads(exc.read()).get("message", str(exc))
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):  # noqa: BLE001
             err_body = str(exc)
         print(
             f"Warning: branch protection for main failed: {err_body}",
