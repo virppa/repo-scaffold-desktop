@@ -330,39 +330,46 @@ def finalize_worker(
     )
 
     restore_plan_files(worker.backed_up_plans)
-    if artifacts_preserved:
-        # Success path — artifacts already saved upstream; remove worktree.
-        cleanup_worktree(repo_root, worker.worktree_path)
-    else:
-        # Failure path — preserve WIP before considering teardown (WOR-258, WOR-288).
-        backup_root = repo_root / _CLAUDE_DIR / "artifacts"
-        wip_result = commit_wip_state(
-            worker.worktree_path,
-            worker.ticket_id,
-            worker.manifest.worker_branch,
-            backup_root=backup_root,
-        )
-        if wip_result.sha is not None:
-            _write_wip_sha_to_last_failure(worker, wip_result.sha)
+
+    # Always preserve any uncommitted WIP before deciding cleanup (WOR-347).
+    # Workers can exit rc=0 with all checks passing yet never have committed
+    # the work — the previous success path skipped commit_wip_state and
+    # destroyed uncommitted edits with the worktree. Running it on every path
+    # makes the worst case "an extra WIP commit on the worker branch" rather
+    # than "all work lost".
+    backup_root = repo_root / _CLAUDE_DIR / "artifacts"
+    wip_result = commit_wip_state(
+        worker.worktree_path,
+        worker.ticket_id,
+        worker.manifest.worker_branch,
+        backup_root=backup_root,
+    )
+    if wip_result.sha is not None:
+        _write_wip_sha_to_last_failure(worker, wip_result.sha)
+
+    if not artifacts_preserved:
+        # Failure path: also preserve full worker artifacts (logs, last_failure,
+        # etc.) for forensic analysis. Success path doesn't need this — the PR
+        # itself is the artifact.
         preserve_worker_artifacts(repo_root, worker)
 
-        if wip_result.status in ("clean", "pushed", "backup"):
-            cleanup_worktree(repo_root, worker.worktree_path)
-        else:
-            # WOR-288: WIP preservation failed (commit_wip_state could not push
-            # AND could not back up the dirty tree). Removing the worktree now
-            # would destroy uncommitted work — leave it in place for human
-            # salvage. The worktree path appears in the ERROR log so the
-            # operator can git status / commit / push manually.
-            logger.error(
-                "WIP preservation failed for %s — leaving worktree in place at %s "
-                "for manual recovery (error: %s). Run `git -C <path> status` to "
-                "inspect, then commit + push to %s manually.",
-                worker.ticket_id,
-                worker.worktree_path,
-                wip_result.error or "unknown",
-                worker.manifest.worker_branch,
-            )
+    if wip_result.status in ("clean", "pushed", "backup"):
+        cleanup_worktree(repo_root, worker.worktree_path)
+    else:
+        # WOR-288: WIP preservation failed (commit_wip_state could not push
+        # AND could not back up the dirty tree). Removing the worktree now
+        # would destroy uncommitted work — leave it in place for human
+        # salvage. The worktree path appears in the ERROR log so the
+        # operator can git status / commit / push manually.
+        logger.error(
+            "WIP preservation failed for %s — leaving worktree in place at %s "
+            "for manual recovery (error: %s). Run `git -C <path> status` to "
+            "inspect, then commit + push to %s manually.",
+            worker.ticket_id,
+            worker.worktree_path,
+            wip_result.error or "unknown",
+            worker.manifest.worker_branch,
+        )
     return outcome
 
 
