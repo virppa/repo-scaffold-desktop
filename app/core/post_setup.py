@@ -225,7 +225,6 @@ def run_initial_push(
 
 def create_github_repo(
     repo_name: str,
-    prefs: UserPreferences,
     private: bool = True,
     description: str = "",
 ) -> str:

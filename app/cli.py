@@ -402,7 +402,6 @@ def _run_generate(args: argparse.Namespace) -> int:
         try:
             clone_url = create_github_repo(
                 repo_name=config.repo_name,
-                prefs=prefs,
                 private=github_private,
             )
             print(f"✓ Created GitHub repo: {clone_url}")
