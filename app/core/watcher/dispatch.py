@@ -31,13 +31,10 @@ logger = logging.getLogger(__name__)
 def start_ticket(
     manifest: ExecutionManifest,
     linear: LinearClientProtocol,
-    project_id: str,
     services: ServiceManager,
     worker_verbose: bool,
-    retry_counters: dict[str, int],
     _local_active: list[ActiveWorker],
     _cloud_active: list[ActiveWorker],
-    max_local_workers: int,
     max_cloud_workers: int,
     _repo_root: Path,
     _processed_tickets: list[object],
@@ -54,15 +51,14 @@ def start_ticket(
         manifest.implementation_mode,
     )
 
-    if effective_mode != "local":
-        if len(_cloud_active) >= max_cloud_workers:
-            logger.info(
-                "Deferring %s — cloud pool full (%d/%d)",
-                ticket_id,
-                len(_cloud_active),
-                max_cloud_workers,
-            )
-            return
+    if effective_mode != "local" and len(_cloud_active) >= max_cloud_workers:
+        logger.info(
+            "Deferring %s — cloud pool full (%d/%d)",
+            ticket_id,
+            len(_cloud_active),
+            max_cloud_workers,
+        )
+        return
 
     if effective_mode == "local":
         if not services.probe_vllm_health():

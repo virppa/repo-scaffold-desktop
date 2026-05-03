@@ -30,7 +30,7 @@ class ColorFormatter(logging.Formatter):
     Falls back to plain text for redirected/piped output (``isatty() == False``).
     """
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN003, ANN002
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._is_tty = sys.stderr.isatty()
 

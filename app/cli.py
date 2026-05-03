@@ -14,8 +14,10 @@ from app.core.credentials import cli_delete_token, save_token
 from app.core.generator import generate
 from app.core.metrics import MetricsStore
 from app.core.post_setup import (
+    _parse_repo_full_name,
     configure_github_repo,
     create_github_repo,
+    delete_github_repo,
     fetch_skills,
     run_git_init,
     run_initial_push,
@@ -113,6 +115,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     gen.add_argument(
         "--git-push", action="store_true", help="Push initial commit to remote."
+    )
+    gen.add_argument(
+        "--no-rollback-on-failure",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip rolling back a GitHub repo when configure or push fails. "
+            "Without this flag, an orphaned repo is deleted on failure."
+        ),
     )
     gen.add_argument(
         "--remote-url",
@@ -269,160 +280,211 @@ def _run_metrics(args: argparse.Namespace) -> int:
     return 1
 
 
+def _config_get(args: argparse.Namespace) -> int:
+    prefs = PrefsStore.load()
+    for field, value in prefs.model_dump().items():
+        key = field.replace("_", "-")
+        print(f"{key}: {value}")
+    return 0
+
+
+def _config_set(args: argparse.Namespace) -> int:
+    if args.key == "github-token":
+        raw = args.value
+        if not raw:
+            raw = getpass.getpass(
+                "GitHub token: ",
+                stream=sys.stderr,
+            )
+        if not raw:
+            print("Error: empty token", file=sys.stderr)
+            return 1
+        try:
+            save_token(raw)
+            print("Done.", file=sys.stderr)
+        except (NoKeyringError, KeyringError) as exc:
+            print(
+                f"Error: unable to store token ({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+
+    field = _KEY_TO_FIELD[args.key]
+    prefs = PrefsStore.load()
+    raw = args.value
+    field_info = UserPreferences.model_fields[field]
+    annotation = field_info.annotation
+    # Handle Path | None
+    if annotation in (Path, "Path | None") or (
+        annotation is not None
+        and hasattr(annotation, "__args__")
+        and Path in annotation.__args__
+    ):
+        value = Path(raw) if raw else None
+    else:
+        value = raw
+    updated = prefs.model_copy(update={field: value})
+    PrefsStore.save(updated)
+    print(f"✓ {args.key} = {value}")
+    return 0
+
+
+def _config_delete(args: argparse.Namespace) -> int:
+    if args.key == "github-token":
+        return cli_delete_token()
+    print(
+        f"Error: unknown credential '{args.key}'",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def _run_config(args: argparse.Namespace) -> int:
     if args.config_cmd == "get":
-        prefs = PrefsStore.load()
-        for field, value in prefs.model_dump().items():
-            key = field.replace("_", "-")
-            print(f"{key}: {value}")
-        return 0
-
+        return _config_get(args)
     if args.config_cmd == "set":
-        if args.key == "github-token":
-            raw = args.value
-            if not raw:
-                raw = getpass.getpass(
-                    "GitHub token: ",
-                    stream=sys.stderr,
-                )
-            if not raw:
-                print("Error: empty token", file=sys.stderr)
-                return 1
-            try:
-                save_token(raw)
-                print("Done.", file=sys.stderr)
-            except (NoKeyringError, KeyringError) as exc:
-                print(
-                    f"Error: unable to store token ({type(exc).__name__})",
-                    file=sys.stderr,
-                )
-                return 1
-            return 0
-
-        field = _KEY_TO_FIELD[args.key]
-        prefs = PrefsStore.load()
-        raw = args.value
-        field_info = UserPreferences.model_fields[field]
-        annotation = field_info.annotation
-        # Handle Path | None
-        if annotation in (Path, "Path | None") or (
-            annotation is not None
-            and hasattr(annotation, "__args__")
-            and Path in annotation.__args__
-        ):
-            value = Path(raw) if raw else None
-        else:
-            value = raw
-        updated = prefs.model_copy(update={field: value})
-        PrefsStore.save(updated)
-        print(f"✓ {args.key} = {value}")
-        return 0
-
+        return _config_set(args)
     if args.config_cmd == "delete":
-        if args.key == "github-token":
-            return cli_delete_token()
-        print(
-            f"Error: unknown credential '{args.key}'",
-            file=sys.stderr,
-        )
-        return 1
+        return _config_delete(args)
 
-    # config with no sub-subcommand
     print("Usage: scaffold config {get,set,delete}", file=sys.stderr)
     return 1
 
 
-def _run_generate(args: argparse.Namespace) -> int:
+def _build_config(args: argparse.Namespace) -> RepoConfig:
     include_linear_mcp: bool = args.linear_mcp
     if include_linear_mcp is None:
         include_linear_mcp = get_preset(args.preset).context_defaults.get(
             "include_linear_mcp", False
         )
+    return RepoConfig(
+        repo_name=args.repo_name,
+        preset=args.preset,
+        include_precommit=args.pre_commit,
+        include_ci=args.ci,
+        include_pr_template=args.pr_template,
+        include_issue_templates=args.issue_templates,
+        include_codeowners=args.codeowners,
+        include_claude_files=args.claude_files,
+        include_linear_mcp=include_linear_mcp,
+        include_playwright=args.playwright,
+        git_init=args.git_init,
+        install_precommit=args.install_precommit,
+    )
 
+
+def _render_and_report(config: RepoConfig, output: Path) -> list[str]:
+    written = generate(config, output)
+    for path in written:
+        print(f"✓ {path}")
+    return written
+
+
+def _fetch_skills_for_preset(output: Path, config: RepoConfig) -> list[str]:
+    preset = get_preset(config.preset)
+    if preset.skills_source is None or preset.skills_version is None:
+        return []
+    ctx = config.model_dump()
+    skills_context = (
+        {k: ctx[k] for k in preset.skills_context_fields}
+        if preset.skills_context_fields
+        else None
+    )
+    skills_written = fetch_skills(
+        output,
+        skills_source=preset.skills_source,
+        skills_version=preset.skills_version,
+        context=skills_context,
+    )
+    for path in skills_written:
+        print(f"✓ {path}")
+    return skills_written
+
+
+def _run_post_setup(config: RepoConfig, output: Path) -> None:
+    if config.git_init:
+        run_git_init(output)
+        print("✓ git init")
+    if config.install_precommit:
+        run_precommit_install(output)
+        print("✓ pre-commit install")
+
+
+def _run_github_create(config: RepoConfig, args: argparse.Namespace) -> str | None:
+    github_private = not args.public
+    clone_url = create_github_repo(
+        repo_name=config.repo_name,
+        private=github_private,
+    )
+    print(f"✓ Created GitHub repo: {clone_url}")
+    return clone_url
+
+
+def _run_initial_push(output: Path, push_url: str) -> None:
+    prefs = PrefsStore.load()
+    run_initial_push(output, push_url, prefs)
+    print(f"✓ Pushed initial commit to {push_url}")
+
+
+def _run_generate(args: argparse.Namespace) -> int:
     try:
-        config = RepoConfig(
-            repo_name=args.repo_name,
-            preset=args.preset,
-            include_precommit=args.pre_commit,
-            include_ci=args.ci,
-            include_pr_template=args.pr_template,
-            include_issue_templates=args.issue_templates,
-            include_codeowners=args.codeowners,
-            include_claude_files=args.claude_files,
-            include_linear_mcp=include_linear_mcp,
-            include_playwright=args.playwright,
-            git_init=args.git_init,
-            install_precommit=args.install_precommit,
-        )
+        config = _build_config(args)
     except ValidationError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     try:
-        written = generate(config, args.output)
+        _render_and_report(config, args.output)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    for path in written:
-        print(f"✓ {path}")
-
-    preset = get_preset(config.preset)
-    if preset.skills_source is not None and preset.skills_version is not None:
-        ctx = config.model_dump()
-        skills_context = (
-            {k: ctx[k] for k in preset.skills_context_fields}
-            if preset.skills_context_fields
-            else None
-        )
-        skills_written = fetch_skills(
-            args.output,
-            skills_source=preset.skills_source,
-            skills_version=preset.skills_version,
-            context=skills_context,
-        )
-        for path in skills_written:
-            print(f"✓ {path}")
+    try:
+        _fetch_skills_for_preset(args.output, config)
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     try:
-        if config.git_init:
-            run_git_init(args.output)
-            print("✓ git init")
-        if config.install_precommit:
-            run_precommit_install(args.output)
-            print("✓ pre-commit install")
+        _run_post_setup(config, args.output)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     clone_url: str | None = None
     if args.github_create:
-        prefs = PrefsStore.load()
-        github_private = not args.public
         try:
-            clone_url = create_github_repo(
-                repo_name=config.repo_name,
-                prefs=prefs,
-                private=github_private,
-            )
-            print(f"✓ Created GitHub repo: {clone_url}")
-            repo_full_name = clone_url.replace("https://github.com/", "").rstrip("/")
-            try:
-                configure_github_repo(repo_full_name, config.preset, config.include_ci)
-                print("✓ Configured GitHub repository settings")
-            except RuntimeError as exc:
-                print(f"Warning: {exc}", file=sys.stderr)
+            clone_url = _run_github_create(config, args)
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
-    if args.git_push:
-        push_url = clone_url if clone_url is not None else args.remote_url
-        prefs = PrefsStore.load()
+    repo_full_name: str | None = None
+    if clone_url is not None:
+        repo_full_name = _parse_repo_full_name(clone_url)
+
+    rollback = not args.no_rollback_on_failure
+    if repo_full_name is not None and clone_url is not None:
         try:
-            run_initial_push(args.output, push_url, prefs)
-            print(f"✓ Pushed initial commit to {push_url}")
+            configure_github_repo(repo_full_name, config.preset, config.include_ci)
+            print("✓ Configured GitHub repository settings")
         except RuntimeError as exc:
+            if rollback:
+                delete_github_repo(repo_full_name)
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.git_push:
+        push_url: str | None = clone_url if clone_url is not None else args.remote_url
+        if push_url is None:
+            print("Error: no remote URL specified", file=sys.stderr)
+            return 1
+        try:
+            _run_initial_push(args.output, push_url)
+        except RuntimeError as exc:
+            if rollback and repo_full_name is not None:
+                delete_github_repo(repo_full_name)
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 

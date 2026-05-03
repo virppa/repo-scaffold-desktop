@@ -1,5 +1,6 @@
+import urllib.error
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -347,3 +348,311 @@ def test_watcher_max_local_workers_default_is_8():
     assert rc == 0
     _, kwargs = MockWatcher.call_args
     assert kwargs.get("max_local_workers") == 8
+
+
+# ── GitHub rollback tests ──────────────────────────────────────────────────────
+
+
+def _make_github_response():
+    """Return a mock response that looks like a GitHub create-repo response."""
+    from unittest.mock import MagicMock
+
+    resp = MagicMock()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read = MagicMock(
+        return_value=b'{"html_url": "https://github.com/testuser/myrepo"}'
+    )
+    return resp
+
+
+class TestGitHubRollback:
+    """Tests for delete_github_repo and rollback behavior."""
+
+    def test_delete_github_repo_sends_delete_request(self):
+        resp = MagicMock()
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read = MagicMock(return_value=b"")
+
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                return_value=resp,
+            ) as mock_urlopen,
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+        ):
+            from app.core.post_setup import delete_github_repo
+
+            delete_github_repo("testuser/myrepo")
+
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert req.method == "DELETE"
+        assert "testuser/myrepo" in req.full_url
+
+    def test_delete_github_repo_warns_on_http_error(self, capsys):
+        from unittest.mock import patch
+
+        fp = MagicMock()
+        fp.read = MagicMock(return_value=b"Not Found")
+        exc = urllib.error.HTTPError(
+            "https://api.github.com/repos/testuser/myrepo",
+            404,
+            "Not Found",
+            {},
+            fp,
+        )
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                side_effect=exc,
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+        ):
+            from app.core.post_setup import delete_github_repo
+
+            delete_github_repo("testuser/myrepo")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert "404" in captured.err
+
+    def test_delete_github_repo_warns_on_oserror(self, capsys):
+        from unittest.mock import patch
+
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                side_effect=OSError("network unreachable"),
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+        ):
+            from app.core.post_setup import delete_github_repo
+
+            delete_github_repo("testuser/myrepo")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert "network unreachable" in captured.err
+
+    def test_delete_github_repo_warns_when_no_token(self, capsys):
+        from unittest.mock import patch
+
+        with patch("app.core.post_setup.get_token", return_value=None):
+            from app.core.post_setup import delete_github_repo
+
+            delete_github_repo("testuser/myrepo")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert "no GitHub token" in captured.err
+
+    def test_delete_github_repo_warns_on_invalid_format(self, capsys):
+        from unittest.mock import patch
+
+        with patch("app.core.post_setup.get_token", return_value="ghp_fake"):
+            from app.core.post_setup import delete_github_repo
+
+            delete_github_repo("badformat")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert "invalid format" in captured.err
+
+    def test_delete_github_repo_does_not_raise(self):
+        """delete_github_repo is best-effort — never raises."""
+        from unittest.mock import patch
+
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                side_effect=OSError("network unreachable"),
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+        ):
+            from app.core.post_setup import delete_github_repo
+
+            delete_github_repo("testuser/myrepo")  # should not raise
+
+    def test_delete_github_repo_invalid_format_noop(self):
+        """Invalid format should not attempt any network call."""
+        from unittest.mock import patch
+
+        with (
+            patch("app.core.post_setup.get_token", return_value="ghp_fake") as mock_get,
+            patch("app.core.post_setup.urllib.request.urlopen") as mock_urlopen,
+        ):
+            from app.core.post_setup import delete_github_repo
+
+            delete_github_repo("badformat")
+
+        mock_get.assert_not_called()
+        mock_urlopen.assert_not_called()
+
+    def test_delete_github_repo_invalid_format_multiple_slashes_noop(self):
+        """Multiple slashes should not attempt any network call."""
+        from unittest.mock import patch
+
+        with (
+            patch("app.core.post_setup.get_token", return_value="ghp_fake") as mock_get,
+            patch("app.core.post_setup.urllib.request.urlopen") as mock_urlopen,
+        ):
+            from app.core.post_setup import delete_github_repo
+
+            delete_github_repo("test/user/myrepo")
+
+        mock_get.assert_not_called()
+        mock_urlopen.assert_not_called()
+
+
+class TestGitHubRollbackFlow:
+    """Integration tests for the rollback flow in _run_generate."""
+
+    def test_push_failure_triggers_rollback(self, output_dir, capsys):
+        """When push fails, the repo should be deleted."""
+        with (
+            patch(
+                "app.cli.create_github_repo",
+                return_value="https://github.com/testuser/myrepo",
+            ),
+            patch(
+                "app.cli.configure_github_repo",
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+            patch(
+                "app.cli.run_initial_push",
+                side_effect=RuntimeError("failed to push"),
+            ) as mock_push,
+            patch("app.cli.run_git_init"),
+            patch("app.cli.run_precommit_install"),
+            patch(
+                "app.cli.delete_github_repo",
+            ) as mock_delete,
+        ):
+            rc = main(
+                [
+                    "generate",
+                    "--preset",
+                    "python_basic",
+                    "--repo-name",
+                    "myrepo",
+                    "--output",
+                    str(output_dir),
+                    "--github-create",
+                    "--git-push",
+                    "--remote-url",
+                    "https://github.com/testuser/myrepo",
+                ]
+            )
+
+        assert rc == 1
+        mock_push.assert_called_once()
+        mock_delete.assert_called_once_with("testuser/myrepo")
+        captured = capsys.readouterr()
+        assert "failed to push" in captured.err
+
+    def test_push_no_rollback_with_flag(self, output_dir, capsys):
+        """--no-rollback-on-failure should skip the delete call."""
+        with (
+            patch(
+                "app.cli.create_github_repo",
+                return_value="https://github.com/testuser/myrepo",
+            ),
+            patch(
+                "app.cli.configure_github_repo",
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+            patch(
+                "app.cli.run_initial_push",
+                side_effect=RuntimeError("failed to push"),
+            ),
+            patch("app.cli.run_git_init"),
+            patch("app.cli.run_precommit_install"),
+            patch(
+                "app.cli.delete_github_repo",
+            ) as mock_delete,
+        ):
+            rc = main(
+                [
+                    "generate",
+                    "--preset",
+                    "python_basic",
+                    "--repo-name",
+                    "myrepo",
+                    "--output",
+                    str(output_dir),
+                    "--github-create",
+                    "--git-push",
+                    "--remote-url",
+                    "https://github.com/testuser/myrepo",
+                    "--no-rollback-on-failure",
+                ]
+            )
+
+        assert rc == 1
+        mock_delete.assert_not_called()
+
+    def test_configure_failure_triggers_rollback(self, output_dir, capsys):
+        """When configure fails, the repo should be deleted."""
+        with (
+            patch(
+                "app.cli.create_github_repo",
+                return_value="https://github.com/testuser/myrepo",
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+            patch(
+                "app.cli.configure_github_repo",
+                side_effect=RuntimeError("forbidden"),
+            ),
+            patch("app.cli.run_git_init"),
+            patch("app.cli.run_precommit_install"),
+            patch(
+                "app.cli.delete_github_repo",
+            ) as mock_delete,
+        ):
+            rc = main(
+                [
+                    "generate",
+                    "--preset",
+                    "python_basic",
+                    "--repo-name",
+                    "myrepo",
+                    "--output",
+                    str(output_dir),
+                    "--github-create",
+                ]
+            )
+
+        assert rc == 1
+        mock_delete.assert_called_once_with("testuser/myrepo")
+        captured = capsys.readouterr()
+        assert "forbidden" in captured.err
+
+    def test_github_create_failure_no_rollback(self, output_dir, capsys):
+        """If create itself fails, there's nothing to rollback."""
+        with (
+            patch(
+                "app.cli.create_github_repo",
+                side_effect=RuntimeError("Repository already exists"),
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+            patch("app.cli.run_git_init"),
+            patch("app.cli.run_precommit_install"),
+            patch("app.cli.delete_github_repo") as mock_delete,
+        ):
+            rc = main(
+                [
+                    "generate",
+                    "--preset",
+                    "python_basic",
+                    "--repo-name",
+                    "myrepo",
+                    "--output",
+                    str(output_dir),
+                    "--github-create",
+                ]
+            )
+
+        assert rc == 1
+        mock_delete.assert_not_called()
