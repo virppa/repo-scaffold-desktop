@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.core.watcher.watcher_helpers import (
     _parse_ollama_model,
+    _parse_worker_api_retries,
     _parse_worker_usage,
     build_worker_cmd,
     build_worker_env,
@@ -648,6 +649,64 @@ def test_parse_worker_usage_empty_file(tmp_path: Path) -> None:
     assert input_tok is None
     assert output_tok is None
     assert compactions == 0  # WOR-357: parseable path returns 0, not None
+
+
+# ---------------------------------------------------------------------------
+# WOR-360 — _parse_worker_api_retries
+# ---------------------------------------------------------------------------
+
+
+def test_parse_worker_api_retries_zero(tmp_path: Path) -> None:
+    """Log with no api_retry events returns 0."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_worker_api_retries(log) == 0
+
+
+def test_parse_worker_api_retries_counts_5(tmp_path: Path) -> None:
+    """5 api_retry events returns 5."""
+    retry = json.dumps({"type": "system", "subtype": "api_retry"})
+    log = _write_log(
+        tmp_path,
+        [
+            retry,
+            retry,
+            retry,
+            retry,
+            retry,
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_worker_api_retries(log) == 5
+
+
+def test_parse_worker_api_retries_other_subtypes_ignored(tmp_path: Path) -> None:
+    """Other system subtypes (init, compact_boundary, task_started) ignored."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "system", "subtype": "compact_boundary"}),
+            json.dumps({"type": "system", "subtype": "task_started"}),
+            json.dumps({"type": "system", "subtype": "task_notification"}),
+            json.dumps({"type": "system", "subtype": "api_retry"}),
+        ],
+    )
+    assert _parse_worker_api_retries(log) == 1
+
+
+def test_parse_worker_api_retries_missing_log(tmp_path: Path) -> None:
+    """Missing log returns None (cannot read)."""
+    assert _parse_worker_api_retries(tmp_path / "no_such_file.log") is None
 
 
 # ---------------------------------------------------------------------------
