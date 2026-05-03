@@ -15,7 +15,13 @@ from pathlib import Path
 from app.core.escalation_policy import EscalationPolicy, get_waste_warn_threshold
 from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import MetricsStore, Outcome, TicketMetrics, TicketRunLog
+from app.core.metrics import (
+    MetricsStore,
+    Outcome,
+    TicketMetrics,
+    TicketRunLog,
+    compute_tags,
+)
 
 from .watcher_helpers import (
     _POLICY_FLAGS,
@@ -328,6 +334,19 @@ def finalize_worker(
             context_compactions=context_compactions,
         )
     )
+
+    # Auto-detect tags for morning retros (WOR-332).
+    _manifest = worker.manifest
+    _row = metrics.get_by_ticket(worker.ticket_id, project_id)
+    if _row is not None:
+        _tags = compute_tags(
+            _row,
+            _read_result_status(repo_root, _manifest) or "",
+            _read_result_flags(repo_root / _manifest.artifact_paths.result_json),
+            tracked_prs,
+        )
+        if _tags:
+            metrics.set_tags(worker.ticket_id, project_id, _tags)
 
     restore_plan_files(worker.backed_up_plans)
 

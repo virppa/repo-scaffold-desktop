@@ -13,7 +13,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator, Literal
+from typing import Any, Generator, Literal
 
 from pydantic import BaseModel, Field
 
@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     raw_extensions        TEXT,
     waste_score           INTEGER,
     waste_breakdown_json  TEXT,
+    tags                  TEXT,
+    notes                 TEXT,
     recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
@@ -174,6 +176,15 @@ class TicketMetrics(BaseModel):
     waste_breakdown_json: str | None = Field(
         default=None,
         description="JSON string of per-signal breakdown for dashboard drill-down",
+    )
+    tags: str | None = Field(
+        default=None,
+        description="JSON array string of auto-detected tags, "
+        'e.g. "[\\"zero_tokens_high_wall_time\\",\\"high_waste\\"]"',
+    )
+    notes: str | None = Field(
+        default=None,
+        description="Free-form operator notes for morning retros",
     )
 
 
@@ -352,6 +363,10 @@ class MetricsStore:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN waste_breakdown_json TEXT"
             )
+        if "tags" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN tags TEXT")
+        if "notes" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN notes TEXT")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -379,7 +394,7 @@ class MetricsStore:
                     sonar_findings_count, context_compactions,
                     change_type, reasoning_demand, scope_clarity,
                     constraint_density, ac_specificity, tech_stack, raw_extensions,
-                    waste_score, waste_breakdown_json
+                    waste_score, waste_breakdown_json, tags, notes
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -393,7 +408,7 @@ class MetricsStore:
                     :sonar_findings_count, :context_compactions,
                     :change_type, :reasoning_demand, :scope_clarity,
                     :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
-                    :waste_score, :waste_breakdown_json
+                    :waste_score, :waste_breakdown_json, :tags, :notes
                 )
                 """,
                 {
@@ -419,6 +434,16 @@ class MetricsStore:
         if row is None:
             return None
         return _row_to_metrics(row)
+
+    def set_tags(self, ticket_id: str, project_id: str, tags: list[str] | None) -> None:
+        """Set the auto-detected tags for a ticket (overwrite existing)."""
+        tags_json = json.dumps(tags) if tags else None
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE ticket_metrics SET tags = ? "
+                "WHERE ticket_id = ? AND project_id = ?",
+                (tags_json, ticket_id, project_id),
+            )
 
     def get_by_epic(self, epic_id: str, project_id: str) -> list[TicketMetrics]:
         """Return all ticket metrics for an epic."""
@@ -560,6 +585,80 @@ class MetricsStore:
             )
             for r in rows
         ]
+
+
+def compute_tags(
+    ticket_metrics_row: TicketMetrics,
+    result_json_status: str,
+    result_json_flags: dict[str, bool] | None = None,
+    tracked_prs: list[Any] | None = None,
+) -> list[str]:
+    """Return auto-detected tags for a ticket metrics row.
+
+    Pure function — no I/O, no logging, no side effects.  Easy to unit-test.
+
+    Four anomaly-detection rules (from the 2026-05-03 retro) and four
+    categorization rules (from existing result.json signals).
+
+    Args:
+        ticket_metrics_row: The TicketMetrics record as written by finalize_worker.
+        result_json_status: The ``status`` field from the worker's result.json.
+        result_json_flags: Parsed flags dict from result.json (scope_drift, etc.).
+        tracked_prs: List of TrackedPR objects that were populated during PR creation.
+
+    Returns:
+        A list of tag name strings.  May be empty.
+    """
+    tags: list[str] = []
+    outcome = ticket_metrics_row.outcome
+    lines_changed = ticket_metrics_row.lines_changed
+    waste_score = ticket_metrics_row.waste_score
+    retry_count = ticket_metrics_row.retry_count
+    local_tokens = ticket_metrics_row.local_tokens
+    local_wall_time = ticket_metrics_row.local_wall_time
+
+    # --- Anomaly detection rules (4) ---
+
+    # zero_tokens_high_wall_time: local worker burned wall time with almost no
+    # tokens — likely a failed run that still consumed time (2026-05-03 retro).
+    if local_tokens is not None and local_wall_time is not None:
+        if local_tokens < 100_000 and local_wall_time > 1_800:
+            tags.append("zero_tokens_high_wall_time")
+
+    # no_diff_against_base: the worker reported failure but produced no diff —
+    # it never got far enough to write code (2026-05-03 retro).
+    if outcome == "failure" and lines_changed is not None and lines_changed == 0:
+        tags.append("no_diff_against_base")
+
+    # success_outcome_state_mismatch: result.json says success but metrics
+    # record captured failure — state machine inconsistency (2026-05-03 retro).
+    if result_json_status == "success" and outcome == "failure":
+        tags.append("success_outcome_state_mismatch")
+
+    # success_pr_create_failed: the worker succeeded but the PR push failed —
+    # the PR is not visible in the repo (2026-05-03 retro).
+    if outcome == "success" and tracked_prs is not None and len(tracked_prs) == 0:
+        tags.append("success_pr_create_failed")
+
+    # --- Categorization rules (4) ---
+
+    # scope_drift: the worker itself flagged that it went beyond scope.
+    if result_json_flags and result_json_flags.get("scope_drift"):
+        tags.append("scope_drift")
+
+    # escalated: the final outcome was an escalation to cloud.
+    if outcome == "escalated":
+        tags.append("escalated")
+
+    # high_waste: the waste score exceeds the 80 threshold.
+    if waste_score is not None and waste_score > 80:
+        tags.append("high_waste")
+
+    # rework: the ticket required at least one retry.
+    if retry_count > 0:
+        tags.append("rework")
+
+    return tags
 
 
 def _row_to_metrics(row: sqlite3.Row) -> TicketMetrics:

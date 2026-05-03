@@ -13,6 +13,7 @@ import pytest
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
 from app.core.manifest import FailurePolicy
+from app.core.metrics import TicketMetrics
 from app.core.watcher.watcher_finalize import _try_post_comment, finalize_worker
 from app.core.watcher.watcher_types import ActiveWorker
 from app.core.watcher.watcher_worktrees import WipPreservationResult
@@ -34,18 +35,23 @@ def _call_finalize(
     metrics: object | None = None,
     repo_root: Path | None = None,
     mode: str = "default",
+    compute_tags_fn=None,
 ) -> None:
-    finalize_worker(
-        worker,
-        returncode=returncode,
-        wall_time=wall_time,
-        linear=linear or MagicMock(),
-        metrics=metrics or MagicMock(),
-        escalation_policy=EscalationPolicy.from_toml(),
-        repo_root=repo_root or Path("."),
-        mode=mode,
-        project_id=_DEFAULT_PROJECT,
-    )
+    with patch(
+        "app.core.watcher.watcher_finalize.compute_tags",
+        compute_tags_fn or MagicMock(return_value=[]),
+    ):
+        finalize_worker(
+            worker,
+            returncode=returncode,
+            wall_time=wall_time,
+            linear=linear or MagicMock(),
+            metrics=metrics or MagicMock(),
+            escalation_policy=EscalationPolicy.from_toml(),
+            repo_root=repo_root or Path("."),
+            mode=mode,
+            project_id=_DEFAULT_PROJECT,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1307,3 +1313,116 @@ def test_finalize_worker_waste_warning_logged(
 
     # Should log a WARNING with the ticket ID and waste score.
     assert any("WOR-10" in msg and "waste" in msg.lower() for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# WOR-332 — tags auto-populated from result.json flags
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_auto_populates_tags_from_flags(tmp_path: Path) -> None:
+    """When result.json has scope_drift, compute_tags fires and set_tags is called."""
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+
+    result_path = tmp_path / ".claude" / "artifacts" / "wor_10" / "result.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(
+        json.dumps({"status": "success", "scope_drift": True}),
+        encoding="utf-8",
+    )
+
+    # Real TicketMetrics so compute_tags can read fields without MagicMock errors.
+    row = TicketMetrics(
+        ticket_id="WOR-10",
+        project_id=_DEFAULT_PROJECT,
+        implementation_mode="local",
+        outcome="success",
+        retry_count=0,
+        lines_changed=5,
+    )
+    metrics_mock.get_by_ticket.return_value = row
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.preserve_worker_artifacts",
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(
+            worker,
+            linear=linear_mock,
+            metrics=metrics_mock,
+            repo_root=tmp_path,
+            compute_tags_fn=MagicMock(return_value=["scope_drift"]),
+        )
+
+    # set_tags should be called because compute_tags returns non-empty list
+    metrics_mock.set_tags.assert_called_once()
+    call_args = metrics_mock.set_tags.call_args[0]
+    assert call_args[0] == "WOR-10"
+    assert call_args[1] == _DEFAULT_PROJECT
+    assert "scope_drift" in call_args[2]
+
+
+def test_finalize_worker_no_set_tags_when_compute_tags_empty(
+    tmp_path: Path,
+) -> None:
+    """When compute_tags returns [], set_tags is NOT called."""
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+
+    result_path = tmp_path / ".claude" / "artifacts" / "wor_10" / "result.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(json.dumps({"status": "success"}), encoding="utf-8")
+
+    # Real TicketMetrics so compute_tags doesn't crash on MagicMock comparisons.
+    row = TicketMetrics(
+        ticket_id="WOR-10",
+        project_id=_DEFAULT_PROJECT,
+        implementation_mode="local",
+        outcome="success",
+        retry_count=0,
+        lines_changed=5,
+    )
+    metrics_mock.get_by_ticket.return_value = row
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.preserve_worker_artifacts",
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(
+            worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
+        )
+
+    metrics_mock.set_tags.assert_not_called()
