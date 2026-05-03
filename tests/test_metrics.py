@@ -255,6 +255,38 @@ class TestApiRetryColumn:
             store._migrate(conn)
 
 
+class TestSubagentSpawnsColumn:
+    """WOR-364: persist Task-tool subagent count per session."""
+
+    def test_subagent_spawns_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(subagent_spawns=4))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.subagent_spawns == 4
+
+    def test_subagent_spawns_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.subagent_spawns is None
+
+    def test_subagent_spawns_zero_distinct_from_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(subagent_spawns=0))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.subagent_spawns == 0
+        assert result.subagent_spawns is not None
+
+    def test_subagent_spawns_migration_idempotent(self, tmp_path):
+        store = _store(tmp_path)
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
 class TestAdditionalMetrics:
     def test_retry_and_diff_metrics_round_trip(self, tmp_path):
         store = _store(tmp_path)

@@ -8,6 +8,7 @@ from pathlib import Path
 from app.core.watcher.watcher_helpers import (
     _parse_ollama_model,
     _parse_worker_api_retries,
+    _parse_worker_subagent_spawns,
     _parse_worker_usage,
     build_worker_cmd,
     build_worker_env,
@@ -707,6 +708,78 @@ def test_parse_worker_api_retries_other_subtypes_ignored(tmp_path: Path) -> None
 def test_parse_worker_api_retries_missing_log(tmp_path: Path) -> None:
     """Missing log returns None (cannot read)."""
     assert _parse_worker_api_retries(tmp_path / "no_such_file.log") is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-364 — _parse_worker_subagent_spawns
+# ---------------------------------------------------------------------------
+
+
+def _task_use(name: str = "Task") -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "a1",
+                "content": [{"type": "tool_use", "name": name, "input": {}}],
+            },
+        }
+    )
+
+
+def test_parse_worker_subagent_spawns_zero(tmp_path: Path) -> None:
+    """Log with no Task tool_use returns 0."""
+    log = _write_log(
+        tmp_path,
+        [
+            _task_use("Read"),
+            _task_use("Edit"),
+            _task_use("Bash"),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_worker_subagent_spawns(log) == 0
+
+
+def test_parse_worker_subagent_spawns_counts_3(tmp_path: Path) -> None:
+    """3 Task tool_use events returns 3."""
+    log = _write_log(
+        tmp_path,
+        [
+            _task_use("Task"),
+            _task_use("Read"),
+            _task_use("Task"),
+            _task_use("Bash"),
+            _task_use("Task"),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_worker_subagent_spawns(log) == 3
+
+
+def test_parse_worker_subagent_spawns_other_tools_ignored(tmp_path: Path) -> None:
+    """Read/Edit/Bash/Grep/Write/TodoWrite are not counted."""
+    log = _write_log(
+        tmp_path,
+        [
+            _task_use("Read"),
+            _task_use("Edit"),
+            _task_use("Bash"),
+            _task_use("Grep"),
+            _task_use("Write"),
+            _task_use("TodoWrite"),
+        ],
+    )
+    assert _parse_worker_subagent_spawns(log) == 0
+
+
+def test_parse_worker_subagent_spawns_missing_log(tmp_path: Path) -> None:
+    """Missing log returns None."""
+    assert _parse_worker_subagent_spawns(tmp_path / "no_such_file.log") is None
 
 
 # ---------------------------------------------------------------------------

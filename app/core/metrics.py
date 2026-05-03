@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     effort                TEXT,
     compact_duration_ms   INTEGER,
     api_retry_count       INTEGER,
+    subagent_spawns       INTEGER,
     recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
@@ -213,6 +214,13 @@ class TicketMetrics(BaseModel):
         description=(
             "Count of system/api_retry events (WOR-360) — Claude Code's "
             "transient backend retries. Backend-stability proxy."
+        ),
+    )
+    subagent_spawns: int | None = Field(
+        default=None,
+        description=(
+            "Count of Task-tool invocations (WOR-364). Each spawns a subagent "
+            "with its own LLM stream — multiplies effective vLLM concurrency."
         ),
     )
 
@@ -417,6 +425,10 @@ class MetricsStore:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN api_retry_count INTEGER"
             )
+        if "subagent_spawns" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN subagent_spawns INTEGER"
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -445,7 +457,7 @@ class MetricsStore:
                     change_type, reasoning_demand, scope_clarity,
                     constraint_density, ac_specificity, tech_stack, raw_extensions,
                     waste_score, waste_breakdown_json, tags, notes, effort,
-                    compact_duration_ms, api_retry_count
+                    compact_duration_ms, api_retry_count, subagent_spawns
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -460,7 +472,7 @@ class MetricsStore:
                     :change_type, :reasoning_demand, :scope_clarity,
                     :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
                     :waste_score, :waste_breakdown_json, :tags, :notes, :effort,
-                    :compact_duration_ms, :api_retry_count
+                    :compact_duration_ms, :api_retry_count, :subagent_spawns
                 )
                 """,
                 {

@@ -26,6 +26,7 @@ from app.core.metrics import (
 from .watcher_helpers import (
     _POLICY_FLAGS,
     _parse_worker_api_retries,
+    _parse_worker_subagent_spawns,
     _parse_worker_usage,
     _read_result_flags,
     resolve_effective_mode,
@@ -205,6 +206,7 @@ def finalize_worker(
         _parse_worker_usage(log_path)
     )
     api_retry_count = _parse_worker_api_retries(log_path)
+    subagent_spawns = _parse_worker_subagent_spawns(log_path)
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
 
     # Parse git diff --shortstat to populate lines_changed / files_changed.
@@ -331,6 +333,8 @@ def finalize_worker(
             compact_duration_ms=compact_duration_ms,
             # WOR-360: persist Claude Code's internal retry count
             api_retry_count=api_retry_count,
+            # WOR-364: persist Task-tool subagent count
+            subagent_spawns=subagent_spawns,
         )
     )
     metrics.record_run(
