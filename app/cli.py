@@ -226,6 +226,16 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # WOR-333: graceful drain/stop signal.
+    sub.add_parser(
+        "watcher-softstop",
+        help=(
+            "Signal the watcher daemon to enter drain mode: stop accepting "
+            "new dispatches, finish in-flight workers, then exit cleanly. "
+            "Writes a sentinel file the daemon polls each cycle."
+        ),
+    )
+
     return parser
 
 
@@ -262,6 +272,37 @@ def _run_watcher(args: argparse.Namespace) -> int:
     except FileNotFoundError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    return 0
+
+
+def _run_watcher_softstop(args: argparse.Namespace) -> int:
+    """Write the soft-stop sentinel so the daemon enters drain mode (WOR-333).
+
+    Daemon polls .claude/watcher.softstop each cycle: if present, it stops
+    accepting new dispatches, finishes in-flight workers, then exits cleanly.
+    """
+    del args  # no flags
+    claude_dir = Path.cwd() / ".claude"
+    pid_file = claude_dir / "watcher.pid"
+    sentinel = claude_dir / "watcher.softstop"
+    if not pid_file.exists():
+        print(
+            "Error: watcher daemon not running (no .claude/watcher.pid). "
+            "Soft-stop is a no-op when no daemon is active.",
+            file=sys.stderr,
+        )
+        return 1
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+    try:
+        pid_str = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        pid_str = "unknown"
+    print(
+        f"Soft-stop requested. Daemon (PID {pid_str}) will exit after "
+        f"current workers finish. Sentinel: {sentinel}",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -562,6 +603,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "watcher":
         return _run_watcher(args)
+
+    if args.command == "watcher-softstop":
+        return _run_watcher_softstop(args)
 
     if args.command == "waste-score":
         return _run_waste_score(args)
