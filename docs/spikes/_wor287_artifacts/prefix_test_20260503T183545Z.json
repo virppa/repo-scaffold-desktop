@@ -1,0 +1,227 @@
+{
+  "timestamp_utc": "20260503T183545Z",
+  "prefix_chars": 76690,
+  "n_requests": 5,
+  "max_tokens": 80,
+  "backends": [
+    {
+      "backend": "vLLM-direct (OpenAI)",
+      "url": "http://localhost:8000",
+      "counters_before": {
+        "vllm:prefix_cache_queries_total": 4952282924.0,
+        "vllm:prefix_cache_hits_total": 252614112.0,
+        "vllm:prompt_tokens_cached_total": 56315328.0
+      },
+      "counters_after": {
+        "vllm:prefix_cache_queries_total": 4952372159.0,
+        "vllm:prefix_cache_hits_total": 252697952.0,
+        "vllm:prompt_tokens_cached_total": 56399168.0
+      },
+      "requests": [
+        {
+          "turn": 1,
+          "suffix": "Briefly: what is the entry point?",
+          "result": {
+            "ok": true,
+            "ttft_s": null,
+            "total_s": 3.661041400046088,
+            "bytes": 20859,
+            "usage": {
+              "prompt_tokens": 17846,
+              "total_tokens": 17926,
+              "completion_tokens": 80
+            }
+          },
+          "delta_queries": 17846.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        },
+        {
+          "turn": 2,
+          "suffix": "Briefly: which classes are exported?",
+          "result": {
+            "ok": true,
+            "ttft_s": null,
+            "total_s": 3.4529018999892287,
+            "bytes": 20864,
+            "usage": {
+              "prompt_tokens": 17845,
+              "total_tokens": 17925,
+              "completion_tokens": 80
+            }
+          },
+          "delta_queries": 17845.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        },
+        {
+          "turn": 3,
+          "suffix": "Briefly: what is the watcher poll interval?",
+          "result": {
+            "ok": true,
+            "ttft_s": null,
+            "total_s": 3.458758199994918,
+            "bytes": 20883,
+            "usage": {
+              "prompt_tokens": 17847,
+              "total_tokens": 17927,
+              "completion_tokens": 80
+            }
+          },
+          "delta_queries": 17847.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        },
+        {
+          "turn": 4,
+          "suffix": "Briefly: how many tests are in the suite?",
+          "result": {
+            "ok": true,
+            "ttft_s": null,
+            "total_s": 3.3799445999902673,
+            "bytes": 20846,
+            "usage": {
+              "prompt_tokens": 17848,
+              "total_tokens": 17928,
+              "completion_tokens": 80
+            }
+          },
+          "delta_queries": 17848.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        },
+        {
+          "turn": 5,
+          "suffix": "Briefly: what is the file size of watcher.py?",
+          "result": {
+            "ok": true,
+            "ttft_s": null,
+            "total_s": 3.3786219999892637,
+            "bytes": 20844,
+            "usage": {
+              "prompt_tokens": 17849,
+              "total_tokens": 17929,
+              "completion_tokens": 80
+            }
+          },
+          "delta_queries": 17849.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        }
+      ],
+      "verdict": "INSUFFICIENT DATA"
+    },
+    {
+      "backend": "LiteLLM (Anthropic)",
+      "url": "http://localhost:8082",
+      "counters_before": {
+        "vllm:prefix_cache_queries_total": 4952372159.0,
+        "vllm:prefix_cache_hits_total": 252697952.0,
+        "vllm:prompt_tokens_cached_total": 56399168.0
+      },
+      "counters_after": {
+        "vllm:prefix_cache_queries_total": 4952461394.0,
+        "vllm:prefix_cache_hits_total": 252781792.0,
+        "vllm:prompt_tokens_cached_total": 56483008.0
+      },
+      "requests": [
+        {
+          "turn": 1,
+          "suffix": "Briefly: what is the entry point?",
+          "result": {
+            "ok": true,
+            "ttft_s": 3.053904800035525,
+            "total_s": 3.8982903000433,
+            "bytes": 11574,
+            "usage": {
+              "input_tokens": 17846,
+              "output_tokens": 80,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0
+            }
+          },
+          "delta_queries": 17846.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        },
+        {
+          "turn": 2,
+          "suffix": "Briefly: which classes are exported?",
+          "result": {
+            "ok": true,
+            "ttft_s": 2.6321870000101626,
+            "total_s": 3.4607790000154637,
+            "bytes": 11576,
+            "usage": {
+              "input_tokens": 17845,
+              "output_tokens": 80,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0
+            }
+          },
+          "delta_queries": 17845.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        },
+        {
+          "turn": 3,
+          "suffix": "Briefly: what is the watcher poll interval?",
+          "result": {
+            "ok": true,
+            "ttft_s": 2.874791299982462,
+            "total_s": 3.7142619999940507,
+            "bytes": 11594,
+            "usage": {
+              "input_tokens": 17847,
+              "output_tokens": 80,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0
+            }
+          },
+          "delta_queries": 17847.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        },
+        {
+          "turn": 4,
+          "suffix": "Briefly: how many tests are in the suite?",
+          "result": {
+            "ok": true,
+            "ttft_s": 2.639853900007438,
+            "total_s": 3.4868678000057116,
+            "bytes": 11568,
+            "usage": {
+              "input_tokens": 17848,
+              "output_tokens": 80,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0
+            }
+          },
+          "delta_queries": 17848.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        },
+        {
+          "turn": 5,
+          "suffix": "Briefly: what is the file size of watcher.py?",
+          "result": {
+            "ok": true,
+            "ttft_s": 2.900315499980934,
+            "total_s": 3.7419430000009015,
+            "bytes": 11587,
+            "usage": {
+              "input_tokens": 17849,
+              "output_tokens": 80,
+              "cache_creation_input_tokens": 0,
+              "cache_read_input_tokens": 0
+            }
+          },
+          "delta_queries": 17849.0,
+          "delta_hits": 16768.0,
+          "delta_tokens_cached": 16768.0
+        }
+      ],
+      "verdict": "CACHE NOT FIRING (T2..TN mean 2.76s vs T1 3.05s \u2014 only 10% reduction)"
+    }
+  ]
+}
