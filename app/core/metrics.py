@@ -22,7 +22,7 @@ Outcome = Literal["success", "failure", "escalated", "aborted"]
 CheckOutcome = Literal["passed", "failed"]
 
 _APP_DIR = "repo-scaffold"
-_DB_NAME = "metrics.db"
+_DB_NAME = "app.db"
 
 _CREATE_CHECK_RUN_LOG = """
 CREATE TABLE IF NOT EXISTS check_run_log (

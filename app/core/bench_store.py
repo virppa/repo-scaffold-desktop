@@ -1,8 +1,9 @@
 """Benchmark run data model and SQLite store.
 
 SQLite-backed append-only store for benchmark run records.
-Mirrors app/core/metrics.py: same _connect(), get_db_path(), DDL style,
-and _APP_DIR='repo-scaffold', but uses _DB_NAME='bench.db'.
+Shares the same app.db file as app/core/metrics.py — same _APP_DIR,
+_connect() style, and DDL conventions; separate table (bench_run) in the
+same database.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from typing import Any, Generator
 from pydantic import BaseModel, Field
 
 _APP_DIR = "repo-scaffold"
-_DB_NAME = "bench.db"
+_DB_NAME = "app.db"
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS bench_run (

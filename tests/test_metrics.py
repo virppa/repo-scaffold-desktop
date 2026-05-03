@@ -15,7 +15,7 @@ from app.core.metrics import (
 
 
 def _store(tmp_path) -> MetricsStore:
-    return MetricsStore(db_path=tmp_path / "metrics.db")
+    return MetricsStore(db_path=tmp_path / "app.db")
 
 
 def _ticket(**kwargs) -> TicketMetrics:
@@ -36,14 +36,14 @@ def _ticket(**kwargs) -> TicketMetrics:
 
 class TestSchemaCreation:
     def test_db_file_created_on_init(self, tmp_path):
-        db = tmp_path / "metrics.db"
+        db = tmp_path / "app.db"
         assert not db.exists()
         MetricsStore(db_path=db)
         assert db.exists()
 
     def test_second_init_does_not_raise(self, tmp_path):
-        MetricsStore(db_path=tmp_path / "metrics.db")
-        MetricsStore(db_path=tmp_path / "metrics.db")
+        MetricsStore(db_path=tmp_path / "app.db")
+        MetricsStore(db_path=tmp_path / "app.db")
 
 
 class TestRecordAndRetrieve:
@@ -358,13 +358,13 @@ class TestMigration:
     def test_migration_adds_new_columns(self, tmp_path):
         """Existing DB gets local_input_tokens, local_output_tokens,
         local_output_tokens_per_second without error."""
-        store = MetricsStore(db_path=tmp_path / "metrics.db")
+        store = MetricsStore(db_path=tmp_path / "app.db")
         # Write and read before _migrate runs to establish baseline
         store.record(_ticket())
         result = store.get_by_ticket("WOR-1", "proj-a")
         assert result is not None
         # Re-create store (simulating re-open after DB init)
-        store2 = MetricsStore(db_path=tmp_path / "metrics.db")
+        store2 = MetricsStore(db_path=tmp_path / "app.db")
         store2.record(_ticket())
         result2 = store2.get_by_ticket("WOR-1", "proj-a")
         assert result2 is not None
