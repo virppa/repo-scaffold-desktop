@@ -376,6 +376,68 @@ def test_finalize_worker_taxonomy_none_when_manifest_lacks_them(tmp_path: Path) 
 
 
 # ---------------------------------------------------------------------------
+# WOR-348: effort propagates from manifest to ticket_metrics
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_copies_effort_to_metrics(tmp_path: Path) -> None:
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        effort="xhigh",
+    )
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.effort == "xhigh"
+
+
+def test_finalize_worker_effort_none_when_manifest_lacks_it(tmp_path: Path) -> None:
+    """Manifest with no effort field → metrics.effort is None (default)."""
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.effort is None
+
+
+# ---------------------------------------------------------------------------
 # sonar_findings_count wired to metrics
 # ---------------------------------------------------------------------------
 

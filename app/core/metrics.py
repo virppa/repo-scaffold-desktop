@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     waste_breakdown_json  TEXT,
     tags                  TEXT,
     notes                 TEXT,
+    effort                TEXT,
     recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
@@ -185,6 +186,10 @@ class TicketMetrics(BaseModel):
     notes: str | None = Field(
         default=None,
         description="Free-form operator notes for morning retros",
+    )
+    effort: str | None = Field(
+        default=None,
+        description="Effort level from the manifest: low/medium/high/xhigh/max",
     )
 
 
@@ -367,6 +372,8 @@ class MetricsStore:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN tags TEXT")
         if "notes" not in existing:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN notes TEXT")
+        if "effort" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN effort TEXT")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -394,7 +401,7 @@ class MetricsStore:
                     sonar_findings_count, context_compactions,
                     change_type, reasoning_demand, scope_clarity,
                     constraint_density, ac_specificity, tech_stack, raw_extensions,
-                    waste_score, waste_breakdown_json, tags, notes
+                    waste_score, waste_breakdown_json, tags, notes, effort
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -408,7 +415,7 @@ class MetricsStore:
                     :sonar_findings_count, :context_compactions,
                     :change_type, :reasoning_demand, :scope_clarity,
                     :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
-                    :waste_score, :waste_breakdown_json, :tags, :notes
+                    :waste_score, :waste_breakdown_json, :tags, :notes, :effort
                 )
                 """,
                 {

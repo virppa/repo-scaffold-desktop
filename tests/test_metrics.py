@@ -156,6 +156,40 @@ class TestTaxonomyColumns:
         assert result.raw_extensions is None
 
 
+class TestEffortColumn:
+    """WOR-348: persist effort (low/medium/high/xhigh/max) for retro analytics."""
+
+    def test_effort_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(effort="xhigh"))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.effort == "xhigh"
+
+    def test_effort_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.effort is None
+
+    def test_effort_accepts_all_levels(self, tmp_path):
+        store = _store(tmp_path)
+        for level in ("low", "medium", "high", "xhigh", "max"):
+            store.record(_ticket(ticket_id=f"WOR-{level}", effort=level))
+            result = store.get_by_ticket(f"WOR-{level}", "proj-a")
+            assert result is not None
+            assert result.effort == level
+
+    def test_effort_migration_idempotent(self, tmp_path):
+        """Calling _migrate twice does not raise on the effort column."""
+        store = _store(tmp_path)
+        # First migration runs at __init__; call again to ensure idempotency.
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
 class TestAdditionalMetrics:
     def test_retry_and_diff_metrics_round_trip(self, tmp_path):
         store = _store(tmp_path)
