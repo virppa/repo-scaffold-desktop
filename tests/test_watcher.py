@@ -993,3 +993,121 @@ def test_dispatch_proceeds_when_all_manifest_blockers_are_merged(
 
     assert len(w._local_active) == 1
     assert w._local_active[0].ticket_id == "WOR-10"
+
+
+# ---------------------------------------------------------------------------
+# _reap_pool — ghost-slot leak prevention (WOR-334)
+# ---------------------------------------------------------------------------
+
+
+def _finished_worker(ticket_id: str, returncode: int = 0) -> ActiveWorker:
+    """Build an ActiveWorker whose process.poll() returns returncode."""
+    worker = _make_active_worker(ticket_id=ticket_id)
+    worker.process.poll.return_value = returncode
+    return worker
+
+
+def _running_worker(ticket_id: str) -> ActiveWorker:
+    """Build an ActiveWorker whose process.poll() returns None (still alive)."""
+    worker = _make_active_worker(ticket_id=ticket_id)
+    worker.process.poll.return_value = None
+    return worker
+
+
+def test_reap_pool_frees_slot_when_finalize_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """WOR-334 regression: an exception inside finalize_worker must not leave
+    the failing worker (or its siblings) in the pool."""
+    workers = [
+        _finished_worker("WOR-100"),
+        _finished_worker("WOR-101"),
+        _finished_worker("WOR-102"),
+    ]
+
+    watcher = Watcher(linear_client=MagicMock())
+
+    def finalize_side_effect(*args: Any, **kwargs: Any) -> str:
+        if args[0].ticket_id == "WOR-101":
+            raise RuntimeError("simulated Linear API blow-up")
+        return "success"
+
+    with (
+        patch(
+            "app.core.watcher.watcher.finalize_worker",
+            side_effect=finalize_side_effect,
+        ),
+        patch(
+            "app.core.watcher.watcher.format_worker_token_count",
+            return_value="0 tokens",
+        ),
+        caplog.at_level(logging.ERROR, logger="app.core.watcher.watcher"),
+    ):
+        watcher._reap_pool(workers)
+
+    assert workers == [], (
+        f"Expected pool to be empty after finalize raised; got "
+        f"{[w.ticket_id for w in workers]}"
+    )
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    matching = [r for r in error_records if "WOR-101" in r.getMessage()]
+    assert matching, "Expected an ERROR log mentioning WOR-101 when its finalize raised"
+    assert any(r.exc_info is not None for r in matching), (
+        "Expected exc_info to be attached to the ERROR log for forensic context"
+    )
+
+
+def test_reap_pool_eight_workers_one_raises_pool_empty() -> None:
+    """8 workers all finish, 1 raises during finalize -> pool ends empty.
+
+    This is the WOR-313 overnight scenario: a single finalize exception used
+    to freeze the pool at full size and block all further dispatch."""
+    workers = [_finished_worker(f"WOR-20{i}") for i in range(8)]
+    watcher = Watcher(linear_client=MagicMock())
+
+    def finalize_side_effect(*args: Any, **kwargs: Any) -> str:
+        if args[0].ticket_id == "WOR-204":
+            raise RuntimeError("simulated finalize blow-up")
+        return "success"
+
+    with (
+        patch(
+            "app.core.watcher.watcher.finalize_worker",
+            side_effect=finalize_side_effect,
+        ),
+        patch(
+            "app.core.watcher.watcher.format_worker_token_count",
+            return_value="0 tokens",
+        ),
+    ):
+        watcher._reap_pool(workers)
+
+    assert workers == [], (
+        f"Expected all 8 slots freed; remaining: {[w.ticket_id for w in workers]}"
+    )
+
+
+def test_reap_pool_keeps_still_running_workers() -> None:
+    """Sanity: workers whose poll() returns None must stay in the pool."""
+    running = _running_worker("WOR-300")
+    finished = _finished_worker("WOR-301")
+    workers = [running, finished]
+
+    watcher = Watcher(linear_client=MagicMock())
+
+    with (
+        patch(
+            "app.core.watcher.watcher.finalize_worker",
+            return_value="success",
+        ),
+        patch(
+            "app.core.watcher.watcher.format_worker_token_count",
+            return_value="0 tokens",
+        ),
+    ):
+        watcher._reap_pool(workers)
+
+    assert [w.ticket_id for w in workers] == ["WOR-300"], (
+        "Running worker should remain; finished worker should be removed"
+    )

@@ -597,66 +597,101 @@ class Watcher:
     # Worker lifecycle
     # ------------------------------------------------------------------
 
-    def _reap_pool(self, workers: list[ActiveWorker]) -> tuple[list[ActiveWorker], str]:
-        still_running: list[ActiveWorker] = []
+    def _reap_pool(self, workers: list[ActiveWorker]) -> str:
+        """Poll each worker; finalize completed ones in-place.
+
+        Mutates ``workers`` directly — finished workers are removed from the
+        list even if their ``finalize_worker`` call raises. This prevents
+        ghost slots that would otherwise block future dispatch (WOR-334).
+
+        Returns the outcome of the last finalized worker (``""`` if none
+        finished, ``"failure"`` if the last one's finalize raised).
+        """
+        finished_indices: list[int] = []
         outcome = ""
-        for worker in workers:
+        for i, worker in enumerate(workers):
             rc = worker.process.poll()
             if rc is None:
-                still_running.append(worker)
                 continue
-            elapsed = time.monotonic() - worker.start_time
-            # Clear heartbeat state for the finished worker
-            self._heartbeat.pop(worker.ticket_id, None)
-            # Final heartbeat for finished worker
-            last_tick = self._heartbeat.get(worker.ticket_id, (0.0, 0))[1]
-            final_tick = int(elapsed / 30)
-            if final_tick > last_tick:
-                elapsed_str = format_elapsed(elapsed)
-                logger.info("[%s] %s", worker.ticket_id, elapsed_str)
-            # Build single-line finish summary with elapsed + token count
-            status = "success" if rc == 0 else "failed"
-            elapsed_str = format_elapsed(elapsed)
-            log_path = (
-                worker.worktree_path
-                / ".claude"
-                / "logs"
-                / f"{worker.ticket_id.replace('-', '_')}.jsonl"
-            )
-            token_str = format_worker_token_count(log_path)
-            logger.info(
-                "%s done (%s, %s, %s)",
-                worker.ticket_id,
-                status,
-                elapsed_str,
-                token_str,
-            )
-            outcome = finalize_worker(
-                worker,
-                returncode=rc,
-                wall_time=elapsed,
-                linear=self._linear,
-                metrics=self._metrics,
-                escalation_policy=self._escalation_policy,
-                repo_root=self._repo_root,
-                mode=self._mode,
-                project_id=self._project_id,
-                tracked_prs=self._tracked_prs,
-            )
-            self._processed_tickets.append(
-                _ProcessedTicket(
-                    ticket_id=worker.ticket_id,
-                    epic_id=worker.manifest.epic_id,
-                    worker_branch=worker.manifest.worker_branch,
-                    elapsed=elapsed,
-                    succeeded=(outcome == "success"),
+            # Worker finished — mark its slot for release BEFORE finalize so
+            # an exception inside finalize cannot leak the slot.
+            finished_indices.append(i)
+            try:
+                outcome = self._finalize_one_worker(worker, rc)
+            except Exception as exc:
+                logger.error(
+                    "finalize_worker raised for %s: %s. Worker slot freed; "
+                    "result.json / last_failure.json may be incomplete and "
+                    "Linear state may not have been advanced — investigate "
+                    "manually.",
+                    worker.ticket_id,
+                    exc,
+                    exc_info=True,
                 )
+                outcome = "failure"
+        # Remove in reverse so earlier indices stay valid.
+        for i in reversed(finished_indices):
+            del workers[i]
+        return outcome
+
+    def _finalize_one_worker(self, worker: ActiveWorker, rc: int) -> str:
+        """Run the per-worker finalize sequence (logging + finalize_worker call).
+
+        Separated from ``_reap_pool`` so the latter can wrap this in try/except
+        without entangling pool-management bookkeeping with finalize logic.
+        """
+        elapsed = time.monotonic() - worker.start_time
+        # Clear heartbeat state for the finished worker
+        self._heartbeat.pop(worker.ticket_id, None)
+        # Final heartbeat for finished worker
+        last_tick = self._heartbeat.get(worker.ticket_id, (0.0, 0))[1]
+        final_tick = int(elapsed / 30)
+        if final_tick > last_tick:
+            elapsed_str = format_elapsed(elapsed)
+            logger.info("[%s] %s", worker.ticket_id, elapsed_str)
+        # Build single-line finish summary with elapsed + token count
+        status = "success" if rc == 0 else "failed"
+        elapsed_str = format_elapsed(elapsed)
+        log_path = (
+            worker.worktree_path
+            / ".claude"
+            / "logs"
+            / f"{worker.ticket_id.replace('-', '_')}.jsonl"
+        )
+        token_str = format_worker_token_count(log_path)
+        logger.info(
+            "%s done (%s, %s, %s)",
+            worker.ticket_id,
+            status,
+            elapsed_str,
+            token_str,
+        )
+        outcome = finalize_worker(
+            worker,
+            returncode=rc,
+            wall_time=elapsed,
+            linear=self._linear,
+            metrics=self._metrics,
+            escalation_policy=self._escalation_policy,
+            repo_root=self._repo_root,
+            mode=self._mode,
+            project_id=self._project_id,
+            tracked_prs=self._tracked_prs,
+        )
+        self._processed_tickets.append(
+            _ProcessedTicket(
+                ticket_id=worker.ticket_id,
+                epic_id=worker.manifest.epic_id,
+                worker_branch=worker.manifest.worker_branch,
+                elapsed=elapsed,
+                succeeded=(outcome == "success"),
             )
-        return still_running, outcome
+        )
+        return outcome
 
     def _reap_finished_workers(self) -> None:
-        self._local_active, _ = self._reap_pool(self._local_active)
-        self._cloud_active, _ = self._reap_pool(self._cloud_active)
+        self._reap_pool(self._local_active)
+        self._reap_pool(self._cloud_active)
 
     # ------------------------------------------------------------------
     # Epic completion detection
