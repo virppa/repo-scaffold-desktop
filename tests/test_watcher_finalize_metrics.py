@@ -266,7 +266,7 @@ def test_finalize_worker_cloud_metrics_populated_for_cloud_run(
     assert m.local_output_tokens is None
     assert m.local_tokens is None
     assert m.local_model is None
-    assert m.local_output_tokens_per_second is None
+    assert m.output_tokens_per_wall_second is None
 
 
 def test_finalize_worker_cloud_model_from_env(
@@ -406,7 +406,7 @@ def test_finalize_worker_local_run_keeps_local_fields(
     assert m.local_input_tokens == 15000
     assert m.local_output_tokens == 600
     assert m.local_tokens == 15600
-    assert m.local_output_tokens_per_second == pytest.approx(60.0)
+    assert m.output_tokens_per_wall_second == pytest.approx(60.0)
     # Cloud fields must be None for local runs
     assert m.cloud_model is None
     assert m.cloud_tokens is None

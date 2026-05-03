@@ -394,7 +394,7 @@ class TestCheckRunLog:
 class TestMigration:
     def test_migration_adds_new_columns(self, tmp_path):
         """Existing DB gets local_input_tokens, local_output_tokens,
-        local_output_tokens_per_second without error."""
+        output_tokens_per_wall_second without error."""
         store = MetricsStore(db_path=tmp_path / "app.db")
         # Write and read before _migrate runs to establish baseline
         store.record(_ticket())
@@ -413,14 +413,14 @@ class TestMigration:
             _ticket(
                 local_input_tokens=10000,
                 local_output_tokens=500,
-                local_output_tokens_per_second=4.17,
+                output_tokens_per_wall_second=4.17,
             )
         )
         result = store.get_by_ticket("WOR-1", "proj-a")
         assert result is not None
         assert result.local_input_tokens == 10000
         assert result.local_output_tokens == 500
-        assert result.local_output_tokens_per_second == pytest.approx(4.17)
+        assert result.output_tokens_per_wall_second == pytest.approx(4.17)
 
     def test_new_columns_none_default(self, tmp_path):
         """Fields default to None when not provided."""
@@ -429,7 +429,7 @@ class TestMigration:
         result = store.get_by_ticket("WOR-1", "proj-a")
         assert result.local_input_tokens is None
         assert result.local_output_tokens is None
-        assert result.local_output_tokens_per_second is None
+        assert result.output_tokens_per_wall_second is None
 
     def test_backward_compat_local_tokens_preserved(self, tmp_path):
         """local_tokens remains valid alongside new fields."""
