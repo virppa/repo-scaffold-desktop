@@ -29,6 +29,15 @@ _VALID_ACTIONS: frozenset[str] = frozenset({"escalate", "fix_locally", "human"})
 DEFAULT_POLICY_PATH = (
     Path(__file__).parent.parent.parent / "config" / "escalation_policy.toml"
 )
+_DEFAULT_WASTE_WARN_THRESHOLD = 60
+
+
+def get_waste_warn_threshold(path: Path | str | None = None) -> int:
+    """Return the waste-score warning threshold from the policy file."""
+    try:
+        return EscalationPolicy.from_toml(path).waste_warn_threshold()
+    except Exception:
+        return _DEFAULT_WASTE_WARN_THRESHOLD
 
 
 class RetryConfig(BaseModel):
@@ -72,6 +81,19 @@ class SonarConfig(BaseModel):
     info: Action
 
 
+class WasteConfig(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    warn_threshold: int
+
+    @field_validator("warn_threshold")
+    @classmethod
+    def positive(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("warn_threshold must be >= 0")
+        return v
+
+
 class EscalationPolicy(BaseModel):
     """Typed representation of escalation_policy.toml."""
 
@@ -81,6 +103,7 @@ class EscalationPolicy(BaseModel):
     auto_escalate: AutoEscalateConfig
     human_escalate: HumanEscalateConfig
     sonar: SonarConfig
+    waste: WasteConfig
 
     # ------------------------------------------------------------------
     # Classification helpers
@@ -133,6 +156,10 @@ class EscalationPolicy(BaseModel):
         if severity not in _VALID_SONAR_SEVERITIES:
             return "fix_locally"
         return cast(Action, getattr(self.sonar, severity))
+
+    def waste_warn_threshold(self) -> int:
+        """Return the waste-score warning threshold."""
+        return self.waste.warn_threshold
 
     # ------------------------------------------------------------------
     # Factory
