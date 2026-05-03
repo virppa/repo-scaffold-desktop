@@ -151,7 +151,7 @@ class Watcher:
             self._services.probe_vllm_health()
 
         if self._mode == "local":
-            self._services.ensure_litellm_running()
+            self._services.ensure_vllm_anthropic_mode()
 
         self._log_startup_info()
 
@@ -582,7 +582,7 @@ class Watcher:
                 ):
                     logger.warning(reason_msg)
                 return
-            self._services.ensure_litellm_running()
+            self._services.ensure_vllm_anthropic_mode()
 
         worktree_path = create_worktree(self._repo_root, manifest)
         copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)

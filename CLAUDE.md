@@ -98,8 +98,8 @@ Module responsibilities:
   - `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
   - `watcher_dispatch.py` — extracted ticket start logic: `start_ticket` module function plus thin class wrappers
   - `watcher_finalize.py` — worker finalization logic: `finalize_worker`, `attempt_pr`, `safe_set_state`
-  - `watcher_helpers.py` — pure stateless functions: `check_allowed_paths_overlap`, `build_worker_env`, `build_worker_cmd`, `resolve_effective_mode`, `_tee_worker_output`, `_parse_worker_usage`, `_parse_ollama_model`
-  - `watcher_services.py` — `ServiceManager` class: LiteLLM proxy and Ollama process management
+  - `watcher_helpers.py` — pure stateless functions: `check_allowed_paths_overlap`, `build_worker_env`, `build_worker_cmd`, `resolve_effective_mode`, `_tee_worker_output`, `_parse_worker_usage`
+  - `watcher_services.py` — `ServiceManager` class: vLLM readiness gate (probe + ensure-Anthropic-mode); no longer spawns subprocesses post-WOR-368
   - `watcher_subprocess.py` — worker subprocess lifecycle: `launch_worker`, `run_checks`, `fetch_sonar_findings`, `create_pr`, `build_snippet_tool_restrictions`
   - `watcher_types.py` — constants, `LinearClientProtocol`, `ActiveWorker` dataclass, `is_watcher_running`, `_to_metrics_mode`
   - `watcher_worktrees.py` — git worktree lifecycle: `create_worktree`, `rebase_worktree_from_base`, `copy_manifest_to_worktree`, `preserve_worker_artifacts`, `cleanup_worktree`, `cleanup_orphaned_worktrees`, `backup_plan_files`, `restore_plan_files`, `write_worker_pytest_config`
@@ -276,28 +276,31 @@ No setup needed — hooks activate as soon as Claude Code loads the project.
 
 ## Local model development
 
-To run Claude Code routed to a local vLLM server instead of the Anthropic API:
+vLLM 0.20.0 serves the Anthropic Messages API natively (`/v1/messages`), so Claude Code talks to it directly with no proxy in the path (the LiteLLM proxy was retired in WOR-368; spike findings: `docs/spikes/wor-344-vllm-native-anthropic-api.md`).
 
 ```bash
 # 1. Start vLLM server in WSL2 (keep terminal open)
 /home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+  --served-model-name qwen3-coder \
   --max-model-len 262144 --max-num-seqs 16 \
   --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \
   --reasoning-parser qwen3 --enable-prefix-caching \
   --language-model-only --safetensors-load-strategy prefetch \
   --enable-auto-tool-choice --tool-call-parser qwen3_coder
 
-# 2. Copy the example config and start LiteLLM proxy (keep terminal open)
-cp litellm-local.yaml.example litellm-local.yaml
-litellm --config litellm-local.yaml --port 8082 --drop_params
-
-# 3. Launch Claude Code in a new terminal
-set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
-set ANTHROPIC_API_KEY=sk-dummy
-claude --model claude-sonnet-4-6
+# 2. Launch Claude Code in a new terminal (Windows / cmd.exe)
+set ANTHROPIC_BASE_URL=http://localhost:8000
+set ANTHROPIC_API_KEY=dummy
+set ANTHROPIC_AUTH_TOKEN=dummy
+set ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3-coder
+set ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3-coder
+set ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3-coder
+claude
 ```
 
-`litellm-local.yaml` is gitignored. See `docs/spikes/vllm-benchmark-plan.md` for the current production model config (Qwen3.6-35B-A3B-NVFP4 via vLLM). `docs/spikes/local-model-setup.md` covers the original Ollama/qwen3-coder:30b setup (historical).
+The three `ANTHROPIC_DEFAULT_*_MODEL` env vars route by tier (Opus / Sonnet / Haiku) — Claude Code substitutes them when `--model` is not passed. **Do not pass `--model claude-sonnet-4-6`** unless you also serve that name via `--served-model-name qwen3-coder claude-sonnet-4-6 claude-opus-4-7 claude-haiku-4-5-20251001` (the flag accepts a list, lets `--model` continue to work for muscle memory).
+
+See `docs/spikes/vllm-benchmark-plan.md` for the production model config. `docs/spikes/local-model-setup.md` covers the original Ollama setup (historical).
 
 ---
 
