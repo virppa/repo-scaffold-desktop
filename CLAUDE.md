@@ -39,6 +39,8 @@ python -m app.cli watcher --max-cloud-workers 3  # default 3; parallelisable
 python -m app.cli watcher --max-workers 2        # backward-compat alias: sets both to 2
 python -m app.cli watcher --verbose              # stream worker stdout/stderr live, prefixed with [WOR-NN]
 python -m app.cli watcher --no-epic-shutdown     # keep daemon running after current epic completes
+# Smoke test (5s): LINEAR_API_KEY=dummy python -m app.cli watcher --no-epic-shutdown
+#   (timeout 5 python -m app.cli watcher --no-epic-shutdown; exit 0 if killed by timeout)
 
 # Benchmark runner (do not run without explicit instruction)
 python scripts/bench/run_bench.py --tier speed

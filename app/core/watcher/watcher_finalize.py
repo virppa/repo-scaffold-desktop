@@ -32,6 +32,7 @@ from .watcher_subprocess import (
 from .watcher_tui import TrackedPR
 from .watcher_types import (
     _CLAUDE_DIR,
+    _IN_PROGRESS_STATE,
     _LOCAL_MODEL,
     ActiveWorker,
     LinearClientProtocol,
@@ -178,7 +179,7 @@ def finalize_worker(
     project_id: str,
     tracked_prs: list[TrackedPR] | None = None,
 ) -> Outcome:
-    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, pr_url = (
+    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, _ = (
         _execute_finalization(
             worker,
             returncode,
@@ -213,7 +214,7 @@ def finalize_worker(
         )
         raw_shortstat = (diff_output.stdout or "") + (diff_output.stderr or "")
         lines_changed, files_changed = parse_git_shortstat(raw_shortstat)
-    except (OSError, subprocess.TimeoutExpired, OSError):
+    except (OSError, subprocess.TimeoutExpired):
         lines_changed, files_changed = 0, 0
 
     # Cloud metrics — populated only when eff == "cloud"
@@ -365,7 +366,7 @@ def _read_result_status(repo_root: Path, manifest: ExecutionManifest) -> str | N
         return None
     try:
         data = json.loads(raw)
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         return None
     status = data.get("status") if isinstance(data, dict) else None
     return status if isinstance(status, str) else None
@@ -420,7 +421,7 @@ def _execute_finalization(
             escalated = bool(manifest.failure_policy.escalate_to_cloud)
             if escalated:
                 logger.info("Escalating %s to cloud per failure policy", ticket_id)
-                safe_set_state(linear, linear_id, "In Progress", ticket_id)
+                safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
                 _try_post_comment(
                     linear,
                     linear_id,
@@ -447,7 +448,7 @@ def _execute_finalization(
         escalated = bool(manifest.failure_policy.escalate_to_cloud)
         if escalated:
             logger.info("Escalating %s to cloud after check failure", ticket_id)
-            safe_set_state(linear, linear_id, "In Progress", ticket_id)
+            safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
             _try_post_comment(
                 linear,
                 linear_id,
@@ -499,7 +500,7 @@ def _handle_policy_outcome(
     if action == "escalate":
         triggering = next((f for f in _POLICY_FLAGS if flags.get(f)), "unknown")
         logger.info("Escalating %s to cloud (flag=%s)", ticket_id, triggering)
-        safe_set_state(linear, linear_id, "In Progress", ticket_id)
+        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(
             linear,
             linear_id,
@@ -523,7 +524,7 @@ def _handle_policy_outcome(
     # fix_locally — check Sonar findings before creating PR
     sonar_findings = fetch_sonar_findings(manifest.worker_branch)
     if _sonar_requires_escalation(sonar_findings, ticket_id, escalation_policy):
-        safe_set_state(linear, linear_id, "In Progress", ticket_id)
+        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(
             linear,
             linear_id,

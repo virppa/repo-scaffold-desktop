@@ -43,6 +43,7 @@ from .watcher_services import ServiceManager
 from .watcher_subprocess import launch_worker
 from .watcher_tui import TrackedPR, TUIState, WatcherDisplay, WorkerState
 from .watcher_types import (
+    _ARTIFACTS_DIR,
     _CLAUDE_DIR,
     _PID_FILE,
     ActiveWorker,
@@ -198,7 +199,7 @@ class Watcher:
         has_capacity = has_local or has_cloud
 
         # Count WaitingForDeps manifests
-        artifacts_root = self._repo_root / _CLAUDE_DIR / "artifacts"
+        artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
         waiting = 0
         if artifacts_root.exists():
             for mp in artifacts_root.glob("*/manifest.json"):
@@ -238,7 +239,7 @@ class Watcher:
             key = worker.ticket_id
 
             if key in self._heartbeat:
-                last_elapsed, last_tick = self._heartbeat[key]
+                _, last_tick = self._heartbeat[key]
                 # Emit when we cross a new 30-second boundary
                 new_tick = int(elapsed / 30)
                 if new_tick <= last_tick:
@@ -312,7 +313,7 @@ class Watcher:
         with status='ReadyForLocal' and advances the Linear ticket. If any blocker
         is cancelled, posts a comment and moves the dependent ticket to Backlog.
         """
-        artifacts_root = self._repo_root / _CLAUDE_DIR / "artifacts"
+        artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
         if not artifacts_root.exists():
             return
 
@@ -662,7 +663,7 @@ class Watcher:
     # ------------------------------------------------------------------
 
     def _has_waiting_deps(self) -> bool:
-        artifacts_root = self._repo_root / _CLAUDE_DIR / "artifacts"
+        artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
         if not artifacts_root.exists():
             return False
         for manifest_path in artifacts_root.glob("*/manifest.json"):
