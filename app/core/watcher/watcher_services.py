@@ -184,8 +184,27 @@ class ServiceManager:
                 env=env,
             )
 
+    def _litellm_listening(self) -> bool:
+        """Return True if anything is bound to _LITELLM_PORT (fast TCP probe).
+
+        Used by ensure_litellm_running to decide whether to spawn. TCP
+        connect_ex completes in milliseconds and only returns success when a
+        socket is actually bound — it does not depend on the application
+        being responsive to HTTP requests, which avoids false negatives when
+        LiteLLM is busy serving an in-flight worker request (WOR-339).
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            return sock.connect_ex(("localhost", _LITELLM_PORT)) == 0
+
     def _litellm_serving(self) -> bool:
-        """Return True if LiteLLM is accepting HTTP requests on _LITELLM_PORT."""
+        """Return True if LiteLLM is responding to /health on _LITELLM_PORT.
+
+        Used by _wait_for_litellm_ready post-spawn to verify the proxy has
+        finished initializing and is actually serving requests, not just that
+        the port is bound. The 2s timeout is intentional — at startup time
+        nothing else is hitting the proxy, so /health responds promptly.
+        """
         try:
             conn = http.client.HTTPConnection("localhost", _LITELLM_PORT, timeout=2)
             conn.request("GET", "/health")
@@ -195,8 +214,15 @@ class ServiceManager:
             return False
 
     def ensure_litellm_running(self) -> None:
-        """Start the LiteLLM proxy if not already listening on _LITELLM_PORT."""
-        if self._litellm_serving():
+        """Start the LiteLLM proxy if no process is bound to _LITELLM_PORT.
+
+        Uses _litellm_listening (TCP probe) instead of _litellm_serving (HTTP
+        probe) for the spawn-or-not decision (WOR-339): the HTTP probe gave
+        false negatives when LiteLLM was busy serving an active worker, which
+        triggered redundant spawns that produced orphan tabs (port collisions
+        crash the new process but the cmd.exe tab persists with the error).
+        """
+        if self._litellm_listening():
             logger.debug("LiteLLM proxy already running on port %d", _LITELLM_PORT)
             return
 

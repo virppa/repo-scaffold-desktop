@@ -170,12 +170,54 @@ def test_litellm_serving_returns_false_on_connection_error(tmp_path: Path) -> No
     assert result is False
 
 
-def test_ensure_litellm_running_skips_start_when_already_serving(
+def test_litellm_listening_returns_true_when_port_bound(tmp_path: Path) -> None:
+    """TCP probe must report True when something is bound to _LITELLM_PORT."""
+    mgr = ServiceManager(tmp_path)
+    mock_sock = MagicMock()
+    mock_sock.connect_ex.return_value = 0  # 0 = connection succeeded
+    with patch("socket.socket") as mock_socket_cls:
+        mock_socket_cls.return_value.__enter__.return_value = mock_sock
+        result = mgr._litellm_listening()
+    assert result is True
+
+
+def test_litellm_listening_returns_false_when_port_not_bound(tmp_path: Path) -> None:
+    """TCP probe must report False when nothing is bound to _LITELLM_PORT."""
+    mgr = ServiceManager(tmp_path)
+    mock_sock = MagicMock()
+    mock_sock.connect_ex.return_value = 111  # non-zero = connection refused
+    with patch("socket.socket") as mock_socket_cls:
+        mock_socket_cls.return_value.__enter__.return_value = mock_sock
+        result = mgr._litellm_listening()
+    assert result is False
+
+
+def test_ensure_litellm_running_skips_start_when_port_bound(
     tmp_path: Path,
 ) -> None:
+    """ensure_litellm_running uses TCP probe (not HTTP) for the early-return
+    decision, so a busy LiteLLM (port bound, /health slow) does not trigger
+    a redundant spawn (WOR-339 root cause)."""
     mgr = ServiceManager(tmp_path)
     with (
-        patch.object(mgr, "_litellm_serving", return_value=True),
+        patch.object(mgr, "_litellm_listening", return_value=True),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mgr.ensure_litellm_running()
+    mock_popen.assert_not_called()
+
+
+def test_ensure_litellm_running_does_not_spawn_when_http_probe_would_fail(
+    tmp_path: Path,
+) -> None:
+    """WOR-339 regression: the OLD bug was ensure_litellm_running falling back
+    to spawning a new tab when /health was slow to respond. With the TCP-probe
+    check, even an unresponsive HTTP layer doesn't trigger a spawn as long as
+    something is bound to the port."""
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch.object(mgr, "_litellm_listening", return_value=True),
+        patch.object(mgr, "_litellm_serving", return_value=False),  # HTTP slow / busy
         patch("subprocess.Popen") as mock_popen,
     ):
         mgr.ensure_litellm_running()
