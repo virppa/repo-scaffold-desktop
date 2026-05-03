@@ -114,7 +114,18 @@ def fetch_skills(
 
 
 def run_git_init(output_path: Path) -> None:
-    """Run `git init` in output_path. Raises RuntimeError on failure."""
+    """Initialise a Git repository in *output_path*.
+
+    Runs ``git init`` via ``subprocess.run`` with ``shell=False``.
+
+    Raises:
+        RuntimeError: If ``git`` is not found on PATH or ``git init``
+            returns a non-zero exit code. The message includes the raw
+            stderr output for debugging.
+
+    Example:
+        >>> run_git_init(Path("/tmp/myrepo"))  # doctest: +SKIP
+    """
     try:
         subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
             ["git", "init"],
@@ -130,7 +141,19 @@ def run_git_init(output_path: Path) -> None:
 
 
 def run_precommit_install(output_path: Path) -> None:
-    """Run `pre-commit install` in output_path. Raises RuntimeError on failure."""
+    """Install the pre-commit hook in the Git repository at *output_path*.
+
+    Runs ``pre-commit install`` via ``subprocess.run`` with ``shell=False``.
+    The hook runs the repo-level pre-commit configuration on every ``git commit``.
+
+    Raises:
+        RuntimeError: If ``pre-commit`` is not found on PATH or the install
+            command returns a non-zero exit code. The message includes the
+            raw stderr output for debugging.
+
+    Example:
+        >>> run_precommit_install(Path("/tmp/myrepo"))  # doctest: +SKIP
+    """
     try:
         subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
             ["pre-commit", "install"],
@@ -150,10 +173,31 @@ def run_precommit_install(output_path: Path) -> None:
 def run_initial_push(
     output_path: Path, remote_url: str, prefs: UserPreferences
 ) -> None:
-    """Stage all files, create initial commit, set remote origin, and push to main.
+    """Complete the initial Git setup for a scaffolded repository.
 
-    Raises ``RuntimeError`` on any subprocess failure with a clear message
-    including stderr.
+    Executes the following steps in order:
+
+    1. **``git add .``** — stage all files.
+    2. **``git commit -m "Initial scaffold"``** — create the initial commit,
+       using ``prefs.author_name`` and ``prefs.author_email`` as the commit
+       identity when both are set.
+    3. **``git remote add origin <remote_url>``** — attach the remote.
+    4. **``git branch -M main``** — rename the default branch to ``main``.
+    5. **``git push -u origin main``** — push the initial commit.
+
+    Args:
+        output_path: Path to the scaffolded repository root.
+        remote_url: HTTPS or SSH URL of the remote repository.
+        prefs: User preferences containing optional author name and email.
+
+    Raises:
+        RuntimeError: On any subprocess failure. Each error message identifies
+            which step failed (``git add``, ``git commit``, ``git remote``,
+            ``git branch``, or ``git push``) and includes the raw stderr.
+
+    Example:
+        >>> run_initial_push(Path("/tmp/myrepo"), "https://github.com/u/r", prefs)
+        # doctest: +SKIP
     """
     try:
         subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
@@ -231,8 +275,30 @@ def create_github_repo(
 ) -> str:
     """Create a GitHub repository via the REST API and return its clone URL.
 
-    Requires a GitHub token configured via :func:`app.core.credentials.get_token`.
-    Raises ``RuntimeError`` if no token is configured or the API returns an error.
+    **Endpoint:** ``POST https://api.github.com/user/repos``
+
+    **Auth model:** Bearer token obtained from :func:`app.core.credentials.get_token`
+    (reads from OS keyring via ``github-token`` user preference).
+
+    **Failure semantics:**
+
+    * ``RuntimeError`` with message ``"No GitHub token configured..."`` when no
+      token is available.
+    * ``RuntimeError`` with message ``"Repository '<name>' already exists — ..."``
+      on HTTP 422 (repository name conflict).
+    * ``RuntimeError`` with the API error message for all other 4xx/5xx responses.
+
+    Args:
+        repo_name: Desired repository name (must be unique for the authenticated user).
+        prefs: User preferences (currently unused; retained for API compatibility).
+        private: Whether the repository should be private. Defaults to ``True``.
+        description: Optional repository description.
+
+    Returns:
+        The HTML clone URL (e.g. ``https://github.com/owner/repo``).
+
+    Example:
+        >>> create_github_repo("my-repo", prefs)  # doctest: +SKIP
     """
     token = get_token()
     if token is None:
