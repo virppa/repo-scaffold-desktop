@@ -401,11 +401,9 @@ def _run_post_setup(config: RepoConfig, output: Path) -> None:
 
 
 def _run_github_create(config: RepoConfig, args: argparse.Namespace) -> str | None:
-    prefs = PrefsStore.load()
     github_private = not args.public
     clone_url = create_github_repo(
         repo_name=config.repo_name,
-        prefs=prefs,
         private=github_private,
     )
     print(f"✓ Created GitHub repo: {clone_url}")

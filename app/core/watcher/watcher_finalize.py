@@ -523,9 +523,7 @@ def _handle_policy_outcome(
 
     # fix_locally — check Sonar findings before creating PR
     sonar_findings = fetch_sonar_findings(manifest.worker_branch)
-    if _sonar_requires_escalation(
-        sonar_findings, ticket_id, linear_id, linear, escalation_policy
-    ):
+    if _sonar_requires_escalation(sonar_findings, ticket_id, escalation_policy):
         safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(
             linear,
@@ -552,8 +550,6 @@ def _handle_policy_outcome(
 def _sonar_requires_escalation(
     sonar_findings: list[str] | None,
     ticket_id: str,
-    linear_id: str,
-    linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
 ) -> bool:
     if not sonar_findings:

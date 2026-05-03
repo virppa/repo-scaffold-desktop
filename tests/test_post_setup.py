@@ -240,13 +240,7 @@ class TestRunPrecommitInstall:
 
 
 class TestCreateGitHubRepo:
-    def _make_prefs(self, github_username: str = "testuser") -> MagicMock:
-        prefs = MagicMock()
-        prefs.github_username = github_username
-        return prefs
-
     def test_creates_repo_and_returns_clone_url(self):
-        prefs = self._make_prefs()
         response = MagicMock()
         response.__enter__ = lambda s: s
         response.__exit__ = MagicMock(return_value=False)
@@ -262,7 +256,7 @@ class TestCreateGitHubRepo:
             patch("app.core.post_setup.get_token", return_value="ghp_fake_token"),
         ):
             result = create_github_repo(
-                "myrepo", prefs, private=True, description="A test repo"
+                "myrepo", private=True, description="A test repo"
             )
 
         assert result == "https://github.com/testuser/myrepo"
@@ -279,13 +273,11 @@ class TestCreateGitHubRepo:
         }
 
     def test_raises_runtime_error_when_no_token(self):
-        prefs = self._make_prefs()
         with patch("app.core.post_setup.get_token", return_value=None):
             with pytest.raises(RuntimeError, match="No GitHub token configured"):
-                create_github_repo("myrepo", prefs)
+                create_github_repo("myrepo")
 
     def test_raises_runtime_error_on_422_conflict(self):
-        prefs = self._make_prefs()
         response = MagicMock()
         response.code = 422
         response.read = MagicMock(
@@ -306,10 +298,9 @@ class TestCreateGitHubRepo:
             patch("app.core.post_setup.get_token", return_value="ghp_fake_token"),
         ):
             with pytest.raises(RuntimeError, match="already exists"):
-                create_github_repo("myrepo", prefs)
+                create_github_repo("myrepo")
 
     def test_public_flag_sets_private_false(self):
-        prefs = self._make_prefs()
         response = MagicMock()
         response.__enter__ = lambda s: s
         response.__exit__ = MagicMock(return_value=False)
@@ -324,7 +315,7 @@ class TestCreateGitHubRepo:
             ) as mock_urlopen,
             patch("app.core.post_setup.get_token", return_value="ghp_fake_token"),
         ):
-            create_github_repo("myrepo", prefs, private=False)
+            create_github_repo("myrepo", private=False)
 
         body = json.loads(mock_urlopen.call_args[0][0].data)
         assert body["private"] is False

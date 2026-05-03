@@ -899,40 +899,30 @@ def test_handle_policy_outcome_human_returns_aborted(tmp_path: Path) -> None:
 
 def test_sonar_requires_escalation_empty_list(tmp_path: Path) -> None:
     """returns False for empty findings list."""
-    linear_mock = MagicMock()
     from app.core.watcher.watcher_finalize import _sonar_requires_escalation
 
     assert (
-        _sonar_requires_escalation(
-            [], "WOR-10", "fake-id", linear_mock, EscalationPolicy.from_toml()
-        )
-        is False
+        _sonar_requires_escalation([], "WOR-10", EscalationPolicy.from_toml()) is False
     )
 
 
 def test_sonar_requires_escalation_severity_triggers_true() -> None:
     """returns True when escalation_policy maps severity to 'escalate'."""
-    linear_mock = MagicMock()
     from app.core.watcher.watcher_finalize import _sonar_requires_escalation
 
     # Default policy: BLOCKER → escalate
     assert (
-        _sonar_requires_escalation(
-            ["BLOCKER"], "WOR-10", "fake-id", linear_mock, EscalationPolicy.from_toml()
-        )
+        _sonar_requires_escalation(["BLOCKER"], "WOR-10", EscalationPolicy.from_toml())
         is True
     )
     assert (
-        _sonar_requires_escalation(
-            ["CRITICAL"], "WOR-10", "fake-id", linear_mock, EscalationPolicy.from_toml()
-        )
+        _sonar_requires_escalation(["CRITICAL"], "WOR-10", EscalationPolicy.from_toml())
         is True
     )
 
 
 def test_sonar_requires_escalation_no_triggers_false() -> None:
     """returns False when no severity maps to 'escalate'."""
-    linear_mock = MagicMock()
     from app.core.watcher.watcher_finalize import _sonar_requires_escalation
 
     # Default policy: MAJOR, MINOR, INFO → fix_locally (not escalate)
@@ -940,8 +930,6 @@ def test_sonar_requires_escalation_no_triggers_false() -> None:
         _sonar_requires_escalation(
             ["MAJOR", "MINOR", "INFO"],
             "WOR-10",
-            "fake-id",
-            linear_mock,
             EscalationPolicy.from_toml(),
         )
         is False
