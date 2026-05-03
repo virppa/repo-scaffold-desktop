@@ -33,29 +33,37 @@ def _parse_worker_usage(
 ) -> tuple[int | None, int | None, int | None]:
     """Return cumulative (input_tokens, output_tokens) summed across all
     ``type=assistant`` events in the stream-json worker log, plus
-    *context_compactions* from the final ``type=result`` event.
+    *context_compactions* counted from ``type=system, subtype=compact_boundary``
+    events (WOR-357).
 
     Assistant-turn deltas are summed so that downstream metrics
     (``local_output_tokens``, ``local_output_tokens_per_second``) reflect the
-    true token volume of a session.  *context_compactions* is a scalar on the
-    result event only and is **not** accumulated.
+    true token volume of a session.
+
+    *context_compactions* is the count of ``compact_boundary`` system events
+    emitted by Claude Code when it auto-compacts the conversation. The
+    pre-WOR-357 implementation read ``obj["context_compactions"]`` from the
+    final ``type=result`` event, but that field is never populated by Claude
+    Code — every row written before this fix had ``context_compactions=NULL``.
+    The actual signal lives in events of the form::
+
+        {"type":"system","subtype":"compact_boundary",
+         "compact_metadata":{"trigger":"auto","pre_tokens":...,"post_tokens":...,
+                             "duration_ms":...}}
 
     When assistant events carry usage data, their cumulative sum is returned.
     When no assistant events have usage, the last ``type=result`` event's
-    snapshot is used as a fallback (preserving the pre-fix behaviour for logs
-    without assistant events).  Returns ``(None, None, None)`` only when
-    neither assistant events nor the result event carries usage data.
-
-    **Note:** Rows written before this fix under-counted tokens.  Forward
-    rows will be accurate; backward analytics must account for the pre-fix
-    rows being unreliable.
+    usage snapshot is used as a fallback for tokens. Returns
+    ``(None, None, None)`` when the log itself cannot be opened or parsed at
+    all; returns ``(in, out, 0)`` for parseable logs containing zero
+    compact_boundary events.
     """
     try:
         with log_path.open(encoding="utf-8") as f:
             total_input = 0
             total_output = 0
             has_assistant_usage = False
-            context_compactions: int | None = None
+            compact_count = 0
             last_input: int | None = None
             last_output: int | None = None
             for raw in f:
@@ -66,7 +74,8 @@ def _parse_worker_usage(
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if obj.get("type") == "assistant":
+                obj_type = obj.get("type")
+                if obj_type == "assistant":
                     usage = (obj.get("message") or {}).get("usage") or {}
                     inp = usage.get("input_tokens")
                     out = usage.get("output_tokens")
@@ -74,17 +83,18 @@ def _parse_worker_usage(
                         total_input += int(inp)
                         total_output += int(out)
                         has_assistant_usage = True
-                elif obj.get("type") == "result":
-                    context_compactions = obj.get("context_compactions")
+                elif obj_type == "system" and obj.get("subtype") == "compact_boundary":
+                    compact_count += 1
+                elif obj_type == "result":
                     usage = obj.get("usage") or {}
                     last_input = usage.get("input_tokens")
                     last_output = usage.get("output_tokens")
             if has_assistant_usage:
-                return total_input, total_output, context_compactions
+                return total_input, total_output, compact_count
             # Fallback to result snapshot when no assistant events carry usage.
             if last_input is not None and last_output is not None:
-                return int(last_input), int(last_output), context_compactions
-            return None, None, context_compactions
+                return int(last_input), int(last_output), compact_count
+            return None, None, compact_count
     except Exception:
         return None, None, None
     return None, None, None
