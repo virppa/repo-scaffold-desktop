@@ -84,13 +84,15 @@ If any test fails, paste the failing test's PASS/FAIL block into the **Live test
 In a fresh PowerShell window:
 ```
 $env:ANTHROPIC_BASE_URL = "http://localhost:8000"
-$env:ANTHROPIC_API_KEY = "sk-dummy"
-$env:ANTHROPIC_AUTH_TOKEN = "sk-dummy"
+$env:ANTHROPIC_API_KEY = "dummy"  # pragma: allowlist secret
+$env:ANTHROPIC_AUTH_TOKEN = "dummy"  # pragma: allowlist secret
 $env:ANTHROPIC_DEFAULT_OPUS_MODEL = "qwen3-coder"
 $env:ANTHROPIC_DEFAULT_SONNET_MODEL = "qwen3-coder"
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL = "qwen3-coder"
-claude --model claude-sonnet-4-6 -p "List the files in the repo root using the Bash tool, then summarize."
+claude -p "List the files in the repo root using the Bash tool, then summarize."
 ```
+
+> **Do not pass `--model claude-sonnet-4-6`** when only `qwen3-coder` is served. Claude Code validates `--model` against `/v1/models` and rejects names not in the list (the `ANTHROPIC_DEFAULT_*_MODEL` env vars only kick in when `--model` is omitted). To keep `--model` working with the canonical Claude IDs, alias them in the vLLM launch: `--served-model-name qwen3-coder claude-sonnet-4-6 claude-opus-4-7 claude-haiku-4-5-20251001` — the flag accepts a list.
 
 This covers the "tool_use → tool_result handshake works in Anthropic format" AC bullet beyond what the probe script can measure (it tests the protocol; this tests Claude Code's full integration).
 
@@ -107,11 +109,13 @@ Captured 2026-05-04 against the production vLLM 0.20.0 launch (Qwen3.6-35B-A3B-N
 | `/v1/messages` tool_result followup | ✅ | `stop_reason=end_turn`, model reads back: *"The current weather in Helsinki is 4°C and partly cloudy."* — the full tool-use → tool_result handshake works without LiteLLM in the path |
 | `/v1/messages/count_tokens` | ✅ | `input_tokens=13` for the 3-word probe |
 | Reasoning blocks (Qwen3 thinking) flow through | ✅ | Confirmed via the v1 probe failure log — `content[0]` is `{"type": "thinking", "thinking": "…", "signature": "ab3a9a17…"}`. vLLM synthesises the `signature` per response so Claude Code's signature-passthrough invariant holds |
-| `claude --model claude-sonnet-4-6 -p` smoke | ☐ | Operator step — fill in after running the PowerShell snippet in the runbook |
+| `claude -p` smoke (no `--model`) | ✅ | `claude -p "List the files in the repo root using the Bash tool, then summarize."` produced a Bash tool call against `C:\Users\Antti` followed by a structured summary. Tool-use roundtrip works through Claude Code's full integration, not just the protocol probe. Initial attempt with `--model claude-sonnet-4-6` failed because Claude Code validates against `/v1/models`; dropping the flag (or aliasing via `--served-model-name`) is required |
 
 ### Key observation
 
 vLLM's `AnthropicServingMessages` doesn't strip the qwen3 `<think>` block. It promotes it to a first-class `thinking` content block alongside any text the model emits. That means moving from LiteLLM to direct vLLM is **strictly more capable** for our stack — LiteLLM didn't preserve Qwen3 thinking blocks in Anthropic format at all.
+
+Performance implication: Claude Code resends the assistant turn (including the `thinking` block + its `signature`) on every follow-up. With `--enable-prefix-caching` already on, the prefill for the thinking text is a cache hit instead of a re-derivation. Over a 10-turn ticket session, where thinking is ~30-60% of an assistant turn's output for non-trivial requests, the cumulative cache reuse is non-trivial. This is **multi-turn KV reuse**, not raw tok/s — single-shot stateless calls see no speed change.
 
 ## Decision criteria
 
