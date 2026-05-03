@@ -11,7 +11,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast, get_args
 
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import ImplementationMode
@@ -98,6 +98,6 @@ def is_watcher_running(pid_file: Path = _PID_FILE) -> bool:
 
 
 def _to_metrics_mode(mode: str) -> ImplementationMode:
-    if mode in ("local", "cloud", "hybrid"):
-        return mode  # type: ignore[return-value]  # ImplementationMode is Literal["local","cloud","hybrid"]; str is compatible at runtime
+    if mode in get_args(ImplementationMode):
+        return cast(ImplementationMode, mode)
     return "cloud"
