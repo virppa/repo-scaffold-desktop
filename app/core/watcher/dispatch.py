@@ -51,15 +51,14 @@ def start_ticket(
         manifest.implementation_mode,
     )
 
-    if effective_mode != "local":
-        if len(_cloud_active) >= max_cloud_workers:
-            logger.info(
-                "Deferring %s — cloud pool full (%d/%d)",
-                ticket_id,
-                len(_cloud_active),
-                max_cloud_workers,
-            )
-            return
+    if effective_mode != "local" and len(_cloud_active) >= max_cloud_workers:
+        logger.info(
+            "Deferring %s — cloud pool full (%d/%d)",
+            ticket_id,
+            len(_cloud_active),
+            max_cloud_workers,
+        )
+        return
 
     if effective_mode == "local":
         if not services.probe_vllm_health():

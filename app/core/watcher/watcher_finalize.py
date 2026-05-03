@@ -179,7 +179,7 @@ def finalize_worker(
     project_id: str,
     tracked_prs: list[TrackedPR] | None = None,
 ) -> Outcome:
-    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, pr_url = (
+    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, _ = (
         _execute_finalization(
             worker,
             returncode,
@@ -214,7 +214,7 @@ def finalize_worker(
         )
         raw_shortstat = (diff_output.stdout or "") + (diff_output.stderr or "")
         lines_changed, files_changed = parse_git_shortstat(raw_shortstat)
-    except (OSError, subprocess.TimeoutExpired, OSError):
+    except (OSError, subprocess.TimeoutExpired):
         lines_changed, files_changed = 0, 0
 
     # Cloud metrics — populated only when eff == "cloud"
@@ -366,7 +366,7 @@ def _read_result_status(repo_root: Path, manifest: ExecutionManifest) -> str | N
         return None
     try:
         data = json.loads(raw)
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         return None
     status = data.get("status") if isinstance(data, dict) else None
     return status if isinstance(status, str) else None
