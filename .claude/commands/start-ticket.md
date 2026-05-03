@@ -238,6 +238,33 @@ If `related_files_hint` is empty, leave `context_snippets` as null (omit it from
 Write the populated `context_snippets` object into the manifest at `context_snippets` key
 (see step 4.6 for the full manifest structure).
 
+### 2.6. Expand test allowed_paths to capture sibling test files (WOR-353)
+
+Before writing the manifest, glob-expand every `tests/test_<stem>.py` entry in
+`allowed_paths` to `tests/test_<stem>*.py` so the worker has explicit permission
+to run sibling test files that import the same source module.
+
+**Why:** Sibling test files (e.g. `tests/test_watcher_finalize_metrics.py`,
+`tests/test_watcher_finalize_recovery.py`) import the same module the worker
+modifies, but pytest fails on them aren't visible until the watcher runs the
+full suite as part of `required_checks`. Without this expansion, the worker
+self-reports success while the watcher rejects — operator must rescue.
+
+**Mechanical rule:** for each entry in `allowed_paths` matching the pattern
+`tests/test_<stem>.py`, replace it with `tests/test_<stem>*.py`. Examples:
+
+| Architect wrote | Becomes |
+|---|---|
+| `tests/test_metrics.py` | `tests/test_metrics*.py` |
+| `tests/test_watcher_finalize.py` | `tests/test_watcher_finalize*.py` |
+| `tests/test_X.py` (single ticket) | `tests/test_X*.py` |
+
+Already-globbed entries (e.g. `tests/test_*.py`, `tests/foo/*.py`) are left
+unchanged. Non-test paths (e.g. `app/core/metrics.py`) are left unchanged.
+
+The architect does NOT need to enumerate sibling tests manually — this step
+handles it mechanically before the manifest is written.
+
 ### 4.6. After human approves the plan — generate the execution manifest
 
 Once the human says to proceed, generate and write an `ExecutionManifest` JSON to disk. This is the handoff artifact the local worker reads — it must not require re-reading Linear or re-planning.

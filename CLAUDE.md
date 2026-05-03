@@ -372,6 +372,10 @@ and convert every match to `patch("new.module.path.function_name")`.
 
 **Use `replace_all=True` for bulk patch string migrations.** When updating `unittest.mock.patch()` strings after a module rename, use `Edit(old_string="app.core.old_module", new_string="app.core.new.module", replace_all=True)` rather than replacing each occurrence individually. One Edit call per (file, module-name) pair covers the entire migration in a single round-trip.
 
+**Run the unscoped `pytest` from `required_checks` before declaring success.** When the manifest's `required_checks` contains plain `pytest` (no args), the worker MUST run the full suite once before writing the success result artifact — not just the test files in `allowed_paths`. Sibling test files (e.g. `tests/test_X_metrics.py`, `tests/test_X_recovery.py`) often import the same source module the worker modified and fail when their fixtures don't anticipate the change. Skipping the unscoped run causes the watcher's `required_checks` step to catch the regression after the session has ended, marking the ticket Blocked even though the worker reported success. Targeted pytest is fine for fast iteration; the unscoped final run is mandatory. (See WOR-353.)
+
+**Test allowed_paths are auto-globbed at `/start-ticket` time.** When the architect lists `tests/test_X.py` in `allowed_paths`, the manifest writer expands it to `tests/test_X*.py` so sibling test files are explicitly in scope. Architects do NOT need to enumerate sibling tests manually. Already-globbed entries (e.g. `tests/test_*.py`) are left unchanged.
+
 ---
 
 ## Escalation policy
