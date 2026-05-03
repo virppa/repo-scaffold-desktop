@@ -239,7 +239,14 @@ Write a JSON result file to `artifact_paths.result_json`. Create parent dirs as 
 }
 ```
 
-Also copy the manifest to `artifact_paths.manifest_copy` for audit purposes.
+**Do NOT copy the manifest anywhere.** `artifact_paths.manifest_copy` already
+points at the path where `/start-ticket` wrote the manifest (the same one you
+loaded in step 0). The watcher's `copy_manifest_to_worktree` step also placed
+it there before launching this session. There is nothing to copy — the manifest
+is already at its documented audit path. (Earlier skill text instructed a
+"copy manifest" step; that was a no-op that wasted 2-3 turns per session as
+the model attempted to `cp` a file onto itself before realizing the
+redundancy. WOR-322 paid ~12 minutes of wall time to this. WOR-356.)
 
 ### 6. Linear updates (comments only — state is owned by the watcher)
 
