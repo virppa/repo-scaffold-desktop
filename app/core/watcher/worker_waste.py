@@ -97,8 +97,7 @@ def compute_waste_score(log_path: Path) -> WasteReport:
         except json.JSONDecodeError:
             continue
 
-        tool_use = _extract_tool_use(obj)
-        if tool_use is not None:
+        for tool_use in _extract_tool_uses(obj):
             name = tool_use.get("name", "")
             inp = tool_use.get("input", {})
             if isinstance(inp, str):
@@ -109,7 +108,14 @@ def compute_waste_score(log_path: Path) -> WasteReport:
 
             if name == "Read":
                 # Count reads per file path to detect redundant reads.
-                file_path = inp.get("path", "") or inp.get("file", "")
+                # Claude Code's Read tool uses `file_path` as the parameter
+                # name (WOR-349); legacy fallbacks kept defensively in case
+                # synthetic logs use other keys.
+                file_path = (
+                    inp.get("file_path", "")
+                    or inp.get("path", "")
+                    or inp.get("file", "")
+                )
                 if file_path:
                     read_counts[file_path] = read_counts.get(file_path, 0) + 1
 
@@ -149,10 +155,18 @@ def compute_waste_score(log_path: Path) -> WasteReport:
             if out_tok is not None:
                 total_output_tokens += int(out_tok)
 
-            # Thinking tokens come from the reasoning field in the message.
-            reasoning = msg.get("reasoning", "") or msg.get("content", "")
-            if isinstance(reasoning, str):
-                total_thinking_tokens += len(reasoning)
+            # Thinking tokens come from content blocks of type "thinking" on
+            # assistant messages (WOR-349). The previous code looked for a
+            # top-level `message.reasoning` field that does not exist in
+            # Claude Code's stream-json format, so total_thinking_tokens was
+            # always 0 for real logs.
+            content = msg.get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "thinking":
+                        text = block.get("thinking", "")
+                        if isinstance(text, str):
+                            total_thinking_tokens += len(text)
 
     # --- Compute signals ---
     redundant_reads = sum(max(0, c - 1) for c in read_counts.values() if c > 1)
@@ -212,19 +226,38 @@ def compute_waste_score(log_path: Path) -> WasteReport:
     )
 
 
-def _extract_tool_use(obj: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract a tool_use block from a stream-json event.
+def _extract_tool_uses(obj: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract all tool_use blocks from a stream-json event.
 
-    Handles both the direct ``{type: "tool_use", ...}`` form and the
-    ``{type: "assistant", message: {tool_calls: [{...}]}}`` form.
+    Claude Code's stream-json format puts tool_use blocks in
+    ``message.content[]`` with ``type == "tool_use"``. A single assistant
+    turn can emit multiple tool_use blocks. Returns all of them in order
+    (empty list if none).
+
+    Also handles legacy/synthetic forms:
+    - direct ``{type: "tool_use", ...}`` event
+    - ``{type: "assistant", message: {tool_calls: [{...}]}}`` (legacy field)
     """
     if obj.get("type") == "tool_use":
-        return obj
-    if obj.get("type") == "assistant":
-        msg = obj.get("message") or {}
-        tool_calls: list[dict[str, Any]] = msg.get("tool_calls", [])
+        return [obj]
+    if obj.get("type") != "assistant":
+        return []
+
+    msg = obj.get("message") or {}
+    found: list[dict[str, Any]] = []
+
+    # Primary path: content blocks (Claude Code stream-json format).
+    content = msg.get("content", [])
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                found.append(block)
+
+    # Legacy fallback: tool_calls list (kept for any synthetic logs).
+    tool_calls = msg.get("tool_calls", [])
+    if isinstance(tool_calls, list):
         for tc in tool_calls:
-            if tc.get("type") == "tool_use":
-                return tc
-        return None
-    return None
+            if isinstance(tc, dict) and tc.get("type") == "tool_use":
+                found.append(tc)
+
+    return found
