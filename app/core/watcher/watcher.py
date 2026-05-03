@@ -73,6 +73,13 @@ class _ProcessedTicket(NamedTuple):
 # ---------------------------------------------------------------------------
 
 
+_SOFTSTOP_SENTINEL_NAME = "watcher.softstop"
+# How long the daemon may sit in drain mode before logging a stuck-worker
+# warning. Keeps overnight operators from being surprised by a hung worker
+# blocking graceful exit. WOR-333.
+_SOFTSTOP_WARN_AFTER_MIN = 60
+
+
 class Watcher:
     """Orchestrates local worker sessions end-to-end."""
 
@@ -119,6 +126,12 @@ class Watcher:
         self._display: Any | None = None
         self._tracked_prs: list[TrackedPR] = []
         self._last_epic_complete_announced: dict[str, str] = {}
+        # Soft-stop / drain mode (WOR-333). Operator writes
+        # .claude/watcher.softstop to put the daemon in drain mode: stop
+        # accepting new dispatches, finish in-flight workers, then exit.
+        self._draining: bool = False
+        self._draining_since: float | None = None
+        self._softstop_warned_stuck: bool = False
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -129,6 +142,7 @@ class Watcher:
         self._write_pid_file()
         self._register_signals()
         self._cleanup_orphaned_worktrees()
+        self._remove_stale_softstop_sentinel()
 
         if self._tui_mode:
             self._display = WatcherDisplay()
@@ -143,20 +157,30 @@ class Watcher:
 
         try:
             while self._running:
+                self._check_softstop_request()
                 self._reap_finished_workers()
                 if self._display is not None:
                     self._display.update_state(self._build_tui_state())
-                self._promote_waiting_tickets()
+                if not self._draining:
+                    self._promote_waiting_tickets()
                 local_has_capacity = len(self._local_active) < self._max_local_workers
                 cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
-                if local_has_capacity or cloud_has_capacity:
+                if not self._draining and (local_has_capacity or cloud_has_capacity):
                     self._dispatch_next_ticket()
-                self._check_epic_completion()
+                if not self._draining:
+                    self._check_epic_completion()
+                if self._draining and not (self._local_active or self._cloud_active):
+                    logger.info(
+                        "Drain complete — all workers finished. Exiting cleanly."
+                    )
+                    self._remove_softstop_sentinel()
+                    self._running = False
                 if not self._running:
                     break
                 time.sleep(self._POLL_INTERVAL)
                 self._emit_idle_line()
                 self._emit_heartbeat()
+                self._maybe_warn_softstop_stuck()
         finally:
             self._wait_for_active_workers()
             self._services.stop()
@@ -906,3 +930,79 @@ class Watcher:
                 continue
             logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
             cleanup_worktree(self._repo_root, worktree_dir)
+
+    # ------------------------------------------------------------------
+    # Soft-stop / drain mode (WOR-333)
+    # ------------------------------------------------------------------
+
+    def _softstop_sentinel_path(self) -> Path:
+        return self._repo_root / _CLAUDE_DIR / _SOFTSTOP_SENTINEL_NAME
+
+    def _remove_stale_softstop_sentinel(self) -> None:
+        """Delete any sentinel left over from a prior daemon run.
+
+        Without this, every daemon start would immediately enter drain mode
+        if a previous Ctrl-C left the file behind.
+        """
+        sentinel = self._softstop_sentinel_path()
+        if sentinel.exists():
+            try:
+                sentinel.unlink()
+                logger.info(
+                    "Removed stale soft-stop sentinel from prior run: %s", sentinel
+                )
+            except OSError as exc:
+                logger.warning("Could not remove stale sentinel %s: %s", sentinel, exc)
+
+    def _remove_softstop_sentinel(self) -> None:
+        """Delete the sentinel during graceful drain exit."""
+        sentinel = self._softstop_sentinel_path()
+        try:
+            sentinel.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove soft-stop sentinel %s: %s", sentinel, exc)
+
+    def _check_softstop_request(self) -> None:
+        """Detect the soft-stop sentinel and enter drain mode.
+
+        Called once per poll cycle. Idempotent — entering drain mode is a
+        one-shot transition; subsequent calls just keep `_draining` True.
+        """
+        if self._draining:
+            return
+        if not self._softstop_sentinel_path().exists():
+            return
+        self._draining = True
+        self._draining_since = time.monotonic()
+        active = len(self._local_active) + len(self._cloud_active)
+        logger.warning(
+            "Soft-stop requested. Draining: %d worker(s) remaining. "
+            "Daemon will exit when all finish.",
+            active,
+        )
+
+    def _maybe_warn_softstop_stuck(self) -> None:
+        """Log a one-shot WARNING if drain has been pending too long.
+
+        Helps the operator notice a hung worker that's blocking graceful exit.
+        Threshold lives in :const:`_SOFTSTOP_WARN_AFTER_MIN`. Fires once.
+        """
+        if not self._draining or self._softstop_warned_stuck:
+            return
+        if self._draining_since is None:
+            return
+        elapsed_min = (time.monotonic() - self._draining_since) / 60.0
+        if elapsed_min < _SOFTSTOP_WARN_AFTER_MIN:
+            return
+        active = self._local_active + self._cloud_active
+        active_summary = ", ".join(
+            f"{w.ticket_id} (running {(time.monotonic() - w.start_time) / 60:.0f}m)"
+            for w in active
+        )
+        logger.warning(
+            "Soft-stop pending for %.0f min. Worker(s) may be hung. "
+            "Consider Ctrl-C to force-exit (will lose WIP). Active: %s",
+            elapsed_min,
+            active_summary or "(none — drain should have exited)",
+        )
+        self._softstop_warned_stuck = True
