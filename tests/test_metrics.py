@@ -840,6 +840,33 @@ class TestComputeTags:
         m = _metrics(retry_count=0)
         assert "rework" not in compute_tags(m, "success")
 
+    # --- WOR-366: backend_unstable rule ---
+
+    def test_backend_unstable_at_threshold(self):
+        """backend_unstable: api_retry_count >= 6."""
+        m = _metrics(api_retry_count=6)
+        assert "backend_unstable" in compute_tags(m, "success")
+
+    def test_backend_unstable_max_retries(self):
+        """Fires for high counts (e.g. WOR-317 had 19 retries)."""
+        m = _metrics(api_retry_count=19)
+        assert "backend_unstable" in compute_tags(m, "success")
+
+    def test_backend_unstable_below_threshold(self):
+        """Does not fire at api_retry_count == 5 (boundary)."""
+        m = _metrics(api_retry_count=5)
+        assert "backend_unstable" not in compute_tags(m, "success")
+
+    def test_backend_unstable_zero(self):
+        """Does not fire when api_retry_count == 0."""
+        m = _metrics(api_retry_count=0)
+        assert "backend_unstable" not in compute_tags(m, "success")
+
+    def test_backend_unstable_none(self):
+        """Does not fire when api_retry_count is None (defensive)."""
+        m = _metrics(api_retry_count=None)
+        assert "backend_unstable" not in compute_tags(m, "success")
+
     # --- Multi-rule and no-rule ---
 
     def test_multi_rule_match(self):
