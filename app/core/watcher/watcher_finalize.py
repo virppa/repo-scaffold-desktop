@@ -25,6 +25,8 @@ from app.core.metrics import (
 
 from .watcher_helpers import (
     _POLICY_FLAGS,
+    _parse_worker_api_retries,
+    _parse_worker_subagent_spawns,
     _parse_worker_usage,
     _read_result_flags,
     resolve_effective_mode,
@@ -200,7 +202,11 @@ def finalize_worker(
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-    input_tokens, output_tokens, context_compactions = _parse_worker_usage(log_path)
+    input_tokens, output_tokens, context_compactions, compact_duration_ms = (
+        _parse_worker_usage(log_path)
+    )
+    api_retry_count = _parse_worker_api_retries(log_path)
+    subagent_spawns = _parse_worker_subagent_spawns(log_path)
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
 
     # Parse git diff --shortstat to populate lines_changed / files_changed.
@@ -242,7 +248,7 @@ def finalize_worker(
     local_tokens: int | None = None
     local_input_tokens: int | None = None
     local_output_tokens: int | None = None
-    local_output_tokens_per_second: float | None = None
+    output_tokens_per_wall_second: float | None = None
     local_model_str: str | None = None
     if eff == "local":
         local_tokens = (
@@ -254,7 +260,7 @@ def finalize_worker(
         local_output_tokens = output_tokens
         local_model_str = _LOCAL_MODEL
         if output_tokens is not None and wall_time and wall_time > 0:
-            local_output_tokens_per_second = output_tokens / wall_time
+            output_tokens_per_wall_second = output_tokens / wall_time
 
     # Compute waste score from the worker log (WOR-277).
     waste_report = compute_waste_score(log_path)
@@ -300,7 +306,7 @@ def finalize_worker(
             local_output_tokens=local_output_tokens,
             local_tokens=local_tokens,
             local_wall_time=wall_time,
-            local_output_tokens_per_second=local_output_tokens_per_second,
+            output_tokens_per_wall_second=output_tokens_per_wall_second,
             escalated_to_cloud=escalated,
             outcome=outcome,
             retry_count=worker.retry_count,
@@ -323,6 +329,14 @@ def finalize_worker(
             waste_breakdown_json=waste_breakdown_json,
             # WOR-348: persist manifest effort for retro analytics
             effort=worker.manifest.effort,
+            # WOR-358: persist total compaction time for throughput analysis
+            compact_duration_ms=compact_duration_ms,
+            # WOR-360: persist Claude Code's internal retry count
+            api_retry_count=api_retry_count,
+            # WOR-364: persist Task-tool subagent count
+            subagent_spawns=subagent_spawns,
+            # WOR-363: persist dispatch-time worker pool size
+            dispatch_concurrency=worker.dispatch_concurrency,
         )
     )
     metrics.record_run(
@@ -335,7 +349,7 @@ def finalize_worker(
             wall_time_s=wall_time,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            output_tok_per_s=local_output_tokens_per_second,
+            output_tok_per_s=output_tokens_per_wall_second,
             context_compactions=context_compactions,
         )
     )

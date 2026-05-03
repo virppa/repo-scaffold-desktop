@@ -190,6 +190,136 @@ class TestEffortColumn:
             store._migrate(conn)
 
 
+class TestCompactDurationColumn:
+    """WOR-358: persist total compaction time per session."""
+
+    def test_compact_duration_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(compact_duration_ms=88463))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.compact_duration_ms == 88463
+
+    def test_compact_duration_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.compact_duration_ms is None
+
+    def test_compact_duration_zero_distinct_from_none(self, tmp_path):
+        """Zero (no compactions) is a valid value, distinct from None (unknown)."""
+        store = _store(tmp_path)
+        store.record(_ticket(compact_duration_ms=0))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.compact_duration_ms == 0
+        assert result.compact_duration_ms is not None
+
+    def test_compact_duration_migration_idempotent(self, tmp_path):
+        store = _store(tmp_path)
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
+class TestApiRetryColumn:
+    """WOR-360: persist Claude Code's internal api_retry count per session."""
+
+    def test_api_retry_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(api_retry_count=6))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.api_retry_count == 6
+
+    def test_api_retry_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.api_retry_count is None
+
+    def test_api_retry_zero_distinct_from_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(api_retry_count=0))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.api_retry_count == 0
+        assert result.api_retry_count is not None
+
+    def test_api_retry_migration_idempotent(self, tmp_path):
+        store = _store(tmp_path)
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
+class TestSubagentSpawnsColumn:
+    """WOR-364: persist Task-tool subagent count per session."""
+
+    def test_subagent_spawns_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(subagent_spawns=4))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.subagent_spawns == 4
+
+    def test_subagent_spawns_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.subagent_spawns is None
+
+    def test_subagent_spawns_zero_distinct_from_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(subagent_spawns=0))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.subagent_spawns == 0
+        assert result.subagent_spawns is not None
+
+    def test_subagent_spawns_migration_idempotent(self, tmp_path):
+        store = _store(tmp_path)
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
+class TestDispatchConcurrencyColumn:
+    """WOR-363: persist count of OTHER active workers at dispatch time."""
+
+    def test_dispatch_concurrency_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(dispatch_concurrency=3))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.dispatch_concurrency == 3
+
+    def test_dispatch_concurrency_solo_is_zero(self, tmp_path):
+        """Zero (solo dispatch) is a valid value, distinct from None."""
+        store = _store(tmp_path)
+        store.record(_ticket(dispatch_concurrency=0))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.dispatch_concurrency == 0
+        assert result.dispatch_concurrency is not None
+
+    def test_dispatch_concurrency_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.dispatch_concurrency is None
+
+    def test_dispatch_concurrency_migration_idempotent(self, tmp_path):
+        store = _store(tmp_path)
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
 class TestAdditionalMetrics:
     def test_retry_and_diff_metrics_round_trip(self, tmp_path):
         store = _store(tmp_path)
@@ -394,7 +524,7 @@ class TestCheckRunLog:
 class TestMigration:
     def test_migration_adds_new_columns(self, tmp_path):
         """Existing DB gets local_input_tokens, local_output_tokens,
-        local_output_tokens_per_second without error."""
+        output_tokens_per_wall_second without error."""
         store = MetricsStore(db_path=tmp_path / "app.db")
         # Write and read before _migrate runs to establish baseline
         store.record(_ticket())
@@ -413,14 +543,14 @@ class TestMigration:
             _ticket(
                 local_input_tokens=10000,
                 local_output_tokens=500,
-                local_output_tokens_per_second=4.17,
+                output_tokens_per_wall_second=4.17,
             )
         )
         result = store.get_by_ticket("WOR-1", "proj-a")
         assert result is not None
         assert result.local_input_tokens == 10000
         assert result.local_output_tokens == 500
-        assert result.local_output_tokens_per_second == pytest.approx(4.17)
+        assert result.output_tokens_per_wall_second == pytest.approx(4.17)
 
     def test_new_columns_none_default(self, tmp_path):
         """Fields default to None when not provided."""
@@ -429,7 +559,7 @@ class TestMigration:
         result = store.get_by_ticket("WOR-1", "proj-a")
         assert result.local_input_tokens is None
         assert result.local_output_tokens is None
-        assert result.local_output_tokens_per_second is None
+        assert result.output_tokens_per_wall_second is None
 
     def test_backward_compat_local_tokens_preserved(self, tmp_path):
         """local_tokens remains valid alongside new fields."""

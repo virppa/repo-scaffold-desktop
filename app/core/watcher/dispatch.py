@@ -83,6 +83,9 @@ def start_ticket(
     logger.info("Launching worker for %s (mode=%s)", ticket_id, effective_mode)
 
     backed_up_plans = backup_plan_files()
+    # WOR-363: capture pool size BEFORE launching this worker. Counts OTHER
+    # workers — does not include the one we're about to add.
+    dispatch_concurrency = len(_local_active) + len(_cloud_active)
     process = launch_worker(
         _repo_root, manifest, worktree_path, effective_mode, worker_verbose
     )
@@ -93,6 +96,7 @@ def start_ticket(
         worktree_path=worktree_path,
         process=process,
         backed_up_plans=backed_up_plans,
+        dispatch_concurrency=dispatch_concurrency,
     )
     if effective_mode == "local":
         _local_active.append(worker)
