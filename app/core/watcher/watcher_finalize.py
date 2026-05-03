@@ -200,7 +200,9 @@ def finalize_worker(
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-    input_tokens, output_tokens, context_compactions = _parse_worker_usage(log_path)
+    input_tokens, output_tokens, context_compactions, compact_duration_ms = (
+        _parse_worker_usage(log_path)
+    )
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
 
     # Parse git diff --shortstat to populate lines_changed / files_changed.
@@ -323,6 +325,8 @@ def finalize_worker(
             waste_breakdown_json=waste_breakdown_json,
             # WOR-348: persist manifest effort for retro analytics
             effort=worker.manifest.effort,
+            # WOR-358: persist total compaction time for throughput analysis
+            compact_duration_ms=compact_duration_ms,
         )
     )
     metrics.record_run(

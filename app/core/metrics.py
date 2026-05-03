@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     tags                  TEXT,
     notes                 TEXT,
     effort                TEXT,
+    compact_duration_ms   INTEGER,
     recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
@@ -197,6 +198,14 @@ class TicketMetrics(BaseModel):
     effort: str | None = Field(
         default=None,
         description="Effort level from the manifest: low/medium/high/xhigh/max",
+    )
+    compact_duration_ms: int | None = Field(
+        default=None,
+        description=(
+            "Cumulative ms spent on context compaction during the session "
+            "(WOR-358). Sum of compact_metadata.duration_ms across all "
+            "compact_boundary system events."
+        ),
     )
 
 
@@ -392,6 +401,10 @@ class MetricsStore:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN notes TEXT")
         if "effort" not in existing:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN effort TEXT")
+        if "compact_duration_ms" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN compact_duration_ms INTEGER"
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -419,7 +432,8 @@ class MetricsStore:
                     sonar_findings_count, context_compactions,
                     change_type, reasoning_demand, scope_clarity,
                     constraint_density, ac_specificity, tech_stack, raw_extensions,
-                    waste_score, waste_breakdown_json, tags, notes, effort
+                    waste_score, waste_breakdown_json, tags, notes, effort,
+                    compact_duration_ms
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -433,7 +447,8 @@ class MetricsStore:
                     :sonar_findings_count, :context_compactions,
                     :change_type, :reasoning_demand, :scope_clarity,
                     :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
-                    :waste_score, :waste_breakdown_json, :tags, :notes, :effort
+                    :waste_score, :waste_breakdown_json, :tags, :notes, :effort,
+                    :compact_duration_ms
                 )
                 """,
                 {

@@ -30,22 +30,20 @@ logger = logging.getLogger(__name__)
 
 def _parse_worker_usage(
     log_path: Path,
-) -> tuple[int | None, int | None, int | None]:
-    """Return cumulative (input_tokens, output_tokens) summed across all
-    ``type=assistant`` events in the stream-json worker log, plus
-    *context_compactions* counted from ``type=system, subtype=compact_boundary``
-    events (WOR-357).
+) -> tuple[int | None, int | None, int | None, int | None]:
+    """Return 4-tuple from the stream-json worker log:
+    ``(input_tokens, output_tokens, context_compactions, compact_duration_ms)``.
 
     Assistant-turn deltas are summed so that downstream metrics
     (``local_output_tokens``, ``output_tokens_per_wall_second``) reflect the
     true token volume of a session.
 
     *context_compactions* is the count of ``compact_boundary`` system events
-    emitted by Claude Code when it auto-compacts the conversation. The
-    pre-WOR-357 implementation read ``obj["context_compactions"]`` from the
-    final ``type=result`` event, but that field is never populated by Claude
-    Code — every row written before this fix had ``context_compactions=NULL``.
-    The actual signal lives in events of the form::
+    (WOR-357). *compact_duration_ms* (WOR-358) is the sum of
+    ``compact_metadata.duration_ms`` across those events — total wall time
+    spent on compaction during the session.
+
+    The actual compaction signal lives in events of the form::
 
         {"type":"system","subtype":"compact_boundary",
          "compact_metadata":{"trigger":"auto","pre_tokens":...,"post_tokens":...,
@@ -54,9 +52,9 @@ def _parse_worker_usage(
     When assistant events carry usage data, their cumulative sum is returned.
     When no assistant events have usage, the last ``type=result`` event's
     usage snapshot is used as a fallback for tokens. Returns
-    ``(None, None, None)`` when the log itself cannot be opened or parsed at
-    all; returns ``(in, out, 0)`` for parseable logs containing zero
-    compact_boundary events.
+    ``(None, None, None, None)`` when the log itself cannot be opened or
+    parsed at all; returns ``(in, out, 0, 0)`` for parseable logs containing
+    zero compact_boundary events.
     """
     try:
         with log_path.open(encoding="utf-8") as f:
@@ -64,6 +62,7 @@ def _parse_worker_usage(
             total_output = 0
             has_assistant_usage = False
             compact_count = 0
+            compact_duration_ms = 0
             last_input: int | None = None
             last_output: int | None = None
             for raw in f:
@@ -85,19 +84,28 @@ def _parse_worker_usage(
                         has_assistant_usage = True
                 elif obj_type == "system" and obj.get("subtype") == "compact_boundary":
                     compact_count += 1
+                    meta = obj.get("compact_metadata") or {}
+                    dur = meta.get("duration_ms")
+                    if isinstance(dur, (int, float)):
+                        compact_duration_ms += int(dur)
                 elif obj_type == "result":
                     usage = obj.get("usage") or {}
                     last_input = usage.get("input_tokens")
                     last_output = usage.get("output_tokens")
             if has_assistant_usage:
-                return total_input, total_output, compact_count
+                return total_input, total_output, compact_count, compact_duration_ms
             # Fallback to result snapshot when no assistant events carry usage.
             if last_input is not None and last_output is not None:
-                return int(last_input), int(last_output), compact_count
-            return None, None, compact_count
+                return (
+                    int(last_input),
+                    int(last_output),
+                    compact_count,
+                    compact_duration_ms,
+                )
+            return None, None, compact_count, compact_duration_ms
     except Exception:
-        return None, None, None
-    return None, None, None
+        return None, None, None, None
+    return None, None, None, None
 
 
 def format_token_count(total: int) -> str:
@@ -121,10 +129,10 @@ def format_worker_token_count(log_path: Path) -> str:
     """Return ``142k tokens`` for the worker log, ``? tokens`` if unknown.
 
     ``_parse_worker_usage`` already swallows its own errors and returns
-    ``(None, None, None)`` when the log is missing or malformed, so callers
-    do not need to wrap this in try/except.
+    ``(None, None, None, None)`` when the log is missing or malformed, so
+    callers do not need to wrap this in try/except.
     """
-    input_tok, output_tok, _ = _parse_worker_usage(log_path)
+    input_tok, output_tok, _, _ = _parse_worker_usage(log_path)
     if input_tok is None or output_tok is None:
         return "? tokens"
     return f"{format_token_count(input_tok + output_tok)} tokens"
