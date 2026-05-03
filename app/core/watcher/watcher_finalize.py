@@ -32,6 +32,7 @@ from .watcher_subprocess import (
 from .watcher_tui import TrackedPR
 from .watcher_types import (
     _CLAUDE_DIR,
+    _IN_PROGRESS_STATE,
     _LOCAL_MODEL,
     ActiveWorker,
     LinearClientProtocol,
@@ -420,7 +421,7 @@ def _execute_finalization(
             escalated = bool(manifest.failure_policy.escalate_to_cloud)
             if escalated:
                 logger.info("Escalating %s to cloud per failure policy", ticket_id)
-                safe_set_state(linear, linear_id, "In Progress", ticket_id)
+                safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
                 _try_post_comment(
                     linear,
                     linear_id,
@@ -447,7 +448,7 @@ def _execute_finalization(
         escalated = bool(manifest.failure_policy.escalate_to_cloud)
         if escalated:
             logger.info("Escalating %s to cloud after check failure", ticket_id)
-            safe_set_state(linear, linear_id, "In Progress", ticket_id)
+            safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
             _try_post_comment(
                 linear,
                 linear_id,
@@ -499,7 +500,7 @@ def _handle_policy_outcome(
     if action == "escalate":
         triggering = next((f for f in _POLICY_FLAGS if flags.get(f)), "unknown")
         logger.info("Escalating %s to cloud (flag=%s)", ticket_id, triggering)
-        safe_set_state(linear, linear_id, "In Progress", ticket_id)
+        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(
             linear,
             linear_id,
@@ -525,7 +526,7 @@ def _handle_policy_outcome(
     if _sonar_requires_escalation(
         sonar_findings, ticket_id, linear_id, linear, escalation_policy
     ):
-        safe_set_state(linear, linear_id, "In Progress", ticket_id)
+        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(
             linear,
             linear_id,
