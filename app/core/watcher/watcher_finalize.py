@@ -204,6 +204,9 @@ def finalize_worker(
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
 
     # Parse git diff --shortstat to populate lines_changed / files_changed.
+    # Three-dot diff against the merge-base — invariant under base_branch
+    # advancing during the worker's lifetime (WOR-354). Two-dot would attribute
+    # sibling-merge upstream commits to this worker.
     # Must run before preserve_worker_artifacts tears down the worktree.
     try:
         diff_output = subprocess.run(  # nosec B603 B607
@@ -213,7 +216,7 @@ def finalize_worker(
                 str(worker.worktree_path),
                 "diff",
                 "--shortstat",
-                worker.manifest.base_branch,
+                f"{worker.manifest.base_branch}...HEAD",
             ],
             capture_output=True,
             text=True,
