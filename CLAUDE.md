@@ -347,7 +347,7 @@ for f in ['app/core/watcher.py', 'app/core/watcher_types.py', ...]:
 "
 ```
 
-**Trust the Edit tool and hooks — do not re-read after editing.** The Edit tool confirms the change was applied. PostToolUse hooks (ruff, mypy, bandit, lint-imports) report any issues immediately in the tool result. Re-reading a file after editing to "verify" wastes a round-trip per edit. Only re-read if a hook explicitly reported an error you need to inspect in context.
+**Trust the Edit tool and hooks — do not re-read after editing.** The Edit tool confirms the change was applied. PostToolUse hooks (ruff, mypy, bandit, lint-imports) report any issues immediately in the tool result. Re-reading a file after editing to "verify" wastes a round-trip per edit. Only re-read if a hook explicitly reported an error you need to inspect in context. **Per-file 2-read cap is universal** (WOR-355) — a file may be read at most twice per session whether or not `context_snippets` populated it; the cap applies even when the manifest's snippets list is empty. WOR-322 evidence: 27 reads of a single 480-LOC file across one session contributed materially to the 76-minute wall time.
 
 **Update mock patch paths after any module move.** `unittest.mock.patch()` targets are string literals — they are not updated by import fixers and will silently break tests. After moving or renaming any module, run two greps — one for mock strings, one for bare from-imports (conftest.py and fixture files use these and they are missed by the patch grep):
 ```bash
