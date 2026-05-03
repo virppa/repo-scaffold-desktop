@@ -111,11 +111,32 @@ Captured 2026-05-04 against the production vLLM 0.20.0 launch (Qwen3.6-35B-A3B-N
 | Reasoning blocks (Qwen3 thinking) flow through | ✅ | Confirmed via the v1 probe failure log — `content[0]` is `{"type": "thinking", "thinking": "…", "signature": "ab3a9a17…"}`. vLLM synthesises the `signature` per response so Claude Code's signature-passthrough invariant holds |
 | `claude -p` smoke (no `--model`) | ✅ | `claude -p "List the files in the repo root using the Bash tool, then summarize."` produced a Bash tool call against `C:\Users\Antti` followed by a structured summary. Tool-use roundtrip works through Claude Code's full integration, not just the protocol probe. Initial attempt with `--model claude-sonnet-4-6` failed because Claude Code validates against `/v1/models`; dropping the flag (or aliasing via `--served-model-name`) is required |
 
-### Key observation
+### Key observation: thinking-block preservation isn't a perf tweak — it's a capability unlock
 
-vLLM's `AnthropicServingMessages` doesn't strip the qwen3 `<think>` block. It promotes it to a first-class `thinking` content block alongside any text the model emits. That means moving from LiteLLM to direct vLLM is **strictly more capable** for our stack — LiteLLM didn't preserve Qwen3 thinking blocks in Anthropic format at all.
+vLLM's `AnthropicServingMessages` doesn't strip the qwen3 `<think>` block. It promotes it to a first-class `thinking` content block (with a synthesised `signature` for tamper-detection) alongside any text the model emits. LiteLLM dropped these entirely. The implications go well past raw tok/s — single-shot stateless calls see no speed change, but everything compound improves.
 
-Performance implication: Claude Code resends the assistant turn (including the `thinking` block + its `signature`) on every follow-up. With `--enable-prefix-caching` already on, the prefill for the thinking text is a cache hit instead of a re-derivation. Over a 10-turn ticket session, where thinking is ~30-60% of an assistant turn's output for non-trivial requests, the cumulative cache reuse is non-trivial. This is **multi-turn KV reuse**, not raw tok/s — single-shot stateless calls see no speed change.
+**1. Multi-turn plan coherence.** Qwen3's thinking trace contains the model's plan, rejected alternatives, and rationale. With it stripped, Turn N+1 sees only "model called Bash, then Read" — no record of *why*. With it preserved, the model carries its own commitment forward. Concrete example: worker session for "find and fix auth bug." Turn 1's thinking says *"grep handler → read file → look at tests; bug is probably in token validation, not entry point."* Turn 5, after several tool calls, the model still sees that ruling-out. Without thinking blocks, by Turn 5 the model is wandering — re-checking the entry point, re-reading files. This is the dynamic behind the kind of wall-time death-spirals captured in WOR-322's 76-min postmortem.
+
+**2. Prefix-cache reuse on every follow-up turn.** vLLM's prefix cache is keyed on the exact token prefix. Claude Code resends the full assistant turn each round-trip:
+- LiteLLM stack: assistant turn = answer only → cache key on Turn 2 omits the thinking text; if Turn 1 generated thinking, those tokens were computed, dropped, then have to be re-prefilled (or the model behaves differently because it lacks them).
+- Direct vLLM stack: assistant turn = thinking + answer → Turn 2 prefill is a cache hit on everything before the new user message.
+
+Rough order of magnitude: Qwen3 thinking on a non-trivial coding task is empirically 1-3K tokens. At our aggregate ~1000 tok/s under 8 concurrent workers, re-prefilling 2K tokens ≈ 2s × ~10 turns per ticket × 20 tickets per overnight run = minutes-to-~10-minutes saved per overnight batch. Caveat: napkin arithmetic; WOR-345 / WOR-346 (spec-decoding spikes) are the right place to measure properly.
+
+**3. Tool-use chain stability.** Anthropic's `signature` field exists *because* extended thinking is meant to be passed back across tool-use turns. Tool-use behavior on a 10-call chain is qualitatively different when the model can see its own plan vs. having to re-derive each turn. We get this for free post-migration; it was unreachable through LiteLLM.
+
+**4. Thinking tokens become a measurable routing signal — unblocks Watcher v3 routing redesign.** With LiteLLM stripping thinking we couldn't measure how much the model thought per ticket. Post-migration, `metrics.py` can capture thinking-token count as a separate column from output-token count, enabling:
+- *"This ticket needed 3000 thinking tokens — harder than the manifest's `effort=medium` claimed; flag for promotion."*
+- *"This category averages 200 thinking tokens — set `effort=low` and skip thinking via budget."*
+- A real input to WOR-289 (Qwen thinking-mode tax spike) — today the tax is unmeasured because the tokens are invisible in the metrics DB.
+
+This is a direct prerequisite for the routing-by-effort half of WOR-298.
+
+**5. Richer post-mortems and improvement-log signal.** When a ticket fails, the thinking trace is by far the most diagnostic artifact. Without it: *"model produced wrong code."* With it: *"model considered the right approach, rejected it because of false assumption B."* The improvement-log workflow (WOR-254) and any future eval framework get dramatically richer signal. Cloud escalations can include the thinking trace as context — the cloud LLM lands knowing exactly where the local model went off the rails, instead of starting from the broken artifact.
+
+**6. Thinking-budget control becomes possible.** Anthropic's API supports `thinking: {type: "enabled", budget_tokens: N}` to cap reasoning per request. Today this knob is dead because LiteLLM ate the output anyway. After WOR-368, the routing layer can set thinking budget per ticket: `effort=low` → budget=0 (fast), `effort=high` → budget=8000 (deliberate). A real performance dial we couldn't pull before.
+
+**Bottom line:** preservation isn't a "performance feature" — it's the precondition for treating Qwen3 as an extended-thinking model in the Anthropic sense, which unblocks routing-by-effort, real cost accounting, multi-turn agentic stability, and richer post-mortems. Worth a small bench task once WOR-368 lands: same overnight epic, count thinking tokens per ticket, measure prefix-cache hit rate before vs. after.
 
 ## Decision criteria
 
