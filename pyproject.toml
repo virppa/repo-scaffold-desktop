@@ -20,6 +20,11 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 
+[tool.ruff.lint.per-file-ignores]
+# Long string literals are intentional in batch-generation scripts that
+# define ticket manifest content as data — splitting them would hurt readability.
+"scripts/generate_overnight_manifests.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
