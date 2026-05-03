@@ -93,7 +93,7 @@ Module responsibilities:
 - `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract; includes `effort` (low/medium/high/xhigh/max) and 7 taxonomy fields (`change_type`, `reasoning_demand`, `scope_clarity`, `constraint_density`, `ac_specificity`, `tech_stack`, `raw_extensions`) populated at /start-ticket plan time
 - `escalation_policy.py` — `EscalationPolicy` Pydantic model: loads `config/escalation_policy.toml`, classifies result-artifact flags and Sonar findings into watcher actions
 - `linear_client.py` — thin Linear GraphQL client (stdlib `urllib` only, no third-party HTTP deps); requires `LINEAR_API_KEY` env var
-- `metrics.py` — SQLite-backed store for per-ticket cost and execution metrics; watcher is sole writer, workers emit JSON result files only. Tables: `ticket_metrics` (per-ticket summary, includes 7 taxonomy + cost columns), `ticket_run_log` (per-attempt records for retry analysis), `check_run_log` (per-check timing/outcome), `rework_events`
+- `metrics.py` — SQLite-backed store for per-ticket cost and execution metrics; watcher is sole writer, workers emit JSON result files only. Tables: `ticket_metrics` (per-ticket summary, includes 7 taxonomy + cost columns), `ticket_run_log` (per-attempt records for retry analysis), `check_run_log` (per-check timing/outcome)
 - `watcher/` — watcher subpackage (subpackage boundary, not flat files):
   - `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
   - `watcher_dispatch.py` — extracted ticket start logic: `start_ticket` module function plus thin class wrappers
@@ -103,10 +103,36 @@ Module responsibilities:
   - `watcher_subprocess.py` — worker subprocess lifecycle: `launch_worker`, `run_checks`, `fetch_sonar_findings`, `create_pr`, `build_snippet_tool_restrictions`
   - `watcher_types.py` — constants, `LinearClientProtocol`, `ActiveWorker` dataclass, `is_watcher_running`, `_to_metrics_mode`
   - `watcher_worktrees.py` — git worktree lifecycle: `create_worktree`, `rebase_worktree_from_base`, `copy_manifest_to_worktree`, `preserve_worker_artifacts`, `cleanup_worktree`, `cleanup_orphaned_worktrees`, `backup_plan_files`, `restore_plan_files`, `write_worker_pytest_config`
-- `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records (`bench.db`); mirrors `metrics.py` structure but stores hardware/timing/quality columns per run
+- `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records; shares the same `app.db` file as `metrics.py` (separate `bench_run` table); stores hardware/timing/quality columns per run
 - `main.py` — PySide6 `QApplication` entry point
 
 Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.
+
+### Schema philosophy
+
+One SQLite file. No gold tables, no marts, no star schemas.
+
+`app.db` holds everything: ticket metrics, run logs, check logs, benchmark runs.
+Each domain has its own table. There are no cross-table foreign keys, no views,
+no materialized summaries. If you need a join, write a query — don't build a
+pipeline to maintain it.
+
+**Bronze/Silver is implicit.** Raw rows are the source of truth. Aggregations
+(epic summaries, cost rollups) are computed on read via SQL queries in the
+store class. They are never persisted as separate tables. If a query is run
+frequently enough to warrant caching, add it as a method — not a table.
+
+**No schema evolution beyond column additions.** ALTER TABLE ADD COLUMN is the
+only migration strategy. Never drop columns, rename tables, or restructure rows.
+The `_migrate()` method in each store class checks `PRAGMA table_info()` and
+adds what's missing. Old columns stay forever.
+
+**One file, separate tables.** `metrics.py` owns `ticket_metrics`,
+`ticket_run_log`, `check_run_log`. `bench_store.py` owns `bench_run`. Both
+write to the same `app.db` path. No module-level coupling between the two —
+they share a file, not an import. The `.importlinter` contract
+`bench-store-not-in-watcher` remains valid: file-level coupling is fine;
+module-level imports between `metrics` and `bench_store` are not.
 
 ---
 

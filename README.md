@@ -86,7 +86,7 @@ Module responsibilities:
 - `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract; carries `effort` and 7 ticket taxonomy fields
 - `linear_client.py` — thin Linear GraphQL client (stdlib `urllib` only); requires `LINEAR_API_KEY`
 - `metrics.py` — SQLite-backed per-ticket cost and execution metrics; tables `ticket_metrics`, `ticket_run_log`, `check_run_log`, `rework_events`
-- `bench_store.py` — SQLite-backed benchmark run records store (`bench.db`)
+- `bench_store.py` — SQLite-backed benchmark run records store (shares `app.db` with `metrics.py`)
 - `escalation_policy.py` — loads `config/escalation_policy.toml`, classifies failures into watcher actions
 - `watcher/` — orchestrator subpackage (`app/core/watcher/`):
   - `watcher.py` — main loop; polls Linear, delegates dispatch

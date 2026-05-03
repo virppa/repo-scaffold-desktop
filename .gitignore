@@ -71,6 +71,8 @@ scripts/bench/fixtures/
 # Benchmark results DB (local data, not committed)
 bench_results.db
 
+# Unified metrics + bench DB (local data, not committed)
+app.db
+
 # Benchmark config backups
 config/*.toml.bak
-bench.db
