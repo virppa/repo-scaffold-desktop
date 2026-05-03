@@ -1,5 +1,8 @@
 from unittest.mock import patch
 
+import pytest
+from keyring.errors import KeyringError
+
 import app.core.credentials as cred
 
 SERVICE = "repo-scaffold-desktop"
@@ -68,3 +71,69 @@ def test_delete_token_ignores_keyring_errors():
     with patch.object(cred, "keyring", create=True) as kr:
         kr.delete_password.side_effect = NoKeyringError("no keyring")
         cred.delete_token()  # should not raise
+
+
+def test_delete_token_ignores_generic_keyring_error():
+    with patch.object(cred, "keyring", create=True) as kr:
+        kr.delete_password.side_effect = KeyringError("generic keyring failure")
+        cred.delete_token()  # should not raise
+
+
+def test_delete_token_ignores_nonexistent_password():
+    from keyring.errors import PasswordDeleteError
+
+    with patch.object(cred, "keyring", create=True) as kr:
+        kr.delete_password.side_effect = PasswordDeleteError("password does not exist")
+        cred.delete_token()  # should not raise
+
+
+def test_save_token_propagates_keyring_error():
+    with patch.object(cred, "keyring", create=True) as kr:
+        kr.set_password.side_effect = KeyringError("keyring unavailable")
+        with pytest.raises(KeyringError):
+            cred.save_token("ghp_test")
+
+
+def test_save_token_empty_string():
+    with patch.object(cred, "keyring", create=True) as kr:
+        cred.save_token("")
+        kr.set_password.assert_called_once_with(SERVICE, ACCOUNT, "")
+
+
+def test_get_token_empty_string_from_keyring_falls_back_to_env():
+    with patch.object(cred, "keyring", create=True) as kr:
+        kr.get_password.return_value = ""
+        with patch.dict("os.environ", {"GITHUB_TOKEN": "ghp_from_env"}):
+            result = cred.get_token()
+    assert result == "ghp_from_env"
+
+
+def test_get_token_empty_string_from_keyring_no_env():
+    with patch.object(cred, "keyring", create=True) as kr:
+        kr.get_password.return_value = ""
+        with patch.dict("os.environ", {}, clear=True):
+            result = cred.get_token()
+    assert result is None
+
+
+def test_get_token_bytes_from_keyring():
+    with patch.object(cred, "keyring", create=True) as kr:
+        kr.get_password.return_value = b"ghp_bytes_token"
+        result = cred.get_token()
+    # str(bytes) produces repr-style string, not decoded value
+    assert result == "b'ghp_bytes_token'"
+
+
+def test_get_token_whitespace_only_from_keyring():
+    with patch.object(cred, "keyring", create=True) as kr:
+        kr.get_password.return_value = "   "
+        result = cred.get_token()
+    assert result == "   "
+
+
+def test_get_token_empty_github_token_env():
+    with patch.object(cred, "keyring", create=True) as kr:
+        kr.get_password.return_value = None
+        with patch.dict("os.environ", {"GITHUB_TOKEN": ""}):
+            result = cred.get_token()
+    assert result == ""
