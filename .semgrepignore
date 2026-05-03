@@ -6,3 +6,7 @@ app/core/linear_client.py
 scripts/bench/drivers/ollama.py
 scripts/bench/drivers/vllm.py
 scripts/bench/lifecycle/ollama_manager.py
+
+# Spike scripts hit localhost-only endpoints (vLLM :8000, LiteLLM :8082).
+# No user input flows in. Same precedent as scripts/bench/drivers/.
+scripts/spikes/
