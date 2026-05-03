@@ -344,6 +344,73 @@ def create_github_repo(
     return clone_url
 
 
+def delete_github_repo(repo_full_name: str) -> None:
+    """Best-effort delete of a GitHub repository.
+
+    **Endpoint:** ``DELETE https://api.github.com/repos/{owner}/{repo}``
+
+    **Auth model:** Bearer token obtained from :func:`app.core.credentials.get_token`.
+
+    **Failure semantics:** Logs a warning to stderr on failure — this is a
+    best-effort cleanup function and never raises.
+
+    Args:
+        repo_full_name: Repository owner and name in ``owner/repo`` format.
+
+    Example:
+        >>> delete_github_repo("testuser/myrepo")  # doctest: +SKIP
+    """
+    # Validate full_name format
+    if "/" not in repo_full_name or repo_full_name.count("/") != 1:
+        print(
+            f"Warning: cannot delete repo {repo_full_name!r} — "
+            f"invalid format (expected owner/repo)",
+            file=sys.stderr,
+        )
+        return
+
+    owner, repo = repo_full_name.split("/")
+
+    token = get_token()
+    if token is None:
+        print(
+            f"Warning: cannot delete repo {repo_full_name!r} — "
+            "no GitHub token configured",
+            file=sys.stderr,
+        )
+        return
+
+    url = f"https://api.github.com/repos/{owner}/{repo}"
+    req = urllib.request.Request(  # nosec B310
+        url,
+        method="DELETE",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = json.loads(exc.read()).get("message", str(exc))
+        except (OSError, ValueError):  # noqa: BLE001
+            err_body = str(exc)
+        print(
+            f"Warning: could not delete repo {repo_full_name!r} ({exc.code}): "
+            f"{err_body}",
+            file=sys.stderr,
+        )
+    except OSError as exc:
+        print(
+            f"Warning: could not delete repo {repo_full_name!r}: {exc}",
+            file=sys.stderr,
+        )
+
+
 # ── Topic maps ─────────────────────────────────────────────────────────────────
 
 _TOPICS_BY_PRESET: dict[str, list[str]] = {

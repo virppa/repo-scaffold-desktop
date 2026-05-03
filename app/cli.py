@@ -14,8 +14,10 @@ from app.core.credentials import cli_delete_token, save_token
 from app.core.generator import generate
 from app.core.metrics import MetricsStore
 from app.core.post_setup import (
+    _parse_repo_full_name,
     configure_github_repo,
     create_github_repo,
+    delete_github_repo,
     fetch_skills,
     run_git_init,
     run_initial_push,
@@ -113,6 +115,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     gen.add_argument(
         "--git-push", action="store_true", help="Push initial commit to remote."
+    )
+    gen.add_argument(
+        "--no-rollback-on-failure",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip rolling back a GitHub repo when configure or push fails. "
+            "Without this flag, an orphaned repo is deleted on failure."
+        ),
     )
     gen.add_argument(
         "--remote-url",
@@ -407,12 +418,6 @@ def _run_github_create(config: RepoConfig, args: argparse.Namespace) -> str | No
         private=github_private,
     )
     print(f"✓ Created GitHub repo: {clone_url}")
-    repo_full_name = clone_url.replace("https://github.com/", "").rstrip("/")
-    try:
-        configure_github_repo(repo_full_name, config.preset, config.include_ci)
-        print("✓ Configured GitHub repository settings")
-    except RuntimeError as exc:
-        print(f"Warning: {exc}", file=sys.stderr)
     return clone_url
 
 
@@ -455,6 +460,21 @@ def _run_generate(args: argparse.Namespace) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
+    repo_full_name: str | None = None
+    if clone_url is not None:
+        repo_full_name = _parse_repo_full_name(clone_url)
+
+    rollback = not args.no_rollback_on_failure
+    if repo_full_name is not None and clone_url is not None:
+        try:
+            configure_github_repo(repo_full_name, config.preset, config.include_ci)
+            print("✓ Configured GitHub repository settings")
+        except RuntimeError as exc:
+            if rollback:
+                delete_github_repo(repo_full_name)
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     if args.git_push:
         push_url: str | None = clone_url if clone_url is not None else args.remote_url
         if push_url is None:
@@ -463,6 +483,8 @@ def _run_generate(args: argparse.Namespace) -> int:
         try:
             _run_initial_push(args.output, push_url)
         except RuntimeError as exc:
+            if rollback and repo_full_name is not None:
+                delete_github_repo(repo_full_name)
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
