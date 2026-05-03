@@ -239,7 +239,7 @@ class Watcher:
             key = worker.ticket_id
 
             if key in self._heartbeat:
-                last_elapsed, last_tick = self._heartbeat[key]
+                _, last_tick = self._heartbeat[key]
                 # Emit when we cross a new 30-second boundary
                 new_tick = int(elapsed / 30)
                 if new_tick <= last_tick:
