@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     notes                 TEXT,
     effort                TEXT,
     compact_duration_ms   INTEGER,
+    api_retry_count       INTEGER,
     recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
@@ -205,6 +206,13 @@ class TicketMetrics(BaseModel):
             "Cumulative ms spent on context compaction during the session "
             "(WOR-358). Sum of compact_metadata.duration_ms across all "
             "compact_boundary system events."
+        ),
+    )
+    api_retry_count: int | None = Field(
+        default=None,
+        description=(
+            "Count of system/api_retry events (WOR-360) — Claude Code's "
+            "transient backend retries. Backend-stability proxy."
         ),
     )
 
@@ -405,6 +413,10 @@ class MetricsStore:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN compact_duration_ms INTEGER"
             )
+        if "api_retry_count" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN api_retry_count INTEGER"
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -433,7 +445,7 @@ class MetricsStore:
                     change_type, reasoning_demand, scope_clarity,
                     constraint_density, ac_specificity, tech_stack, raw_extensions,
                     waste_score, waste_breakdown_json, tags, notes, effort,
-                    compact_duration_ms
+                    compact_duration_ms, api_retry_count
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -448,7 +460,7 @@ class MetricsStore:
                     :change_type, :reasoning_demand, :scope_clarity,
                     :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
                     :waste_score, :waste_breakdown_json, :tags, :notes, :effort,
-                    :compact_duration_ms
+                    :compact_duration_ms, :api_retry_count
                 )
                 """,
                 {

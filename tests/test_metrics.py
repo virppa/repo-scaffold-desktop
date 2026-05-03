@@ -223,6 +223,38 @@ class TestCompactDurationColumn:
             store._migrate(conn)
 
 
+class TestApiRetryColumn:
+    """WOR-360: persist Claude Code's internal api_retry count per session."""
+
+    def test_api_retry_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(api_retry_count=6))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.api_retry_count == 6
+
+    def test_api_retry_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.api_retry_count is None
+
+    def test_api_retry_zero_distinct_from_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(api_retry_count=0))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.api_retry_count == 0
+        assert result.api_retry_count is not None
+
+    def test_api_retry_migration_idempotent(self, tmp_path):
+        store = _store(tmp_path)
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
 class TestAdditionalMetrics:
     def test_retry_and_diff_metrics_round_trip(self, tmp_path):
         store = _store(tmp_path)

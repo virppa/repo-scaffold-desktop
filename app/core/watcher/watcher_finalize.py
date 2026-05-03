@@ -25,6 +25,7 @@ from app.core.metrics import (
 
 from .watcher_helpers import (
     _POLICY_FLAGS,
+    _parse_worker_api_retries,
     _parse_worker_usage,
     _read_result_flags,
     resolve_effective_mode,
@@ -203,6 +204,7 @@ def finalize_worker(
     input_tokens, output_tokens, context_compactions, compact_duration_ms = (
         _parse_worker_usage(log_path)
     )
+    api_retry_count = _parse_worker_api_retries(log_path)
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
 
     # Parse git diff --shortstat to populate lines_changed / files_changed.
@@ -327,6 +329,8 @@ def finalize_worker(
             effort=worker.manifest.effort,
             # WOR-358: persist total compaction time for throughput analysis
             compact_duration_ms=compact_duration_ms,
+            # WOR-360: persist Claude Code's internal retry count
+            api_retry_count=api_retry_count,
         )
     )
     metrics.record_run(
