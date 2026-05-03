@@ -17,7 +17,9 @@ from app.core.manifest import ExecutionManifest
 from app.core.metrics import ImplementationMode
 
 _CLAUDE_DIR = ".claude"
+_ARTIFACTS_DIR = "artifacts"
 _PID_FILE = Path(_CLAUDE_DIR) / "watcher.pid"
+_IN_PROGRESS_STATE = "In Progress"
 _LITELLM_PORT = 8082
 _LITELLM_CONFIG = "litellm-local.yaml"
 _LOCAL_MODEL = "claude-sonnet-4-6"
