@@ -321,6 +321,8 @@ def finalize_worker(
             raw_extensions=worker.manifest.raw_extensions,
             waste_score=waste_score,
             waste_breakdown_json=waste_breakdown_json,
+            # WOR-348: persist manifest effort for retro analytics
+            effort=worker.manifest.effort,
         )
     )
     metrics.record_run(
