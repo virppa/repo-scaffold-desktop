@@ -1,0 +1,46 @@
+{
+  "timestamp_utc": "20260503T184030Z",
+  "log_source": ".claude\\artifacts\\wor_322\\worker_wor-322.log",
+  "n_turns_replayed": 2,
+  "max_tokens": 5,
+  "vllm_hit_rate_before": 0.05104164797478285,
+  "vllm_hit_rate_after": 0.05104164797478285,
+  "counters_before": {
+    "vllm:prefix_cache_queries_total": 4952461412.0,
+    "vllm:prefix_cache_hits_total": 252781792.0,
+    "vllm:prompt_tokens_cached_total": 56483008.0
+  },
+  "counters_after": {
+    "vllm:prefix_cache_queries_total": 4952461412.0,
+    "vllm:prefix_cache_hits_total": 252781792.0,
+    "vllm:prompt_tokens_cached_total": 56483008.0
+  },
+  "turns": [
+    {
+      "turn": 2,
+      "n_messages": 4,
+      "input_chars": 3973,
+      "result": {
+        "ok": false,
+        "ttft_s": null,
+        "total_s": 2.0971230000141077,
+        "bytes": 0,
+        "usage": {},
+        "error": "HTTP 400: {\"error\":{\"message\":\"litellm.BadRequestError: Hosted_vllmException - {\\\"error\\\":{\\\"message\\\":\\\"No user query found in messages.\\\",\\\"type\\\":\\\"BadRequestError\\\",\\\"param\\\":null,\\\"code\\\":400}}. Received Model Group=claude-sonnet-4-6\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":"
+      }
+    },
+    {
+      "turn": 3,
+      "n_messages": 6,
+      "input_chars": 25049,
+      "result": {
+        "ok": false,
+        "ttft_s": null,
+        "total_s": 2.3149784000124782,
+        "bytes": 0,
+        "usage": {},
+        "error": "HTTP 400: {\"error\":{\"message\":\"litellm.BadRequestError: Hosted_vllmException - {\\\"error\\\":{\\\"message\\\":\\\"No user query found in messages.\\\",\\\"type\\\":\\\"BadRequestError\\\",\\\"param\\\":null,\\\"code\\\":400}}. Received Model Group=claude-sonnet-4-6\\nAvailable Model Group Fallbacks=None\",\"type\":null,\"param\":null,\"code\":"
+      }
+    }
+  ]
+}
