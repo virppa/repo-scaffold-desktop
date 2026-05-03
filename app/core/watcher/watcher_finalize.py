@@ -242,7 +242,7 @@ def finalize_worker(
     local_tokens: int | None = None
     local_input_tokens: int | None = None
     local_output_tokens: int | None = None
-    local_output_tokens_per_second: float | None = None
+    output_tokens_per_wall_second: float | None = None
     local_model_str: str | None = None
     if eff == "local":
         local_tokens = (
@@ -254,7 +254,7 @@ def finalize_worker(
         local_output_tokens = output_tokens
         local_model_str = _LOCAL_MODEL
         if output_tokens is not None and wall_time and wall_time > 0:
-            local_output_tokens_per_second = output_tokens / wall_time
+            output_tokens_per_wall_second = output_tokens / wall_time
 
     # Compute waste score from the worker log (WOR-277).
     waste_report = compute_waste_score(log_path)
@@ -300,7 +300,7 @@ def finalize_worker(
             local_output_tokens=local_output_tokens,
             local_tokens=local_tokens,
             local_wall_time=wall_time,
-            local_output_tokens_per_second=local_output_tokens_per_second,
+            output_tokens_per_wall_second=output_tokens_per_wall_second,
             escalated_to_cloud=escalated,
             outcome=outcome,
             retry_count=worker.retry_count,
@@ -335,7 +335,7 @@ def finalize_worker(
             wall_time_s=wall_time,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            output_tok_per_s=local_output_tokens_per_second,
+            output_tok_per_s=output_tokens_per_wall_second,
             context_compactions=context_compactions,
         )
     )

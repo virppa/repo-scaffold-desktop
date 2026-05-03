@@ -37,7 +37,7 @@ def _parse_worker_usage(
     events (WOR-357).
 
     Assistant-turn deltas are summed so that downstream metrics
-    (``local_output_tokens``, ``local_output_tokens_per_second``) reflect the
+    (``local_output_tokens``, ``output_tokens_per_wall_second``) reflect the
     true token volume of a session.
 
     *context_compactions* is the count of ``compact_boundary`` system events

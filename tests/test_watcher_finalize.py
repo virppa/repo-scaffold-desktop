@@ -1195,7 +1195,7 @@ def test_finalize_worker_writes_separate_token_fields(tmp_path: Path) -> None:
     assert m.local_input_tokens == 15000
     assert m.local_output_tokens == 600
     assert m.local_tokens == 15600  # backward-compat sum
-    assert m.local_output_tokens_per_second == pytest.approx(60.0)  # 600/10
+    assert m.output_tokens_per_wall_second == pytest.approx(60.0)  # 600/10
 
 
 def test_finalize_worker_token_fields_none_when_no_log(
@@ -1227,7 +1227,7 @@ def test_finalize_worker_token_fields_none_when_no_log(
     assert m.local_input_tokens is None
     assert m.local_output_tokens is None
     assert m.local_tokens is None
-    assert m.local_output_tokens_per_second is None
+    assert m.output_tokens_per_wall_second is None
 
 
 # ---------------------------------------------------------------------------

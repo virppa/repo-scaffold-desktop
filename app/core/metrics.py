@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     local_output_tokens   INTEGER,
     local_tokens          INTEGER,
     local_wall_time       REAL,
-    local_output_tokens_per_second REAL,
+    output_tokens_per_wall_second REAL,
     escalated_to_cloud    INTEGER NOT NULL DEFAULT 0,
     outcome               TEXT NOT NULL,
     retry_count           INTEGER NOT NULL DEFAULT 0,
@@ -114,8 +114,15 @@ class TicketMetrics(BaseModel):
     local_input_tokens: int | None = None
     local_output_tokens: int | None = None
     local_tokens: int | None = None
-    local_output_tokens_per_second: float | None = Field(
-        default=None, description="output_tokens / wall_time when both present"
+    output_tokens_per_wall_second: float | None = Field(
+        default=None,
+        description=(
+            "output_tokens / total local_wall_time. WOR-361: this is NOT decode "
+            "throughput — wall_time includes prefill, tool exec, hooks, and "
+            "compaction. For real decode rate, query vLLM /metrics directly. "
+            "Useful only for 'did this ticket take a long time relative to its "
+            "output' style questions."
+        ),
     )
     local_wall_time: float | None = Field(default=None, description="Seconds")
     escalated_to_cloud: bool = False
@@ -338,11 +345,22 @@ class MetricsStore:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN local_output_tokens INTEGER"
             )
-        if "local_output_tokens_per_second" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics "
-                "ADD COLUMN local_output_tokens_per_second REAL"
-            )
+        # WOR-361: rename misleading column. Idempotent across states:
+        # - fresh DB: CREATE TABLE already used the new name
+        # - already-migrated: new name exists, skip
+        # - pre-rename DB: rename old → new
+        # - very old DB without either: ADD COLUMN with new name
+        if "output_tokens_per_wall_second" not in existing:
+            if "local_output_tokens_per_second" in existing:
+                conn.execute(
+                    "ALTER TABLE ticket_metrics RENAME COLUMN "
+                    "local_output_tokens_per_second TO output_tokens_per_wall_second"
+                )
+            else:
+                conn.execute(
+                    "ALTER TABLE ticket_metrics "
+                    "ADD COLUMN output_tokens_per_wall_second REAL"
+                )
         # WOR-262 taxonomy columns
         if "change_type" not in existing:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN change_type TEXT")
@@ -394,7 +412,7 @@ class MetricsStore:
                     ticket_id, project_id, epic_id, implementation_mode,
                     cloud_used, cloud_model, cloud_tokens, cloud_cost_estimate,
                     local_used, local_model, local_input_tokens, local_output_tokens,
-                    local_tokens, local_wall_time, local_output_tokens_per_second,
+                    local_tokens, local_wall_time, output_tokens_per_wall_second,
                     escalated_to_cloud, outcome,
                     retry_count, check_failures_json,
                     lines_changed, files_changed,
@@ -408,7 +426,7 @@ class MetricsStore:
                     :local_used, :local_model,
                     :local_input_tokens, :local_output_tokens,
                     :local_tokens, :local_wall_time,
-                    :local_output_tokens_per_second,
+                    :output_tokens_per_wall_second,
                     :escalated_to_cloud, :outcome,
                     :retry_count, :check_failures_json,
                     :lines_changed, :files_changed,
