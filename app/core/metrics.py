@@ -618,16 +618,22 @@ def compute_tags(
     local_wall_time = ticket_metrics_row.local_wall_time
 
     # --- Anomaly detection rules (4) ---
+    # Type-strict guards (isinstance vs `is not None`) so the function is
+    # robust to non-numeric inputs (e.g. MagicMock leaking through tests that
+    # mock `metrics.get_by_ticket`). Without this guard, comparisons against
+    # non-numeric values raise TypeError and break unrelated tests.
 
     # zero_tokens_high_wall_time: local worker burned wall time with almost no
     # tokens — likely a failed run that still consumed time (2026-05-03 retro).
-    if local_tokens is not None and local_wall_time is not None:
+    if isinstance(local_tokens, (int, float)) and isinstance(
+        local_wall_time, (int, float)
+    ):
         if local_tokens < 100_000 and local_wall_time > 1_800:
             tags.append("zero_tokens_high_wall_time")
 
     # no_diff_against_base: the worker reported failure but produced no diff —
     # it never got far enough to write code (2026-05-03 retro).
-    if outcome == "failure" and lines_changed is not None and lines_changed == 0:
+    if outcome == "failure" and isinstance(lines_changed, int) and lines_changed == 0:
         tags.append("no_diff_against_base")
 
     # success_outcome_state_mismatch: result.json says success but metrics
@@ -651,11 +657,11 @@ def compute_tags(
         tags.append("escalated")
 
     # high_waste: the waste score exceeds the 80 threshold.
-    if waste_score is not None and waste_score > 80:
+    if isinstance(waste_score, (int, float)) and waste_score > 80:
         tags.append("high_waste")
 
     # rework: the ticket required at least one retry.
-    if retry_count > 0:
+    if isinstance(retry_count, int) and retry_count > 0:
         tags.append("rework")
 
     return tags
