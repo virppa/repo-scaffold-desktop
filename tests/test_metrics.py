@@ -190,6 +190,39 @@ class TestEffortColumn:
             store._migrate(conn)
 
 
+class TestCompactDurationColumn:
+    """WOR-358: persist total compaction time per session."""
+
+    def test_compact_duration_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket(compact_duration_ms=88463))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.compact_duration_ms == 88463
+
+    def test_compact_duration_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.compact_duration_ms is None
+
+    def test_compact_duration_zero_distinct_from_none(self, tmp_path):
+        """Zero (no compactions) is a valid value, distinct from None (unknown)."""
+        store = _store(tmp_path)
+        store.record(_ticket(compact_duration_ms=0))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.compact_duration_ms == 0
+        assert result.compact_duration_ms is not None
+
+    def test_compact_duration_migration_idempotent(self, tmp_path):
+        store = _store(tmp_path)
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
 class TestAdditionalMetrics:
     def test_retry_and_diff_metrics_round_trip(self, tmp_path):
         store = _store(tmp_path)
