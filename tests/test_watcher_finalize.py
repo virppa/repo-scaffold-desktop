@@ -234,12 +234,16 @@ def test_finalize_worker_passes_usage_to_metrics(tmp_path: Path) -> None:
     log_dir = tmp_path / ".claude"
     log_dir.mkdir(parents=True)
     log_file = log_dir / "worker_wor-10.log"
+    # WOR-357: context_compactions is now counted from system/compact_boundary
+    # events, not from the result event's (always-NULL) field. Include 5
+    # such events so the assertion exercises the new counting path.
+    boundary = json.dumps({"type": "system", "subtype": "compact_boundary"}) + "\n"
     log_file.write_text(
-        json.dumps(
+        boundary * 5
+        + json.dumps(
             {
                 "type": "result",
                 "usage": {"input_tokens": 2000, "output_tokens": 400},
-                "context_compactions": 5,
             }
         )
         + "\n",
