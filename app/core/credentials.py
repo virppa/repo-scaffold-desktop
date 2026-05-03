@@ -1,5 +1,6 @@
 import os
 import sys
+from getpass import getpass
 
 import keyring
 from keyring.errors import KeyringError, NoKeyringError
@@ -39,10 +40,7 @@ def delete_token() -> None:
 def cli_set_token() -> int:
     """Prompt for a GitHub token via getpass and store it."""
     try:
-        token = __import__("getpass", fromlist=["getpass"]).getpass(
-            "GitHub token: ",
-            stream=sys.stderr,
-        )
+        token = getpass("GitHub token: ", stream=sys.stderr)
     except (EOFError, KeyboardInterrupt):
         print(file=sys.stderr)
         return 1
