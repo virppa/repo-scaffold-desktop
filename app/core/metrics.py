@@ -695,6 +695,7 @@ def compute_tags(
     retry_count = ticket_metrics_row.retry_count
     local_tokens = ticket_metrics_row.local_tokens
     local_wall_time = ticket_metrics_row.local_wall_time
+    api_retry_count = ticket_metrics_row.api_retry_count
 
     # --- Anomaly detection rules (4) ---
     # Type-strict guards (isinstance vs `is not None`) so the function is
@@ -742,6 +743,13 @@ def compute_tags(
     # rework: the ticket required at least one retry.
     if isinstance(retry_count, int) and retry_count > 0:
         tags.append("rework")
+
+    # backend_unstable: high count of Claude Code internal api_retry events.
+    # Threshold 6 calibrated on 2026-05-04 backfill — Pearson r=0.665 vs
+    # wall_time, with the 6+ bucket running 4× slower than the no-retry
+    # baseline (28 min vs 121 min mean). WOR-366.
+    if isinstance(api_retry_count, int) and api_retry_count >= 6:
+        tags.append("backend_unstable")
 
     return tags
 
