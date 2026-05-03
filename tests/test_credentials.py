@@ -137,3 +137,35 @@ def test_get_token_empty_github_token_env():
         with patch.dict("os.environ", {"GITHUB_TOKEN": ""}):
             result = cred.get_token()
     assert result == ""
+
+
+def test_cli_set_token_success(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch("app.core.credentials.getpass", return_value="ghp_live"):
+        with patch.object(cred, "save_token") as mock_save:
+            result = cred.cli_set_token()
+    assert result == 0
+    mock_save.assert_called_once_with("ghp_live")
+    assert "Done." in capsys.readouterr().err
+
+
+def test_cli_set_token_empty_input(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch("app.core.credentials.getpass", return_value=""):
+        result = cred.cli_set_token()
+    assert result == 1
+    assert "empty token" in capsys.readouterr().err
+
+
+def test_cli_set_token_eof(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch("app.core.credentials.getpass", side_effect=EOFError):
+        result = cred.cli_set_token()
+    assert result == 1
+
+
+def test_cli_set_token_keyring_error(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch("app.core.credentials.getpass", return_value="ghp_live"):
+        with patch.object(
+            cred, "save_token", side_effect=KeyringError("keyring unavailable")
+        ):
+            result = cred.cli_set_token()
+    assert result == 1
+    assert "unable to store token" in capsys.readouterr().err
