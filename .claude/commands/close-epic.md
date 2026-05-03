@@ -61,10 +61,20 @@ git pull origin epic/<epic-slug>
 
 Thresholds anchored to cloud API token cost and single-responsibility for parallel worker isolation (not local model context — vLLM FP8 throughput is flat 16K→262K, so file size has no throughput impact). See `docs/spikes/vllm-context-thresholds.md`.
 
+**Production code (`app/**/*.py`):**
+
 ```
 ADVISORY_LOC = 500    # worth planning a split
 RECOMMEND_LOC = 700   # real split needed soon; include recommendation in epic PR description
 BLOCK_LOC = 1200      # cloud token cost + mixed responsibility — split before this PR
+```
+
+**Test code (`tests/**/*.py`):** thresholds are ~1.7× higher because the original justification (cloud token cost when LLM reads the file + parallel-worker single-responsibility) applies less to test files — LLMs read tests less often, parallel workers don't conflict on test files the way they do on production modules.
+
+```
+ADVISORY_LOC = 800    # consider splitting by feature/class
+RECOMMEND_LOC = 1200  # real split needed; include recommendation in PR description
+BLOCK_LOC = 2000      # split before this PR
 ```
 
 Check the LOC of every `.py` file modified across the full epic diff (all sub-tickets combined):
@@ -90,14 +100,16 @@ Warning: <filename> is <N> LOC (≥ 700 — recommend). Split soon; include a re
 ```
 Continue — but flag the file in the PR body.
 
-**Block (≥ 1,200 LOC):**
+**Block (production ≥ 1,200 LOC; test ≥ 2,000 LOC):**
 ```
-BLOCKED: <filename> is <N> LOC (≥ 1,200 — block threshold).
+BLOCKED: <filename> is <N> LOC (≥ <threshold> — block threshold for <production|test> code).
 Cloud token cost and mixed responsibility — split <filename> before creating the epic → main PR.
 ```
 **Stop here. Do not proceed to step 3 or create the PR.** Ask the user how to proceed.
 
 This block is unconditional — it applies regardless of implementation mode.
+
+**Apply the right threshold per file path:** if the file path starts with `tests/`, use the test-code thresholds (800/1200/2000); otherwise use the production-code thresholds (500/700/1200).
 
 ### 2.6. Import Linter review
 
