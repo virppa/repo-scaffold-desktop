@@ -196,6 +196,13 @@ Each ticket follows these phases. Use the corresponding slash command to enter e
                           # Linear: epic → EpicReadyForCloudReview → MainPRReady → Done
 ```
 
+### Bulk skills
+
+Two skills operate on epics rather than single tickets:
+
+- `/start-epic WOR-NNN` — batch-plan all groomed sub-tickets of an existing epic, file-conflict detection, queue Batch 1 as ReadyForLocal and Batch 2+ as WaitingForDeps. Use when an epic has 3-8 sub-tickets that need to be queued for the watcher.
+- `/prepare-overnight-epic` — auto-mine 20-30 single-bound parallel-safe candidates from existing Linear backlog + SonarQube findings, create a fire-and-forget mega-epic, queue all as ReadyForLocal. Use to fill the watcher with mechanical fixes for an unattended overnight run. Two operator gates (candidate-list approval + launch confirmation) before any worker dispatches. Per-ticket failures are accepted losses; morning workflow is `/close-epic` → epic→main PR with whatever shipped.
+
 ### Hybrid lifecycle states
 
 Linear workflow states for the hybrid execution model. The watcher daemon uses these as its action triggers:
