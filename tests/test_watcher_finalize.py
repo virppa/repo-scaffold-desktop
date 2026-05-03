@@ -1156,3 +1156,154 @@ def test_finalize_worker_token_fields_none_when_no_log(
     assert m.local_output_tokens is None
     assert m.local_tokens is None
     assert m.local_output_tokens_per_second is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-277 — waste_score wired to metrics
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_waste_score_passed_to_metrics(tmp_path: Path) -> None:
+    """Waste score from the worker log is passed to TicketMetrics."""
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    metrics_mock = MagicMock()
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "worker_wor-10.log"
+    # Write a log with redundant reads to produce a non-zero waste score.
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 1000, "output_tokens": 200},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # Add redundant Read tool_use entries.
+    for _ in range(3):
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"path": "a.py"},
+                    }
+                )
+                + "\n"
+            )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.waste_score is not None
+    assert m.waste_score > 0
+    assert m.waste_breakdown_json is not None
+
+
+def test_finalize_worker_waste_score_none_when_no_log(
+    tmp_path: Path,
+) -> None:
+    """When no worker log exists, waste_score is None."""
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.waste_score is None
+    assert m.waste_breakdown_json is None
+
+
+def test_finalize_worker_waste_warning_logged(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """WARNING is logged when waste score exceeds threshold."""
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    metrics_mock = MagicMock()
+
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "worker_wor-10.log"
+    # Write a log with many redundant reads to produce a high waste score.
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 1000, "output_tokens": 200},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    # 20 redundant reads → 20 * 2 = 40, well above threshold of 60 with other signals.
+    for _ in range(25):
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"path": "a.py"},
+                    }
+                )
+                + "\n"
+            )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_finalize"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    # Should log a WARNING with the ticket ID and waste score.
+    assert any("WOR-10" in msg and "waste" in msg.lower() for msg in caplog.messages)

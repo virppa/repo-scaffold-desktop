@@ -12,7 +12,7 @@ import os
 import subprocess  # nosec B404
 from pathlib import Path
 
-from app.core.escalation_policy import EscalationPolicy
+from app.core.escalation_policy import EscalationPolicy, get_waste_warn_threshold
 from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import MetricsStore, Outcome, TicketMetrics, TicketRunLog
@@ -45,6 +45,7 @@ from .watcher_worktrees import (
     restore_plan_files,
     squash_wip_commits,
 )
+from .worker_waste import compute_waste_score
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +246,28 @@ def finalize_worker(
         local_model_str = _LOCAL_MODEL
         if output_tokens is not None and wall_time and wall_time > 0:
             local_output_tokens_per_second = output_tokens / wall_time
+
+    # Compute waste score from the worker log (WOR-277).
+    waste_report = compute_waste_score(log_path)
+    waste_score: int | None = waste_report.score if waste_report.score > 0 else None
+    waste_breakdown_json: str | None = (
+        json.dumps(waste_report.breakdown) if waste_report.score > 0 else None
+    )
+    if waste_score is not None and waste_score > get_waste_warn_threshold():
+        top_reasons = ", ".join(
+            f"{k}={v}"
+            for k, v in sorted(
+                waste_report.breakdown.items(), key=lambda x: x[1], reverse=True
+            )
+            if v > 0
+        )
+        logger.warning(
+            "High waste score for %s: %d/100 (%s)",
+            worker.ticket_id,
+            waste_score,
+            top_reasons,
+        )
+
     # Derive the first failed check name for TicketRunLog (WOR-261)
     first_failed_check: str | None = (
         str(failed_checks[0]["check"]) if failed_checks else None
@@ -287,6 +310,8 @@ def finalize_worker(
             ac_specificity=worker.manifest.ac_specificity,
             tech_stack=worker.manifest.tech_stack,
             raw_extensions=worker.manifest.raw_extensions,
+            waste_score=waste_score,
+            waste_breakdown_json=waste_breakdown_json,
         )
     )
     metrics.record_run(

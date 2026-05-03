@@ -22,6 +22,11 @@ schema_migration = "human"
 cross_module_refactor = "human"
 auth_payments_touched = "human"
 
+[waste]
+# Waste-score threshold (0-100). When a worker session exceeds this score,
+# the watcher emits a WARNING log line.  Default 60 (clear regression).
+warn_threshold = 60
+
 [sonar]
 # Maps SonarLint/SonarCloud finding severity → action taken by the watcher.
 # fix_locally — local worker retries with the finding in context

@@ -43,6 +43,9 @@ MINIMAL_VALID_TOML = """
     major = "fix_locally"
     minor = "fix_locally"
     info = "fix_locally"
+
+    [waste]
+    warn_threshold = 60
 """
 
 

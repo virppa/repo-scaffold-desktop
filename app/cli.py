@@ -142,6 +142,15 @@ def _build_parser() -> argparse.ArgumentParser:
     metrics_sub = metrics.add_subparsers(dest="metrics_cmd")
     metrics_sub.add_parser("browse", help="Open metrics DB in Datasette browser UI.")
 
+    waste = sub.add_parser(
+        "waste-score",
+        help="Compute and print the waste score for a worker session log.",
+    )
+    waste.add_argument(
+        "ticket_id",
+        help="Ticket ID (e.g. WOR-277).",
+    )
+
     watcher = sub.add_parser(
         "watcher", help="Run the local worker orchestrator daemon."
     )
@@ -491,6 +500,33 @@ def _run_generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_waste_score(args: argparse.Namespace) -> int:
+    from app.core.watcher.worker_waste import compute_waste_score
+
+    # The worker log lives in .claude/ within the repo root.
+    # We search for it relative to the current working directory.
+    ticket_id = args.ticket_id.lower()
+    log_path = Path(".claude") / f"worker_{ticket_id}.log"
+
+    if not log_path.exists():
+        print(
+            f"Error: worker log not found at {log_path}",
+            file=sys.stderr,
+        )
+        return 1
+
+    report = compute_waste_score(log_path)
+    print(f"Ticket: {args.ticket_id}")
+    print(f"Waste score: {report.score}/100")
+    print("Breakdown:")
+    for key, value in sorted(
+        report.breakdown.items(), key=lambda x: x[1], reverse=True
+    ):
+        if value > 0:
+            print(f"  {key}: {value}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     # Ensure the terminal can emit UTF-8 (e.g. ✓); no-op on StringIO (pytest capsys).
@@ -526,6 +562,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "watcher":
         return _run_watcher(args)
+
+    if args.command == "waste-score":
+        return _run_waste_score(args)
 
     return _run_generate(args)
 

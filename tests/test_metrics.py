@@ -410,6 +410,41 @@ class TestMigration:
         assert result.local_output_tokens == 500
 
 
+class TestWasteColumns:
+    """WOR-277: waste_score and waste_breakdown_json columns."""
+
+    def test_waste_score_round_trip(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(
+            _ticket(
+                waste_score=72,
+                waste_breakdown_json='{"redundant_reads": 5, "manual_check_runs": 3}',
+            )
+        )
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.waste_score == 72
+        expected = '{"redundant_reads": 5, "manual_check_runs": 3}'
+        assert result.waste_breakdown_json == expected
+
+    def test_waste_score_defaults_to_none(self, tmp_path):
+        store = _store(tmp_path)
+        store.record(_ticket())
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.waste_score is None
+        assert result.waste_breakdown_json is None
+
+    def test_waste_score_zero_stored(self, tmp_path):
+        """A score of 0 is stored (not treated as None)."""
+        store = _store(tmp_path)
+        store.record(_ticket(waste_score=0, waste_breakdown_json="{}"))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.waste_score == 0
+        assert result.waste_breakdown_json == "{}"
+
+
 def _run_log(**kwargs) -> TicketRunLog:
     defaults: dict = {
         "ticket_id": "WOR-1",

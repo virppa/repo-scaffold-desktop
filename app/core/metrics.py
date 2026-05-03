@@ -85,6 +85,8 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     ac_specificity        INTEGER,
     tech_stack            TEXT,
     raw_extensions        TEXT,
+    waste_score           INTEGER,
+    waste_breakdown_json  TEXT,
     recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
@@ -164,6 +166,14 @@ class TicketMetrics(BaseModel):
     raw_extensions: str | None = Field(
         default=None,
         description="JSON array string of file extensions touched",
+    )
+    waste_score: int | None = Field(
+        default=None,
+        description="0-100 waste score for the worker session",
+    )
+    waste_breakdown_json: str | None = Field(
+        default=None,
+        description="JSON string of per-signal breakdown for dashboard drill-down",
     )
 
 
@@ -336,6 +346,12 @@ class MetricsStore:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN tech_stack TEXT")
         if "raw_extensions" not in existing:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN raw_extensions TEXT")
+        if "waste_score" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN waste_score INTEGER")
+        if "waste_breakdown_json" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN waste_breakdown_json TEXT"
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -362,7 +378,8 @@ class MetricsStore:
                     lines_changed, files_changed,
                     sonar_findings_count, context_compactions,
                     change_type, reasoning_demand, scope_clarity,
-                    constraint_density, ac_specificity, tech_stack, raw_extensions
+                    constraint_density, ac_specificity, tech_stack, raw_extensions,
+                    waste_score, waste_breakdown_json
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -375,7 +392,8 @@ class MetricsStore:
                     :lines_changed, :files_changed,
                     :sonar_findings_count, :context_compactions,
                     :change_type, :reasoning_demand, :scope_clarity,
-                    :constraint_density, :ac_specificity, :tech_stack, :raw_extensions
+                    :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
+                    :waste_score, :waste_breakdown_json
                 )
                 """,
                 {
