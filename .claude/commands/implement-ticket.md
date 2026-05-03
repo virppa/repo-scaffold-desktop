@@ -150,13 +150,43 @@ the PR is created, giving fine-grained retry resume.
 
 ### 4. Run required checks
 
-After implementation, run each command in `required_checks` in order:
+After implementation, run each command in `required_checks` in order. Run them
+**verbatim** as written in the manifest — do NOT scope them down to specific
+files for "speed", because the watcher will run them at the manifest's full
+scope and any regression you missed will fail the ticket (WOR-353).
 
 ```bash
 <check command 1>
 <check command 2>
 ...
 ```
+
+**Pytest scope rule (WOR-353):** When `required_checks` contains `pytest`
+without arguments, run the **full** test suite — not just the test files
+listed in `allowed_paths`. Sibling test files (e.g. `tests/test_X_metrics.py`,
+`tests/test_X_recovery.py`) often import the same module you modified and
+fail when their fixtures don't anticipate your changes.
+
+If you want a fast iteration loop while implementing, you may run
+`pytest <subset>` early — but **always run the unscoped `pytest` from
+`required_checks` once before declaring success**. If it fails, you still
+have the session context to fix it; if you skip it, the watcher catches
+the failure after your session ends and the ticket is marked Blocked.
+
+To proactively widen iteration scope without running the full suite, grep
+for tests importing each modified source module:
+
+```bash
+# Find test files that import any module you modified
+git diff --name-only $BASE_BRANCH...HEAD -- 'app/**/*.py' | while read f; do
+  module="${f%.py}"
+  module_path=$(echo "$module" | sed 's|/|.|g')
+  grep -l "from $module_path" tests/*.py 2>/dev/null
+done | sort -u
+```
+
+Pass that list (plus your scoped tests) to pytest during iteration. The
+final unscoped `pytest` from `required_checks` is still mandatory.
 
 If any required check fails:
 - Record the failure in the result artifact (step 5)
