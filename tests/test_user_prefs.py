@@ -92,3 +92,80 @@ def test_save_blocked_inside_git_repo(tmp_path):
             RuntimeError, match="Refusing to write prefs inside a git repository"
         ):
             PrefsStore.save(UserPreferences())
+
+
+def test_load_empty_json_object(prefs_path):
+    prefs_path.write_text("{}", encoding="utf-8")
+    prefs = PrefsStore.load()
+    assert prefs == UserPreferences()
+
+
+def test_load_binary_corrupt_json(prefs_path):
+    prefs_path.write_bytes(b"\x00\x01\x02\xff\xfe\x80\x81")
+    prefs = PrefsStore.load()
+    assert prefs == UserPreferences()
+
+
+def test_load_deeply_nested_corrupt_json(prefs_path):
+    prefs_path.write_text(
+        '{"author_name": {"nested": {"deep": "data"}}}', encoding="utf-8"
+    )
+    prefs = PrefsStore.load()
+    assert prefs == UserPreferences()
+
+
+def test_save_atomic_write_no_partial_file(prefs_path):
+    prefs = UserPreferences(author_name="AtomicTest")
+    PrefsStore.save(prefs)
+    # After a successful save, the file should exist and be valid JSON
+    assert prefs_path.exists()
+    data = json.loads(prefs_path.read_text(encoding="utf-8"))
+    assert data["author_name"] == "AtomicTest"
+    # No .tmp or partial file should be left behind
+    for suffix in (".tmp", ".bak", ".part", ".new"):
+        partials = list(prefs_path.parent.glob(f"{prefs_path.name}{suffix}*"))
+        assert len(partials) == 0, f"Found unexpected partial file: {partials}"
+
+
+def test_pydantic_validation_rejects_invalid_types_directly():
+    # model_validate raises ValidationError for invalid types
+    # (PrefsStore.load() catches ValueError and returns defaults)
+    with pytest.raises(Exception):
+        UserPreferences.model_validate({"author_name": 12345})
+
+
+def test_pydantic_validation_rejects_invalid_output_dir_directly():
+    with pytest.raises(Exception):
+        UserPreferences.model_validate({"default_output_dir": ["not", "a", "string"]})
+
+
+def test_pydantic_validation_rejects_invalid_preset_directly():
+    with pytest.raises(Exception):
+        UserPreferences.model_validate({"default_preset": 42})
+
+
+def test_load_invalid_type_returns_defaults(prefs_path):
+    # PrefsStore.load() catches ValueError (includes Pydantic ValidationError)
+    # and returns defaults — this is the actual runtime behaviour.
+    prefs_path.write_text(
+        json.dumps({"author_name": 12345}),  # int instead of str
+        encoding="utf-8",
+    )
+    prefs = PrefsStore.load()
+    assert prefs == UserPreferences()
+
+
+def test_load_missing_file_returns_defaults(prefs_path):
+    # Ensure the file does not exist
+    if prefs_path.exists():
+        prefs_path.unlink()
+    prefs = PrefsStore.load()
+    assert prefs == UserPreferences()
+
+
+def test_load_missing_dir_returns_defaults(tmp_path):
+    # Use a path whose parent directory does not exist
+    nonexistent = tmp_path / "does" / "not" / "exist" / "prefs.json"
+    with patch.object(PrefsStore, "get_path", return_value=nonexistent):
+        prefs = PrefsStore.load()
+    assert prefs == UserPreferences()

@@ -12,7 +12,7 @@ import os
 import subprocess  # nosec B404
 from pathlib import Path
 
-from app.core.escalation_policy import EscalationPolicy
+from app.core.escalation_policy import EscalationPolicy, get_waste_warn_threshold
 from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import MetricsStore, Outcome, TicketMetrics, TicketRunLog
@@ -32,6 +32,7 @@ from .watcher_subprocess import (
 from .watcher_tui import TrackedPR
 from .watcher_types import (
     _CLAUDE_DIR,
+    _IN_PROGRESS_STATE,
     _LOCAL_MODEL,
     ActiveWorker,
     LinearClientProtocol,
@@ -44,6 +45,7 @@ from .watcher_worktrees import (
     restore_plan_files,
     squash_wip_commits,
 )
+from .worker_waste import compute_waste_score
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +180,7 @@ def finalize_worker(
     project_id: str,
     tracked_prs: list[TrackedPR] | None = None,
 ) -> Outcome:
-    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, pr_url = (
+    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, _ = (
         _execute_finalization(
             worker,
             returncode,
@@ -213,7 +215,7 @@ def finalize_worker(
         )
         raw_shortstat = (diff_output.stdout or "") + (diff_output.stderr or "")
         lines_changed, files_changed = parse_git_shortstat(raw_shortstat)
-    except (OSError, subprocess.TimeoutExpired, OSError):
+    except (OSError, subprocess.TimeoutExpired):
         lines_changed, files_changed = 0, 0
 
     # Cloud metrics — populated only when eff == "cloud"
@@ -244,6 +246,28 @@ def finalize_worker(
         local_model_str = _LOCAL_MODEL
         if output_tokens is not None and wall_time and wall_time > 0:
             local_output_tokens_per_second = output_tokens / wall_time
+
+    # Compute waste score from the worker log (WOR-277).
+    waste_report = compute_waste_score(log_path)
+    waste_score: int | None = waste_report.score if waste_report.score > 0 else None
+    waste_breakdown_json: str | None = (
+        json.dumps(waste_report.breakdown) if waste_report.score > 0 else None
+    )
+    if waste_score is not None and waste_score > get_waste_warn_threshold():
+        top_reasons = ", ".join(
+            f"{k}={v}"
+            for k, v in sorted(
+                waste_report.breakdown.items(), key=lambda x: x[1], reverse=True
+            )
+            if v > 0
+        )
+        logger.warning(
+            "High waste score for %s: %d/100 (%s)",
+            worker.ticket_id,
+            waste_score,
+            top_reasons,
+        )
+
     # Derive the first failed check name for TicketRunLog (WOR-261)
     first_failed_check: str | None = (
         str(failed_checks[0]["check"]) if failed_checks else None
@@ -286,6 +310,8 @@ def finalize_worker(
             ac_specificity=worker.manifest.ac_specificity,
             tech_stack=worker.manifest.tech_stack,
             raw_extensions=worker.manifest.raw_extensions,
+            waste_score=waste_score,
+            waste_breakdown_json=waste_breakdown_json,
         )
     )
     metrics.record_run(
@@ -365,7 +391,7 @@ def _read_result_status(repo_root: Path, manifest: ExecutionManifest) -> str | N
         return None
     try:
         data = json.loads(raw)
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         return None
     status = data.get("status") if isinstance(data, dict) else None
     return status if isinstance(status, str) else None
@@ -420,7 +446,7 @@ def _execute_finalization(
             escalated = bool(manifest.failure_policy.escalate_to_cloud)
             if escalated:
                 logger.info("Escalating %s to cloud per failure policy", ticket_id)
-                safe_set_state(linear, linear_id, "In Progress", ticket_id)
+                safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
                 _try_post_comment(
                     linear,
                     linear_id,
@@ -447,7 +473,7 @@ def _execute_finalization(
         escalated = bool(manifest.failure_policy.escalate_to_cloud)
         if escalated:
             logger.info("Escalating %s to cloud after check failure", ticket_id)
-            safe_set_state(linear, linear_id, "In Progress", ticket_id)
+            safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
             _try_post_comment(
                 linear,
                 linear_id,
@@ -499,7 +525,7 @@ def _handle_policy_outcome(
     if action == "escalate":
         triggering = next((f for f in _POLICY_FLAGS if flags.get(f)), "unknown")
         logger.info("Escalating %s to cloud (flag=%s)", ticket_id, triggering)
-        safe_set_state(linear, linear_id, "In Progress", ticket_id)
+        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(
             linear,
             linear_id,
@@ -522,10 +548,8 @@ def _handle_policy_outcome(
 
     # fix_locally — check Sonar findings before creating PR
     sonar_findings = fetch_sonar_findings(manifest.worker_branch)
-    if _sonar_requires_escalation(
-        sonar_findings, ticket_id, linear_id, linear, escalation_policy
-    ):
-        safe_set_state(linear, linear_id, "In Progress", ticket_id)
+    if _sonar_requires_escalation(sonar_findings, ticket_id, escalation_policy):
+        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(
             linear,
             linear_id,
@@ -551,8 +575,6 @@ def _handle_policy_outcome(
 def _sonar_requires_escalation(
     sonar_findings: list[str] | None,
     ticket_id: str,
-    linear_id: str,
-    linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
 ) -> bool:
     if not sonar_findings:

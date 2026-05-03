@@ -612,7 +612,7 @@ def _rmtree_force(path: Path) -> None:
 
     def _on_rm_error(func: object, p: str, _exc_info: object) -> None:
         os.chmod(p, stat.S_IWRITE)
-        func(p)  # type: ignore[operator]
+        func(p)  # type: ignore[operator]  # onexc callback: func is Callable[[str, BaseException], None] but typed as object for shutil compatibility
 
     shutil.rmtree(path, onexc=_on_rm_error)
 

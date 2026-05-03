@@ -28,6 +28,8 @@ path and line numbers in the header comment.
 
 Log the snippet count on startup: `"Loading {N} context snippets from manifest."`
 
+**Per-file 2-read cap** — when context snippets are populated, each file may be read at most 2 times per session. The first read is the context snippet from the manifest. Any additional read (via the Read tool or re-reading a snippet) counts against the cap. If you need more context from a file beyond the first 80 lines / 3000 characters, note the missing content in the result artifact rather than re-reading it. This rule prevents context bloat from repeated file reads.
+
 ### 0.1. Inspect last_failure.json for WIP state (WOR-258)
 
 If `.claude/artifacts/<ticket_id_lower>/last_failure.json` exists in the

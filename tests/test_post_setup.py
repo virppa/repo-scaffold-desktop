@@ -9,6 +9,7 @@ import pytest
 from app.core.post_setup import (
     configure_github_repo,
     create_github_repo,
+    delete_github_repo,
     fetch_skills,
     run_git_init,
     run_initial_push,
@@ -240,13 +241,7 @@ class TestRunPrecommitInstall:
 
 
 class TestCreateGitHubRepo:
-    def _make_prefs(self, github_username: str = "testuser") -> MagicMock:
-        prefs = MagicMock()
-        prefs.github_username = github_username
-        return prefs
-
     def test_creates_repo_and_returns_clone_url(self):
-        prefs = self._make_prefs()
         response = MagicMock()
         response.__enter__ = lambda s: s
         response.__exit__ = MagicMock(return_value=False)
@@ -262,7 +257,7 @@ class TestCreateGitHubRepo:
             patch("app.core.post_setup.get_token", return_value="ghp_fake_token"),
         ):
             result = create_github_repo(
-                "myrepo", prefs, private=True, description="A test repo"
+                "myrepo", private=True, description="A test repo"
             )
 
         assert result == "https://github.com/testuser/myrepo"
@@ -279,13 +274,11 @@ class TestCreateGitHubRepo:
         }
 
     def test_raises_runtime_error_when_no_token(self):
-        prefs = self._make_prefs()
         with patch("app.core.post_setup.get_token", return_value=None):
             with pytest.raises(RuntimeError, match="No GitHub token configured"):
-                create_github_repo("myrepo", prefs)
+                create_github_repo("myrepo")
 
     def test_raises_runtime_error_on_422_conflict(self):
-        prefs = self._make_prefs()
         response = MagicMock()
         response.code = 422
         response.read = MagicMock(
@@ -306,10 +299,9 @@ class TestCreateGitHubRepo:
             patch("app.core.post_setup.get_token", return_value="ghp_fake_token"),
         ):
             with pytest.raises(RuntimeError, match="already exists"):
-                create_github_repo("myrepo", prefs)
+                create_github_repo("myrepo")
 
     def test_public_flag_sets_private_false(self):
-        prefs = self._make_prefs()
         response = MagicMock()
         response.__enter__ = lambda s: s
         response.__exit__ = MagicMock(return_value=False)
@@ -324,7 +316,7 @@ class TestCreateGitHubRepo:
             ) as mock_urlopen,
             patch("app.core.post_setup.get_token", return_value="ghp_fake_token"),
         ):
-            create_github_repo("myrepo", prefs, private=False)
+            create_github_repo("myrepo", private=False)
 
         body = json.loads(mock_urlopen.call_args[0][0].data)
         assert body["private"] is False
@@ -650,3 +642,100 @@ class TestConfigureGithubRepo:
         topics_req = mock_urlopen.call_args_list[0][0][0]
         body = json.loads(topics_req.data)
         assert body == {"names": ["python"]}  # fallback
+
+
+class TestDeleteGithubRepo:
+    def _make_response(self, status: int = 200) -> MagicMock:
+        cm = MagicMock()
+        cm.__enter__ = lambda s: s
+        cm.__exit__ = MagicMock(return_value=False)
+        cm.read = MagicMock(return_value=b"")
+        type(cm).status = status
+        return cm
+
+    def _make_http_error(self, code: int, body: str) -> urllib.error.HTTPError:
+        fp = MagicMock()
+        fp.read = MagicMock(return_value=body.encode())
+        return urllib.error.HTTPError(
+            "https://api.github.com/repos/test/repo",
+            code,
+            "error",
+            {},
+            fp,
+        )
+
+    def test_deletes_repo_on_success(self, capsys):
+        resp = self._make_response(200)
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                return_value=resp,
+            ) as mock_urlopen,
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+        ):
+            delete_github_repo("testuser/myrepo")
+
+        mock_urlopen.assert_called_once()
+        req = mock_urlopen.call_args[0][0]
+        assert req.method == "DELETE"
+        assert req.full_url == "https://api.github.com/repos/testuser/myrepo"
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_warns_on_http_error(self, capsys):
+        exc = self._make_http_error(404, "Not Found")
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                side_effect=exc,
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+        ):
+            delete_github_repo("testuser/myrepo")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert "404" in captured.err
+        # Non-JSON body falls back to str(exc) — "HTTP Error 404: Not Found"
+        assert "404" in captured.err
+
+    def test_warns_on_oserror(self, capsys):
+        with (
+            patch(
+                "app.core.post_setup.urllib.request.urlopen",
+                side_effect=OSError("network unreachable"),
+            ),
+            patch("app.core.post_setup.get_token", return_value="ghp_fake"),
+        ):
+            delete_github_repo("testuser/myrepo")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert "network unreachable" in captured.err
+
+    def test_warns_when_no_token(self, capsys):
+        with patch("app.core.post_setup.get_token", return_value=None):
+            delete_github_repo("testuser/myrepo")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert "no GitHub token" in captured.err
+
+    def test_warns_on_invalid_format(self, capsys):
+        delete_github_repo("badformat")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+        assert "invalid format" in captured.err
+
+    def test_warns_on_invalid_format_multiple_slashes(self, capsys):
+        delete_github_repo("test/user/myrepo")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err
+
+    def test_noop_when_no_repo_name(self, capsys):
+        delete_github_repo("")
+
+        captured = capsys.readouterr()
+        assert "Warning" in captured.err

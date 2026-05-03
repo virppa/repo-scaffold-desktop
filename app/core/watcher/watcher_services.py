@@ -227,7 +227,7 @@ class ServiceManager:
         else:
             log_path = self._repo_root / ".claude" / "litellm.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_file = open(log_path, "wb")  # noqa: SIM115
+            log_file = open(log_path, "wb")
             logger.info("LiteLLM log: %s", log_path)
             self._litellm_proc = subprocess.Popen(  # nosec B603 B607
                 litellm_cmd,
