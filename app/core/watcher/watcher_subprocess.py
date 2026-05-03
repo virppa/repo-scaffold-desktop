@@ -119,7 +119,7 @@ def launch_worker(
 
     log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    log_file = open(log_path, "wb")  # noqa: SIM115
+    log_file = open(log_path, "wb")
 
     if worker_verbose:
         prefix = f"[{manifest.ticket_id}] ".encode()

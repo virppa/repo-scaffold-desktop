@@ -99,5 +99,5 @@ def is_watcher_running(pid_file: Path = _PID_FILE) -> bool:
 
 def _to_metrics_mode(mode: str) -> ImplementationMode:
     if mode in ("local", "cloud", "hybrid"):
-        return mode  # type: ignore[return-value]
+        return mode  # type: ignore[return-value]  # ImplementationMode is Literal["local","cloud","hybrid"]; str is compatible at runtime
     return "cloud"
