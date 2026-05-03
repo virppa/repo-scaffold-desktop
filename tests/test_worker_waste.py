@@ -229,14 +229,17 @@ def test_cd_commands_capped_at_15(tmp_path: Path) -> None:
 
 def test_thinking_to_text_ratio_high(tmp_path: Path) -> None:
     """High thinking-to-text ratio adds to score."""
-    # 20000 chars of thinking (~5000 tokens) / 1000 output tokens = 5.0
-    # But we need > 5, so let's use 24000 chars / 1000 tokens = 6.0
+    # 24000 chars of thinking (~6000 tokens) / 1000 output tokens = 6.0
+    # WOR-349: thinking comes from content blocks of type "thinking", not from
+    # a top-level message.reasoning field.
     lines = [
         json.dumps(
             {
                 "type": "assistant",
                 "message": {
-                    "reasoning": "x" * 24000,
+                    "content": [
+                        {"type": "thinking", "thinking": "x" * 24000},
+                    ],
                     "usage": {"output_tokens": 1000},
                 },
             }
@@ -255,7 +258,9 @@ def test_thinking_to_text_ratio_below_threshold(tmp_path: Path) -> None:
             {
                 "type": "assistant",
                 "message": {
-                    "reasoning": "x" * 20000,  # ~5000 tokens / 1000 output = 5.0
+                    "content": [
+                        {"type": "thinking", "thinking": "x" * 20000},
+                    ],  # ~5000 tokens / 1000 output = 5.0
                     "usage": {"output_tokens": 1000},
                 },
             }
@@ -274,7 +279,9 @@ def test_thinking_to_text_ratio_zero_on_no_output(tmp_path: Path) -> None:
             {
                 "type": "assistant",
                 "message": {
-                    "reasoning": "x" * 1000,
+                    "content": [
+                        {"type": "thinking", "thinking": "x" * 1000},
+                    ],
                     "usage": {"output_tokens": 0},
                 },
             }
@@ -325,7 +332,9 @@ def test_composite_score_capped_at_100(tmp_path: Path) -> None:
                 {
                     "type": "assistant",
                     "message": {
-                        "reasoning": "x" * 30000,
+                        "content": [
+                            {"type": "thinking", "thinking": "x" * 30000},
+                        ],
                         "usage": {"output_tokens": 1000},
                     },
                 }
@@ -477,3 +486,61 @@ def test_assistant_with_tool_calls(tmp_path: Path) -> None:
     report = compute_waste_score(_write_log(tmp_path, lines))
     assert report.redundant_reads == 0  # single read
     assert report.score == 0
+
+
+# ---------------------------------------------------------------------------
+# WOR-349 — content-block parsing (Read tool input + thinking blocks)
+# ---------------------------------------------------------------------------
+
+
+def test_read_tool_uses_file_path_key_in_content_blocks(tmp_path: Path) -> None:
+    """WOR-349 regression: Claude Code's Read tool uses `file_path` (not
+    `path`/`file`), and tool_use blocks live in `message.content[]` (not in
+    `message.tool_calls[]`). Two reads of the same file_path should register
+    as 1 redundant_read."""
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": "/repo/app/core/foo.py"},
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": "/repo/app/core/foo.py"},
+                    },
+                ],
+                "usage": {"output_tokens": 50},
+            },
+        }
+    )
+    report = compute_waste_score(_write_log(tmp_path, [line]))
+    assert report.redundant_reads == 1
+    assert "redundant_reads" in report.breakdown
+
+
+def test_thinking_blocks_extracted_from_content_array(tmp_path: Path) -> None:
+    """WOR-349 regression: thinking text comes from content blocks of
+    type=='thinking' (with text under the `thinking` key), not from a
+    top-level `message.reasoning` field."""
+    line = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "x" * 8000},
+                    {"type": "text", "text": "Here is my answer."},
+                ],
+                "usage": {"output_tokens": 100},
+            },
+        }
+    )
+    report = compute_waste_score(_write_log(tmp_path, [line]))
+    # 8000 chars / 4 = 2000 thinking tokens; 2000 / 100 = ratio 20
+    assert report.thinking_to_text_ratio > 5
+    # Sanity: thinking signal contributes to score (capped at 10)
+    assert report.score >= 1
