@@ -73,7 +73,11 @@ def test_finalize_worker_retry_count_two_failures_then_success(
         worktree_path=tmp_path,
         process=MagicMock(spec=subprocess.Popen),
     )
-    check_results = [(False, []), (False, []), (True, [])]
+    check_results: list[tuple[bool, list[dict[str, int]]]] = [
+        (False, []),
+        (False, []),
+        (True, []),
+    ]
     with (
         patch(
             "app.core.watcher.watcher_finalize.run_checks", side_effect=check_results
