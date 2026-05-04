@@ -46,6 +46,39 @@ def start_ticket(
     """Execute the full ticket-start flow extracted from Watcher._start_ticket."""
     # Prerequisite checks (open_blockers + overlap) are handled by
     # Watcher._start_ticket before calling this function.
+
+    # Manifest quality gates (WOR-378) — Pydantic validation accepts these as
+    # legal but they are almost certainly authoring mistakes. Refuse early
+    # with a clear Linear comment so the operator knows to re-author.
+    if manifest.implementation_mode == "local" and not manifest.allowed_paths:
+        logger.warning(
+            "Refusing %s — local manifest has empty allowed_paths", ticket_id
+        )
+        safe_set_state(linear, linear_id, "Backlog", ticket_id)
+        linear.post_comment(
+            linear_id,
+            (
+                "Manifest refused: `allowed_paths` is empty. Local worker "
+                "dispatch requires explicit path scoping so the watcher can "
+                "guarantee path-overlap parallelism. Re-run `/start-ticket` "
+                "to populate the field."
+            ),
+        )
+        return
+    if not manifest.required_checks:
+        logger.warning("Refusing %s — manifest has empty required_checks", ticket_id)
+        safe_set_state(linear, linear_id, "Backlog", ticket_id)
+        linear.post_comment(
+            linear_id,
+            (
+                "Manifest refused: `required_checks` is empty. Worker must "
+                "have at least one check (typically: `ruff check .`, "
+                "`mypy app/`, `pytest`) before declaring success. Re-run "
+                "`/start-ticket`."
+            ),
+        )
+        return
+
     effective_mode = resolve_effective_mode(
         services._mode if hasattr(services, "_mode") else "local",
         manifest.implementation_mode,

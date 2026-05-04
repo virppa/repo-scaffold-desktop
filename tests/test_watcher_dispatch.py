@@ -190,6 +190,95 @@ def test_start_ticket_defers_when_cloud_pool_full(
     assert any("cloud pool full" in r.message for r in caplog.records)
 
 
+# ---------------------------------------------------------------------------
+# WOR-378 — manifest-quality refusal at dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_start_ticket_refuses_local_manifest_with_empty_allowed_paths(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Local-mode manifest with allowed_paths=[] is refused, ticket sent to Backlog."""
+    manifest = make_manifest(implementation_mode="local", allowed_paths=[])
+    linear = MagicMock()
+    services = _services()
+    local_active: list = []
+    cloud_active: list = []
+
+    with (
+        patch("app.core.watcher.dispatch.create_worktree") as mock_create,
+        patch("app.core.watcher.dispatch.safe_set_state") as mock_set_state,
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
+    ):
+        start_ticket(
+            manifest=manifest,
+            linear=linear,
+            services=services,
+            worker_verbose=False,
+            _local_active=local_active,
+            _cloud_active=cloud_active,
+            max_cloud_workers=3,
+            _repo_root=tmp_path,
+            _processed_tickets=[],
+            linear_id="fake-linear-id",
+            ticket_id="WOR-10",
+            _escalation_policy=MagicMock(),
+        )
+
+    mock_create.assert_not_called()
+    assert local_active == []
+    mock_set_state.assert_called_once_with(
+        linear, "fake-linear-id", "Backlog", "WOR-10"
+    )
+    linear.post_comment.assert_called_once()
+    body = linear.post_comment.call_args[0][1]
+    assert "allowed_paths" in body
+    assert "/start-ticket" in body
+    assert any("empty allowed_paths" in r.message for r in caplog.records)
+
+
+def test_start_ticket_refuses_manifest_with_empty_required_checks(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Manifest with required_checks=[] is refused regardless of mode."""
+    manifest = make_manifest(implementation_mode="cloud", required_checks=[])
+    linear = MagicMock()
+    services = _services()
+    local_active: list = []
+    cloud_active: list = []
+
+    with (
+        patch("app.core.watcher.dispatch.create_worktree") as mock_create,
+        patch("app.core.watcher.dispatch.safe_set_state") as mock_set_state,
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
+    ):
+        start_ticket(
+            manifest=manifest,
+            linear=linear,
+            services=services,
+            worker_verbose=False,
+            _local_active=local_active,
+            _cloud_active=cloud_active,
+            max_cloud_workers=3,
+            _repo_root=tmp_path,
+            _processed_tickets=[],
+            linear_id="fake-linear-id",
+            ticket_id="WOR-10",
+            _escalation_policy=MagicMock(),
+        )
+
+    mock_create.assert_not_called()
+    assert cloud_active == []
+    mock_set_state.assert_called_once_with(
+        linear, "fake-linear-id", "Backlog", "WOR-10"
+    )
+    linear.post_comment.assert_called_once()
+    body = linear.post_comment.call_args[0][1]
+    assert "required_checks" in body
+    assert "ruff check" in body or "pytest" in body
+    assert any("empty required_checks" in r.message for r in caplog.records)
+
+
 # NOTE: a fifth test for suppress_dedup behaviour is intentionally omitted —
 # dispatch.py's `_dedup_state or {}` falls through to a fresh empty dict on
 # each call, defeating cross-call memoization. That's a real pre-existing
