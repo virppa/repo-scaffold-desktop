@@ -39,6 +39,12 @@ repos:
         pass_filenames: false
         additional_dependencies: ["semgrep>=1.159.0"]
 
+      - id: check-file-sizes
+        name: check-file-sizes
+        language: system
+        entry: python scripts/check_file_sizes.py
+        types: [python]
+
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.20.2
     hooks:
