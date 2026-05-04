@@ -43,8 +43,8 @@ def _call_finalize(
         worker,
         returncode=returncode,
         wall_time=wall_time,
-        linear=linear or MagicMock(),
-        metrics=metrics or MagicMock(),
+        linear=linear or MagicMock(),  # type: ignore[arg-type]
+        metrics=metrics or MagicMock(),  # type: ignore[arg-type]
         escalation_policy=EscalationPolicy.from_toml(),
         repo_root=repo_root or Path("."),
         mode=mode,
