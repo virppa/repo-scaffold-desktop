@@ -150,9 +150,6 @@ class Watcher:
         if self._mode in ("local", "default"):
             self._services.probe_vllm_health()
 
-        if self._mode == "local":
-            self._services.ensure_vllm_anthropic_mode()
-
         self._log_startup_info()
 
         try:
