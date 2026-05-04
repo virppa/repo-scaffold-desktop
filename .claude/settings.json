@@ -36,6 +36,15 @@
             "command": "python .claude/hooks/check_read_cap.py"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/check_bash_discipline.py"
+          }
+        ]
       }
     ],
     "PostToolUse": [
