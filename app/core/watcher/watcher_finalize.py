@@ -26,6 +26,7 @@ from app.core.metrics import (
 from .watcher_helpers import (
     _POLICY_FLAGS,
     _parse_worker_api_retries,
+    _parse_worker_behavior,
     _parse_worker_subagent_spawns,
     _parse_worker_usage,
     _read_result_flags,
@@ -251,6 +252,14 @@ def finalize_worker(
     )
     api_retry_count = _parse_worker_api_retries(log_path)
     subagent_spawns = _parse_worker_subagent_spawns(log_path)
+    # WOR-380: per-worker behavior telemetry. Concurrency-safe — extracted
+    # from this worker's own log file.
+    behavior = _parse_worker_behavior(log_path)
+    tool_breakdown_json: str | None = (
+        json.dumps(behavior.tool_calls_breakdown, sort_keys=True)
+        if behavior.tool_calls_breakdown is not None
+        else None
+    )
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
 
     # Parse git diff --shortstat to populate lines_changed / files_changed.
@@ -440,6 +449,16 @@ def finalize_worker(
             vllm_ttft_count=vllm_deltas.get("ttft_count"),  # type: ignore[arg-type]
             vllm_ttft_mean_seconds=vllm_deltas.get("ttft_mean_seconds"),
             vllm_preemptions=vllm_deltas.get("preemptions"),  # type: ignore[arg-type]
+            # WOR-380: per-worker behavior telemetry (any concurrency)
+            turn_count=behavior.turn_count,
+            tool_calls_total=behavior.tool_calls_total,
+            tool_calls_breakdown=tool_breakdown_json,
+            thinking_blocks=behavior.thinking_blocks,
+            thinking_chars_total=behavior.thinking_chars_total,
+            input_tokens_max=behavior.input_tokens_max,
+            input_tokens_first=behavior.input_tokens_first,
+            input_tokens_last=behavior.input_tokens_last,
+            redundant_reads_count=behavior.redundant_reads_count,
         )
     )
     metrics.record_run(

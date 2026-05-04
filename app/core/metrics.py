@@ -280,6 +280,49 @@ class TicketMetrics(BaseModel):
             "indicates KV cache pressure forced request preemption."
         ),
     )
+    # WOR-380: per-worker behavior telemetry from stream-json log.
+    # Concurrency-safe — derived from the worker's own log file.
+    turn_count: int | None = Field(
+        default=None,
+        description="Number of assistant messages (turns) in the session.",
+    )
+    tool_calls_total: int | None = Field(
+        default=None, description="Total tool_use blocks emitted during the session."
+    )
+    tool_calls_breakdown: str | None = Field(
+        default=None,
+        description=(
+            "JSON-serialized dict of tool_use counts by tool name, e.g. "
+            '\'{"Read": 7, "Edit": 6, "Bash": 10}\'.'
+        ),
+    )
+    thinking_blocks: int | None = Field(
+        default=None,
+        description="Count of `type=thinking` content blocks (Qwen3 reasoning).",
+    )
+    thinking_chars_total: int | None = Field(
+        default=None,
+        description="Sum of len(text) across all thinking blocks (reasoning depth).",
+    )
+    input_tokens_max: int | None = Field(
+        default=None,
+        description="Max input_tokens across turns (context-window pressure proxy).",
+    )
+    input_tokens_first: int | None = Field(
+        default=None, description="input_tokens of the first assistant turn."
+    )
+    input_tokens_last: int | None = Field(
+        default=None, description="input_tokens of the last assistant turn."
+    )
+    redundant_reads_count: int | None = Field(
+        default=None,
+        description=(
+            "Number of distinct file paths read more than 2 times in the "
+            "session (WOR-355 cap). With WOR-371's hook live this should "
+            "trend to 0; useful retro signal for sessions before the hook "
+            "or for cap-exceeded violations that slipped through."
+        ),
+    )
 
 
 class EpicSummary(BaseModel):
@@ -535,6 +578,43 @@ class MetricsStore:
         if "vllm_preemptions" not in existing:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN vllm_preemptions INTEGER"
+            )
+        # WOR-380: per-worker behavior telemetry from stream-json log.
+        # Concurrency-safe sibling to WOR-370 — all derived from the
+        # worker's own log file.
+        if "turn_count" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN turn_count INTEGER")
+        if "tool_calls_total" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_total INTEGER"
+            )
+        if "tool_calls_breakdown" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_breakdown TEXT"
+            )
+        if "thinking_blocks" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN thinking_blocks INTEGER"
+            )
+        if "thinking_chars_total" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN thinking_chars_total INTEGER"
+            )
+        if "input_tokens_max" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_max INTEGER"
+            )
+        if "input_tokens_first" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_first INTEGER"
+            )
+        if "input_tokens_last" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_last INTEGER"
+            )
+        if "redundant_reads_count" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN redundant_reads_count INTEGER"
             )
 
     @contextmanager

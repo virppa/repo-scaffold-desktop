@@ -634,3 +634,147 @@ def compute_vllm_metrics_delta(
         "ttft_mean_seconds": ttft_mean,
         "preemptions": int(preempt),
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-worker behavior telemetry (WOR-380)
+# ---------------------------------------------------------------------------
+
+
+class WorkerBehavior:
+    """Per-worker behavior summary parsed from a stream-json log.
+
+    Concurrency-safe sibling to WOR-370 (server-side /metrics): every value
+    here is derived from the worker's own log file, so multiple concurrent
+    workers each produce their own attributable summary.
+
+    All fields are Optional to distinguish "definitely zero" from
+    "couldn't read the log" (None means the log was missing or unparseable
+    at the file-handle level; 0 / {} means the log was readable but the
+    feature didn't appear).
+    """
+
+    __slots__ = (
+        "turn_count",
+        "tool_calls_total",
+        "tool_calls_breakdown",
+        "thinking_blocks",
+        "thinking_chars_total",
+        "input_tokens_max",
+        "input_tokens_first",
+        "input_tokens_last",
+        "redundant_reads_count",
+    )
+
+    def __init__(
+        self,
+        turn_count: int | None,
+        tool_calls_total: int | None,
+        tool_calls_breakdown: dict[str, int] | None,
+        thinking_blocks: int | None,
+        thinking_chars_total: int | None,
+        input_tokens_max: int | None,
+        input_tokens_first: int | None,
+        input_tokens_last: int | None,
+        redundant_reads_count: int | None,
+    ) -> None:
+        self.turn_count = turn_count
+        self.tool_calls_total = tool_calls_total
+        self.tool_calls_breakdown = tool_calls_breakdown
+        self.thinking_blocks = thinking_blocks
+        self.thinking_chars_total = thinking_chars_total
+        self.input_tokens_max = input_tokens_max
+        self.input_tokens_first = input_tokens_first
+        self.input_tokens_last = input_tokens_last
+        self.redundant_reads_count = redundant_reads_count
+
+    @classmethod
+    def empty_unparseable(cls) -> "WorkerBehavior":
+        """Sentinel: log unreadable, so every field is None."""
+        return cls(None, None, None, None, None, None, None, None, None)
+
+    @classmethod
+    def empty_readable(cls) -> "WorkerBehavior":
+        """Sentinel: log was readable but had no assistant turns."""
+        return cls(0, 0, {}, 0, 0, None, None, None, 0)
+
+
+def _parse_worker_behavior(log_path: Path) -> WorkerBehavior:
+    """Extract per-session behavior signals from the stream-json worker log.
+
+    Counts assistant turns, tool-call totals + breakdown by name, thinking
+    blocks + their text length, and per-file Read counts to derive a
+    redundant-reads count. Also captures the input_tokens trajectory
+    (first / last / max) which is a proxy for context-window pressure.
+
+    Returns a WorkerBehavior with None fields if the log is missing or
+    cannot be opened. Returns zero-valued fields if the log is parseable
+    but has no assistant turns.
+    """
+    try:
+        with log_path.open(encoding="utf-8") as f:
+            turn_count = 0
+            tool_calls_total = 0
+            tool_breakdown: dict[str, int] = {}
+            thinking_blocks = 0
+            thinking_chars = 0
+            input_tokens_first: int | None = None
+            input_tokens_last: int | None = None
+            input_tokens_max: int | None = None
+            read_counts: dict[str, int] = {}
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") != "assistant":
+                    continue
+                turn_count += 1
+                msg = obj.get("message") or {}
+                usage = msg.get("usage") or {}
+                inp = usage.get("input_tokens")
+                if isinstance(inp, int):
+                    if input_tokens_first is None:
+                        input_tokens_first = inp
+                    input_tokens_last = inp
+                    input_tokens_max = (
+                        inp if input_tokens_max is None else max(input_tokens_max, inp)
+                    )
+                for blk in msg.get("content") or []:
+                    if not isinstance(blk, dict):
+                        continue
+                    btype = blk.get("type")
+                    if btype == "thinking":
+                        thinking_blocks += 1
+                        text = blk.get("thinking") or blk.get("text") or ""
+                        if isinstance(text, str):
+                            thinking_chars += len(text)
+                    elif btype == "tool_use":
+                        tool_calls_total += 1
+                        name = blk.get("name") or "?"
+                        tool_breakdown[name] = tool_breakdown.get(name, 0) + 1
+                        if name == "Read":
+                            fp = (blk.get("input") or {}).get("file_path")
+                            if isinstance(fp, str) and fp:
+                                # Normalize Windows back-slashes for grouping
+                                key = fp.replace("\\", "/")
+                                read_counts[key] = read_counts.get(key, 0) + 1
+            if turn_count == 0:
+                return WorkerBehavior.empty_readable()
+            redundant = sum(1 for n in read_counts.values() if n > 2)
+            return WorkerBehavior(
+                turn_count=turn_count,
+                tool_calls_total=tool_calls_total,
+                tool_calls_breakdown=tool_breakdown,
+                thinking_blocks=thinking_blocks,
+                thinking_chars_total=thinking_chars,
+                input_tokens_max=input_tokens_max,
+                input_tokens_first=input_tokens_first,
+                input_tokens_last=input_tokens_last,
+                redundant_reads_count=redundant,
+            )
+    except (OSError, ValueError):
+        return WorkerBehavior.empty_unparseable()
