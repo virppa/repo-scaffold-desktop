@@ -735,6 +735,11 @@ def _handle_policy_outcome(
     )
 
     outcome, pr_url = attempt_pr(manifest, worker, linear, tracked_prs=tracked_prs)
+    if outcome == "success":
+        if manifest.base_branch == "main":
+            safe_set_state(linear, linear_id, "In Review", ticket_id)
+        else:
+            safe_set_state(linear, linear_id, "MergedToEpic", ticket_id)
     return outcome, False, sonar_findings, pr_url
 
 
