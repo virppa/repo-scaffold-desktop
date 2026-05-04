@@ -75,6 +75,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/check_session_complete.py"
+          }
+        ]
+      }
     ]
   },
   "skills_source": "github:virppa/repo-scaffold-skills",
