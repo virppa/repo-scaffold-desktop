@@ -1238,3 +1238,175 @@ class _LogCapture:
 
 def caplog_at_level_helper() -> _LogCapture:
     return _LogCapture()
+
+
+# ---------------------------------------------------------------------------
+# WOR-381 — heartbeat-based stuck-worker detection (SIGTERM, then SIGKILL)
+# ---------------------------------------------------------------------------
+
+
+def _stuck_worker(
+    tmp_path: Path,
+    ticket_id: str = "WOR-99",
+    *,
+    log_idle_secs: float | None = None,
+    terminated_at: float | None = None,
+) -> ActiveWorker:
+    """ActiveWorker with a worker log whose mtime is N seconds in the past.
+
+    If `log_idle_secs` is None, no log file is created (simulates a freshly-
+    dispatched worker that hasn't written anything yet).
+    """
+    import os
+    import time as _time
+
+    worktree = tmp_path / ticket_id
+    worktree.mkdir(parents=True, exist_ok=True)
+    log_path = worktree / ".claude" / f"worker_{ticket_id.lower()}.log"
+    if log_idle_secs is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("dummy stream-json line\n", encoding="utf-8")
+        target_mtime = _time.time() - log_idle_secs
+        os.utime(log_path, (target_mtime, target_mtime))
+
+    proc = MagicMock(spec=subprocess.Popen)
+    proc.poll.return_value = None  # still running
+    return ActiveWorker(
+        ticket_id=ticket_id,
+        linear_id=f"linear-{ticket_id}",
+        manifest=_make_manifest(ticket_id=ticket_id),
+        worktree_path=worktree,
+        process=proc,
+        terminated_at=terminated_at,
+    )
+
+
+def test_terminate_overrun_no_op_when_log_fresh(tmp_path: Path) -> None:
+    """A worker whose log was written 5 minutes ago is left alone (under 15-min cap)."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=5 * 60)
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_not_called()
+    worker.process.kill.assert_not_called()
+    assert worker.terminated_at is None
+
+
+def test_terminate_overrun_no_op_when_log_missing(tmp_path: Path) -> None:
+    """Freshly-dispatched worker (no log yet) is not signalled."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=None)
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_not_called()
+    worker.process.kill.assert_not_called()
+
+
+def test_terminate_overrun_sigterm_when_log_idle_past_threshold(tmp_path: Path) -> None:
+    """Log idle > 15 min triggers SIGTERM."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=16 * 60)  # over 15-min threshold
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_called_once()
+    worker.process.kill.assert_not_called()
+    assert worker.terminated_at is not None
+
+
+def test_terminate_overrun_sigterm_only_once(tmp_path: Path) -> None:
+    """Repeated calls do not re-SIGTERM after the first one."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=20 * 60)
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+    first_terminated_at = worker.terminated_at
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_called_once()
+    assert worker.terminated_at == first_terminated_at
+
+
+def test_terminate_overrun_sigkill_after_grace(tmp_path: Path) -> None:
+    """Worker still alive 6 min after SIGTERM is SIGKILL'd."""
+    import time as _time
+
+    linear = MagicMock()
+    w = Watcher(linear_client=linear, repo_root=tmp_path)
+    worker = _stuck_worker(
+        tmp_path,
+        log_idle_secs=20 * 60,
+        terminated_at=_time.time() - 6 * 60,
+    )
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.kill.assert_called_once()
+    linear.post_comment.assert_called_once()
+    body = linear.post_comment.call_args[0][1]
+    assert "stalled" in body
+    assert "SIGTERM" in body
+    assert "SIGKILL" in body
+
+
+def test_terminate_overrun_no_sigkill_within_grace(tmp_path: Path) -> None:
+    """Worker still alive <5 min after SIGTERM gets more grace."""
+    import time as _time
+
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(
+        tmp_path,
+        log_idle_secs=18 * 60,
+        terminated_at=_time.time() - 2 * 60,
+    )
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.kill.assert_not_called()
+
+
+def test_terminate_overrun_skips_already_exited(tmp_path: Path) -> None:
+    """A worker whose process has exited (poll != None) is not signalled."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=20 * 60)
+    worker.process.poll.return_value = 0
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_not_called()
+    worker.process.kill.assert_not_called()
+
+
+def test_terminate_overrun_handles_terminate_oserror(tmp_path: Path) -> None:
+    """OSError from terminate() doesn't loop us into retrying."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=20 * 60)
+    worker.process.terminate.side_effect = OSError("no such process")
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    assert worker.terminated_at is not None
+
+
+def test_terminate_overrun_covers_both_pools(tmp_path: Path) -> None:
+    """Both _local_active and _cloud_active are scanned."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    local_worker = _stuck_worker(tmp_path, ticket_id="WOR-100", log_idle_secs=20 * 60)
+    cloud_worker = _stuck_worker(tmp_path, ticket_id="WOR-101", log_idle_secs=20 * 60)
+    w._local_active.append(local_worker)
+    w._cloud_active.append(cloud_worker)
+
+    w._terminate_overrun_workers()
+
+    local_worker.process.terminate.assert_called_once()
+    cloud_worker.process.terminate.assert_called_once()
