@@ -59,6 +59,9 @@ litellm-local.yaml
 .claude/*.pid
 .claude/*.lock
 
+# Claude Code hook state (per-session, machine-generated)
+.claude/.read_counts.json
+
 # Forensic log dumps under retros/ (raw worker logs + manifests captured during
 # post-mortem analysis). The retro markdown itself is committed; raw evidence
 # lives in private gists or Linear attachments instead.
