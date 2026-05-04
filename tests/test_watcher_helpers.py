@@ -12,6 +12,7 @@ from app.core.watcher.watcher_helpers import (
     build_worker_cmd,
     build_worker_env,
     check_allowed_paths_overlap,
+    count_main_ahead_of_epic,
     resolve_effective_mode,
 )
 from tests.conftest import make_active_worker, make_manifest
@@ -841,3 +842,100 @@ def test_parse_worker_usage_missing_output_token_returns_none(
     input_tok, output_tok, _, _ = _parse_worker_usage(log)
     assert input_tok is None
     assert output_tok is None
+
+
+# ---------------------------------------------------------------------------
+# count_main_ahead_of_epic — WOR-373 stale-epic detection
+# ---------------------------------------------------------------------------
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    import subprocess  # nosec B404
+
+    subprocess.run(  # nosec B603 B607
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _setup_remote_and_main(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a bare 'origin' repo and a working clone with a main branch.
+
+    Returns (origin_path, clone_path). Caller can then create epic branches
+    and push them to origin to simulate the watcher's view of the repo.
+    """
+    origin = tmp_path / "origin.git"
+    _git(["init", "-q", "--bare", "-b", "main", str(origin)], cwd=tmp_path)
+
+    clone = tmp_path / "clone"
+    _git(["clone", "-q", str(origin), str(clone)], cwd=tmp_path)
+    _git(["config", "user.email", "test@example.com"], cwd=clone)
+    _git(["config", "user.name", "Test"], cwd=clone)
+    (clone / "README.md").write_text("seed\n", encoding="utf-8")
+    _git(["add", "README.md"], cwd=clone)
+    _git(["commit", "-q", "-m", "seed"], cwd=clone)
+    _git(["push", "-q", "origin", "main"], cwd=clone)
+    return origin, clone
+
+
+def test_count_main_ahead_of_epic_returns_zero_for_main_branch(
+    tmp_path: Path,
+) -> None:
+    """Sub-tickets targeting main directly are not subject to the check."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    assert count_main_ahead_of_epic("main", clone) == 0
+
+
+def test_count_main_ahead_of_epic_returns_zero_for_random_branch(
+    tmp_path: Path,
+) -> None:
+    """Branches that don't start with `epic/` are not checked."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    assert count_main_ahead_of_epic("feat/something", clone) == 0
+    assert count_main_ahead_of_epic("wor-100-some-ticket", clone) == 0
+
+
+def test_count_main_ahead_of_epic_returns_zero_when_in_sync(
+    tmp_path: Path,
+) -> None:
+    """An epic branch at the same commit as main has zero drift."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    _git(["checkout", "-b", "epic/wor-100-fresh"], cwd=clone)
+    _git(["push", "-q", "origin", "epic/wor-100-fresh"], cwd=clone)
+    assert count_main_ahead_of_epic("epic/wor-100-fresh", clone) == 0
+
+
+def test_count_main_ahead_of_epic_returns_drift_count(tmp_path: Path) -> None:
+    """An epic that's N commits behind main returns N."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    # Create epic from current main
+    _git(["checkout", "-b", "epic/wor-100-stale"], cwd=clone)
+    _git(["push", "-q", "origin", "epic/wor-100-stale"], cwd=clone)
+    # Add 5 commits to main only
+    _git(["checkout", "main"], cwd=clone)
+    for i in range(5):
+        f = clone / f"file_{i}.md"
+        f.write_text(f"content {i}\n", encoding="utf-8")
+        _git(["add", str(f)], cwd=clone)
+        _git(["commit", "-q", "-m", f"commit {i}"], cwd=clone)
+    _git(["push", "-q", "origin", "main"], cwd=clone)
+    # Epic is 5 commits behind main now
+    assert count_main_ahead_of_epic("epic/wor-100-stale", clone) == 5
+
+
+def test_count_main_ahead_of_epic_fails_open_outside_git(tmp_path: Path) -> None:
+    """When cwd is not a git repo, the helper returns 0 (does not crash)."""
+    not_a_repo = tmp_path / "not_a_repo"
+    not_a_repo.mkdir()
+    assert count_main_ahead_of_epic("epic/wor-100-stale", not_a_repo) == 0
+
+
+def test_count_main_ahead_of_epic_fails_open_when_branch_missing(
+    tmp_path: Path,
+) -> None:
+    """If the epic branch doesn't exist on origin, return 0 (do not block)."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    assert count_main_ahead_of_epic("epic/wor-100-nonexistent", clone) == 0

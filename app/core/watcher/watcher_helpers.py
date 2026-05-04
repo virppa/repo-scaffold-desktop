@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess  # nosec B404
 from pathlib import Path
 from typing import IO
 
@@ -421,3 +422,54 @@ def suppress_dedup(
 
     dedup_state[ticket_id] = reason
     return reason_msg
+
+
+# ---------------------------------------------------------------------------
+# Stale-epic detection (WOR-373)
+# ---------------------------------------------------------------------------
+
+
+def count_main_ahead_of_epic(epic_branch: str, repo_root: Path) -> int:
+    """Return how many commits ``origin/main`` has that ``epic_branch`` doesn't.
+
+    Used by dispatch to refuse sub-ticket launches against epic branches that
+    have drifted too far from main. A long-lived epic branch silently sheds
+    main-side changes during periodic merge conflict resolutions; the WOR-282
+    forensic uncovered 13 lost tests on a 107-commit-behind epic.
+
+    Returns 0 (no drift) if:
+      * ``epic_branch`` does not start with ``epic/`` (only epic branches
+        are subject to the staleness check; sub-tickets targeting main
+        directly are by definition not stale).
+      * ``git fetch`` or ``git rev-list`` fails for any reason (fail open
+        — do not block dispatch on infra glitches).
+
+    Otherwise returns the integer commit count.
+    """
+    if not epic_branch.startswith("epic/"):
+        return 0
+
+    # Best-effort fetch so the count reflects the latest origin state.
+    # We fetch both refs explicitly; failures are non-fatal (a stale
+    # local view simply means the count is conservative, not wrong).
+    try:
+        subprocess.run(  # nosec B603 B607
+            ["git", "fetch", "origin", "main", epic_branch],
+            cwd=str(repo_root),
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        pass
+
+    try:
+        out = subprocess.check_output(  # nosec B603 B607
+            ["git", "rev-list", "--count", f"origin/{epic_branch}..origin/main"],
+            cwd=str(repo_root),
+            text=True,
+            timeout=10,
+        )
+        return int(out.strip())
+    except (subprocess.SubprocessError, ValueError, FileNotFoundError):
+        return 0
