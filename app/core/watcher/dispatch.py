@@ -14,7 +14,11 @@ from pathlib import Path
 from app.core.manifest import ExecutionManifest
 
 from .watcher_finalize import safe_set_state
-from .watcher_helpers import resolve_effective_mode, suppress_dedup
+from .watcher_helpers import (
+    count_main_ahead_of_epic,
+    resolve_effective_mode,
+    suppress_dedup,
+)
 from .watcher_services import ServiceManager
 from .watcher_subprocess import launch_worker
 from .watcher_types import ActiveWorker, LinearClientProtocol
@@ -26,6 +30,13 @@ from .watcher_worktrees import (
 )
 
 logger = logging.getLogger(__name__)
+
+# WOR-373: epic branches that lag main by more than this many commits are
+# refused at dispatch. Long-lived epics silently shed main-side changes
+# during periodic merge conflict resolution; the WOR-282 forensic uncovered
+# 13 lost tests on a 107-commit-behind epic. 30 commits is roughly 3-7 days
+# of drift in this repo; healthy epics stay well under it.
+_EPIC_DRIFT_THRESHOLD = 30
 
 
 def start_ticket(
@@ -75,6 +86,37 @@ def start_ticket(
                 "have at least one check (typically: `ruff check .`, "
                 "`mypy app/`, `pytest`) before declaring success. Re-run "
                 "`/start-ticket`."
+            ),
+        )
+        return
+
+    # WOR-373: stale-epic refusal. If the sub-ticket's base_branch is an
+    # epic that has fallen too far behind main, block dispatch. Stale epics
+    # silently drop main-side work during the next merge conflict resolution
+    # (see WOR-282 forensic — 13 tests lost on a 107-commit-behind epic).
+    drift = count_main_ahead_of_epic(manifest.base_branch, _repo_root)
+    if drift > _EPIC_DRIFT_THRESHOLD:
+        logger.warning(
+            "Refusing %s — epic %s is %d commits behind origin/main (threshold %d)",
+            ticket_id,
+            manifest.base_branch,
+            drift,
+            _EPIC_DRIFT_THRESHOLD,
+        )
+        safe_set_state(linear, linear_id, "Backlog", ticket_id)
+        linear.post_comment(
+            linear_id,
+            (
+                f"Manifest refused: epic branch `{manifest.base_branch}` is "
+                f"{drift} commits behind `origin/main` (threshold: "
+                f"{_EPIC_DRIFT_THRESHOLD}). Stale epics silently drop tests "
+                f"during merge conflict resolution — see WOR-282 forensic. "
+                f"Merge main into the epic first, then re-dispatch:\n\n"
+                f"  git fetch origin\n"
+                f"  git checkout {manifest.base_branch}\n"
+                f"  git merge origin/main\n"
+                f"  # resolve conflicts...\n"
+                f"  git push"
             ),
         )
         return
