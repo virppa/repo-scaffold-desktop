@@ -697,7 +697,7 @@ class TestTicketRunLog:
 
 
 # ---------------------------------------------------------------------------
-# compute_tags — individual rule tests (8 rules)
+# compute_tags — individual rule tests (9 rules)
 # ---------------------------------------------------------------------------
 
 
@@ -718,7 +718,7 @@ def _metrics(**kwargs) -> TicketMetrics:
 
 
 class TestComputeTags:
-    """compute_tags — 8 rules, multi-rule, no-rule, set_tags, _migrate."""
+    """compute_tags — 9 rules, multi-rule, no-rule, set_tags, _migrate."""
 
     # --- Anomaly detection rules (4) ---
 
@@ -866,6 +866,26 @@ class TestComputeTags:
         """Does not fire when api_retry_count is None (defensive)."""
         m = _metrics(api_retry_count=None)
         assert "backend_unstable" not in compute_tags(m, "success")
+
+    def test_mid_session_compaction_when_one(self):
+        """Fires when context_compactions is 1."""
+        m = _metrics(context_compactions=1)
+        assert "mid_session_compaction" in compute_tags(m, "success")
+
+    def test_mid_session_compaction_when_two(self):
+        """Fires when context_compactions is 2."""
+        m = _metrics(context_compactions=2)
+        assert "mid_session_compaction" in compute_tags(m, "success")
+
+    def test_mid_session_compaction_not_when_zero(self):
+        """Does not fire when context_compactions is 0."""
+        m = _metrics(context_compactions=0)
+        assert "mid_session_compaction" not in compute_tags(m, "success")
+
+    def test_mid_session_compaction_not_when_none(self):
+        """Does not fire when context_compactions is None."""
+        m = _metrics(context_compactions=None)
+        assert "mid_session_compaction" not in compute_tags(m, "success")
 
     # --- Multi-rule and no-rule ---
 
