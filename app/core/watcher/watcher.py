@@ -59,6 +59,18 @@ from .watcher_worktrees import (
 
 logger = logging.getLogger(__name__)
 
+# WOR-381: heartbeat-based stuck-worker detection. The metric is "time since
+# the worker's stream-json log file was last written" — a stuck worker
+# (network hang, deadlocked vLLM, infinite tool-result wait) does not emit
+# new lines, while a slow-but-progressing worker keeps writing. Wall-time
+# bounds proved unworkable: app.db's 33-session distribution shows median
+# 43.7 min and p99 171 min for legitimate runs, so any wall-time threshold
+# either fires on real work or misses real hangs. 15 minutes of log silence
+# is a strong signal that the model is stuck — even multi-step tool calls
+# (pytest, mypy, large diffs) emit progress within minutes.
+_WORKER_HEARTBEAT_TIMEOUT_SECONDS = 15 * 60
+_WORKER_KILL_GRACE_SECONDS = 5 * 60
+
 
 class _ProcessedTicket(NamedTuple):
     ticket_id: str
@@ -155,6 +167,7 @@ class Watcher:
         try:
             while self._running:
                 self._check_softstop_request()
+                self._terminate_overrun_workers()
                 self._reap_finished_workers()
                 if self._display is not None:
                     self._display.update_state(self._build_tui_state())
@@ -713,6 +726,101 @@ class Watcher:
     def _reap_finished_workers(self) -> None:
         self._reap_pool(self._local_active)
         self._reap_pool(self._cloud_active)
+
+    def _terminate_overrun_workers(self) -> None:
+        """Heartbeat-based stuck-worker detection (WOR-381).
+
+        Each worker tees its stream-json log to
+        ``<worktree>/.claude/worker_<ticket_lower>.log``. While the model is
+        making any progress — emitting tool calls, receiving tool results,
+        producing assistant text — the file's mtime advances. A genuinely
+        stuck worker (vLLM unresponsive, tool subprocess hung, infinite
+        deadlock) stops writing.
+
+        Two-stage shutdown:
+
+        1. Log idle (now − mtime) exceeds ``_WORKER_HEARTBEAT_TIMEOUT_SECONDS``
+           and the process is still alive: send SIGTERM via
+           ``process.terminate()``; set ``terminated_at`` to wall-clock now.
+        2. ``terminated_at`` is set and the grace period has passed without
+           the worker exiting: send SIGKILL via ``process.kill()`` and post a
+           Linear comment with the timeout context. The natural reap path
+           handles the eventual exit code.
+
+        If the log file does not exist yet (worker just dispatched), the
+        check is skipped — natural process reap handles the case where the
+        worker died before writing anything.
+        """
+        now_wall = time.time()
+        for worker in (*self._local_active, *self._cloud_active):
+            log_path = (
+                worker.worktree_path
+                / ".claude"
+                / f"worker_{worker.ticket_id.lower()}.log"
+            )
+            try:
+                last_write = log_path.stat().st_mtime
+            except (OSError, FileNotFoundError):
+                # Log not yet written — let the worker warm up. Process
+                # reap on later cycles handles the case where it never does.
+                continue
+
+            idle_seconds = now_wall - last_write
+
+            if (
+                worker.terminated_at is None
+                and idle_seconds > _WORKER_HEARTBEAT_TIMEOUT_SECONDS
+                and worker.process.poll() is None
+            ):
+                logger.warning(
+                    "Worker %s heartbeat stalled — log idle for %.0fs "
+                    "(threshold %ds). Sending SIGTERM. SIGKILL grace: %ds.",
+                    worker.ticket_id,
+                    idle_seconds,
+                    _WORKER_HEARTBEAT_TIMEOUT_SECONDS,
+                    _WORKER_KILL_GRACE_SECONDS,
+                )
+                try:
+                    worker.process.terminate()
+                except (OSError, ValueError) as exc:
+                    logger.warning("Failed to SIGTERM %s: %s", worker.ticket_id, exc)
+                worker.terminated_at = now_wall
+                continue
+
+            if (
+                worker.terminated_at is not None
+                and now_wall - worker.terminated_at > _WORKER_KILL_GRACE_SECONDS
+                and worker.process.poll() is None
+            ):
+                logger.error(
+                    "Worker %s did not exit within %ds of SIGTERM — sending SIGKILL.",
+                    worker.ticket_id,
+                    _WORKER_KILL_GRACE_SECONDS,
+                )
+                try:
+                    worker.process.kill()
+                except (OSError, ValueError) as exc:
+                    logger.warning("Failed to SIGKILL %s: %s", worker.ticket_id, exc)
+                slug = worker.ticket_id.lower().replace("-", "_")
+                try:
+                    self._linear.post_comment(
+                        worker.linear_id,
+                        (
+                            f"Worker stalled: log idle {int(idle_seconds)}s "
+                            f"(threshold {_WORKER_HEARTBEAT_TIMEOUT_SECONDS}s). "
+                            f"SIGTERM was sent, then SIGKILL after "
+                            f"{_WORKER_KILL_GRACE_SECONDS}s grace. The ticket "
+                            "will be marked Blocked by the natural failure "
+                            f"path. Inspect `.claude/artifacts/{slug}/` for "
+                            "the partial worker log."
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not post timeout comment for %s: %s",
+                        worker.ticket_id,
+                        exc,
+                    )
 
     # ------------------------------------------------------------------
     # Epic completion detection

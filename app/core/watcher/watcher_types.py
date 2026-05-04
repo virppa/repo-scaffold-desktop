@@ -70,6 +70,12 @@ class ActiveWorker:
     # WOR-363: count of OTHER active workers at the moment this one launched.
     # Captured by dispatch.start_ticket BEFORE adding self to the active pool.
     dispatch_concurrency: int = 0
+    # WOR-381: wall-clock timestamp (time.time()) at which the watcher sent
+    # SIGTERM after the worker's log file went stale. Used to track the
+    # SIGKILL grace period. None means the worker has not been signalled.
+    # Wall-clock (not monotonic) so it shares a frame of reference with the
+    # log file's st_mtime.
+    terminated_at: float | None = None
 
 
 # ---------------------------------------------------------------------------
