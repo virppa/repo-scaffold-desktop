@@ -1,62 +1,41 @@
-"""Tests for app.core.watcher_services (ServiceManager)."""
+"""Tests for app.core.watcher.watcher_services (ServiceManager).
+
+WOR-368 retired the LiteLLM proxy and Ollama plumbing; ServiceManager now
+only gates vLLM readiness. The previous suite's LiteLLM/Ollama tests were
+removed because the underlying methods no longer exist.
+"""
 
 from __future__ import annotations
 
-import subprocess
+import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.core.watcher.watcher_services import _VLLM_FP8_CMD, ServiceManager
 
 # ---------------------------------------------------------------------------
-# ServiceManager.stop  (formerly _stop_litellm_proxy via Watcher shim)
+# ServiceManager.stop  (no-op kept for call-site compat)
 # ---------------------------------------------------------------------------
 
 
-def test_stop_terminates_on_clean_exit(tmp_path: Path) -> None:
-    mock_proc = MagicMock(spec=subprocess.Popen)
-    mock_proc.pid = 12345
-    mock_proc.wait.return_value = 0
-
+def test_stop_is_noop_and_marks_not_running(tmp_path: Path) -> None:
     mgr = ServiceManager(tmp_path)
-    mgr._litellm_proc = mock_proc
+    assert mgr._running is True
+    mgr.stop()  # must not raise — no proc to terminate post-WOR-368
+    assert mgr._running is False
 
+
+def test_stop_is_idempotent(tmp_path: Path) -> None:
+    mgr = ServiceManager(tmp_path)
     mgr.stop()
-
-    mock_proc.terminate.assert_called_once()
-    mock_proc.kill.assert_not_called()
-    assert mgr._litellm_proc is None
-
-
-def test_stop_kills_when_terminate_hangs(tmp_path: Path) -> None:
-    mock_proc = MagicMock(spec=subprocess.Popen)
-    mock_proc.pid = 12345
-    mock_proc.wait.side_effect = subprocess.TimeoutExpired(cmd="litellm", timeout=5)
-
-    mgr = ServiceManager(tmp_path)
-    mgr._litellm_proc = mock_proc
-
-    mgr.stop()
-
-    mock_proc.terminate.assert_called_once()
-    mock_proc.kill.assert_called_once()
-    assert mgr._litellm_proc is None
-
-
-def test_stop_noop_when_no_proc(tmp_path: Path) -> None:
-    mgr = ServiceManager(tmp_path)
-    assert mgr._litellm_proc is None
-    mgr.stop()  # must not raise
+    mgr.stop()  # must not raise on repeated call
 
 
 # ---------------------------------------------------------------------------
-# ServiceManager.ensure_ollama_running
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# ServiceManager.probe_vllm_health
+# ServiceManager.probe_vllm_health  (cheap soft-check; logs and continues)
 # ---------------------------------------------------------------------------
 
 
@@ -149,257 +128,116 @@ def test_probe_vllm_health_handles_missing_wt_exe(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ServiceManager._litellm_serving / ensure_litellm_running
+# ServiceManager.ensure_vllm_anthropic_mode
+#
+# Strict pre-dispatch gate: probes /v1/models AND /v1/messages, raises with
+# the launch command embedded if either fails. Replaces ensure_litellm_running
+# (deleted in WOR-368) — vLLM 0.20.0 mounts /v1/messages natively, so the
+# watcher only needs to confirm the destination is live, not spawn a proxy.
 # ---------------------------------------------------------------------------
 
 
-def test_litellm_serving_returns_true_when_http_responds(tmp_path: Path) -> None:
+def _models_ok_response(model_id: str = "qwen3-coder") -> MagicMock:
+    """Build a /v1/models 200 response listing the served model."""
+    resp = MagicMock()
+    resp.status = 200
+    resp.read.return_value = json.dumps({"data": [{"id": model_id}]}).encode("utf-8")
+    return resp
+
+
+def _messages_ok_response() -> MagicMock:
+    """Build a /v1/messages 200 response in valid Anthropic message shape."""
+    resp = MagicMock()
+    resp.status = 200
+    resp.read.return_value = json.dumps(
+        {
+            "type": "message",
+            "content": [{"type": "text", "text": "ok"}],
+        }
+    ).encode("utf-8")
+    return resp
+
+
+def test_ensure_vllm_anthropic_mode_passes_when_both_probes_ok(
+    tmp_path: Path,
+) -> None:
     mgr = ServiceManager(tmp_path)
+    responses = [_models_ok_response(), _messages_ok_response()]
     mock_conn = MagicMock()
+    mock_conn.getresponse.side_effect = responses
+
     with patch("http.client.HTTPConnection", return_value=mock_conn):
-        result = mgr._litellm_serving()
-    assert result is True
-    mock_conn.request.assert_called_once_with("GET", "/health")
+        mgr.ensure_vllm_anthropic_mode()  # must not raise
 
 
-def test_litellm_serving_returns_false_on_connection_error(tmp_path: Path) -> None:
-    mgr = ServiceManager(tmp_path)
-    with patch("http.client.HTTPConnection") as mock_cls:
-        mock_cls.return_value.request.side_effect = OSError("connection refused")
-        result = mgr._litellm_serving()
-    assert result is False
-
-
-def test_litellm_listening_returns_true_when_port_bound(tmp_path: Path) -> None:
-    """TCP probe must report True when something is bound to _LITELLM_PORT."""
-    mgr = ServiceManager(tmp_path)
-    mock_sock = MagicMock()
-    mock_sock.connect_ex.return_value = 0  # 0 = connection succeeded
-    with patch("socket.socket") as mock_socket_cls:
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-        result = mgr._litellm_listening()
-    assert result is True
-
-
-def test_litellm_listening_returns_false_when_port_not_bound(tmp_path: Path) -> None:
-    """TCP probe must report False when nothing is bound to _LITELLM_PORT."""
-    mgr = ServiceManager(tmp_path)
-    mock_sock = MagicMock()
-    mock_sock.connect_ex.return_value = 111  # non-zero = connection refused
-    with patch("socket.socket") as mock_socket_cls:
-        mock_socket_cls.return_value.__enter__.return_value = mock_sock
-        result = mgr._litellm_listening()
-    assert result is False
-
-
-def test_ensure_litellm_running_skips_start_when_port_bound(
-    tmp_path: Path,
-) -> None:
-    """ensure_litellm_running uses TCP probe (not HTTP) for the early-return
-    decision, so a busy LiteLLM (port bound, /health slow) does not trigger
-    a redundant spawn (WOR-339 root cause)."""
-    mgr = ServiceManager(tmp_path)
-    with (
-        patch.object(mgr, "_litellm_listening", return_value=True),
-        patch("subprocess.Popen") as mock_popen,
-    ):
-        mgr.ensure_litellm_running()
-    mock_popen.assert_not_called()
-
-
-def test_ensure_litellm_running_does_not_spawn_when_http_probe_would_fail(
-    tmp_path: Path,
-) -> None:
-    """WOR-339 regression: the OLD bug was ensure_litellm_running falling back
-    to spawning a new tab when /health was slow to respond. With the TCP-probe
-    check, even an unresponsive HTTP layer doesn't trigger a spawn as long as
-    something is bound to the port."""
-    mgr = ServiceManager(tmp_path)
-    with (
-        patch.object(mgr, "_litellm_listening", return_value=True),
-        patch.object(mgr, "_litellm_serving", return_value=False),  # HTTP slow / busy
-        patch("subprocess.Popen") as mock_popen,
-    ):
-        mgr.ensure_litellm_running()
-    mock_popen.assert_not_called()
-
-
-def test_wait_for_litellm_ready_retries_until_serving(tmp_path: Path) -> None:
-    mgr = ServiceManager(tmp_path)
-    call_count = 0
-
-    def _serving_side_effect() -> bool:
-        nonlocal call_count
-        call_count += 1
-        return call_count >= 3
-
-    with (
-        patch.object(mgr, "_litellm_serving", side_effect=_serving_side_effect),
-        patch("time.sleep"),
-    ):
-        mgr._wait_for_litellm_ready()
-
-    assert call_count == 3
-
-
-def test_wait_for_litellm_ready_raises_when_proc_exits(tmp_path: Path) -> None:
-    import pytest
-
-    mgr = ServiceManager(tmp_path)
-    mock_proc = MagicMock(spec=subprocess.Popen)
-    mock_proc.poll.return_value = 1
-    mock_proc.returncode = 1
-    mgr._litellm_proc = mock_proc
-
-    with (
-        patch.object(mgr, "_litellm_serving", return_value=False),
-        patch("time.sleep"),
-        pytest.raises(RuntimeError, match="exited"),
-    ):
-        mgr._wait_for_litellm_ready()
-
-
-# ---------------------------------------------------------------------------
-# ServiceManager._start_litellm_windows
-# ---------------------------------------------------------------------------
-
-
-def test_start_litellm_windows_opens_wt_tab(tmp_path: Path) -> None:
-    mgr = ServiceManager(tmp_path)
-    with patch("subprocess.Popen") as mock_popen:
-        mgr._start_litellm_windows(["litellm", "--config", "cfg.yaml"], {})
-
-    mock_popen.assert_called_once()
-    cmd = mock_popen.call_args[0][0]
-    assert cmd[0] == "wt.exe"
-    assert "new-tab" in cmd
-    assert "cmd.exe" in cmd  # shell wrapper so PATHEXT resolves litellm.bat/.exe
-    assert "/k" in cmd
-    assert "litellm" in cmd[-1]  # shell_cmd string is last arg
-    assert mgr._litellm_proc is None  # wt.exe exits immediately; not tracked
-
-
-def test_start_litellm_windows_falls_back_to_console_when_no_wt(
+def test_ensure_vllm_anthropic_mode_raises_when_models_endpoint_down(
     tmp_path: Path,
 ) -> None:
     mgr = ServiceManager(tmp_path)
-    with patch(
-        "subprocess.Popen",
-        side_effect=[FileNotFoundError("wt.exe not found"), MagicMock()],
-    ) as mock_popen:
-        mgr._start_litellm_windows(["litellm", "--config", "cfg.yaml"], {})
-
-    assert mock_popen.call_count == 2
-    fallback_cmd = mock_popen.call_args[0][0]
-    assert fallback_cmd[0] == "litellm"
-    assert mgr._litellm_proc is not None
+    with patch("http.client.HTTPConnection") as mock_conn_cls:
+        mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
+        with pytest.raises(RuntimeError, match="vLLM not serving"):
+            mgr.ensure_vllm_anthropic_mode()
 
 
-# ---------------------------------------------------------------------------
-# ServiceManager.ensure_ollama_running
-# ---------------------------------------------------------------------------
-
-
-def test_ensure_ollama_running_already_up(tmp_path: Path) -> None:
+def test_ensure_vllm_anthropic_mode_raises_when_served_model_missing(
+    tmp_path: Path,
+) -> None:
+    """If /v1/models lists models but not _VLLM_SERVED_MODEL, dispatch must abort."""
     mgr = ServiceManager(tmp_path)
-    with (
-        patch("socket.socket") as mock_sock_cls,
-        patch("subprocess.Popen") as mock_popen,
-    ):
-        mock_sock = MagicMock()
-        mock_sock.__enter__ = lambda s: s
-        mock_sock.__exit__ = MagicMock(return_value=False)
-        mock_sock.connect_ex.return_value = 0  # already up
-        mock_sock_cls.return_value = mock_sock
+    bad_models = MagicMock()
+    bad_models.status = 200
+    bad_models.read.return_value = json.dumps(
+        {"data": [{"id": "some-other-model"}]}
+    ).encode("utf-8")
+    mock_conn = MagicMock()
+    mock_conn.getresponse.return_value = bad_models
 
-        mgr.ensure_ollama_running()
-
-    mock_popen.assert_not_called()
+    with patch("http.client.HTTPConnection", return_value=mock_conn):
+        with pytest.raises(RuntimeError, match="vLLM not serving"):
+            mgr.ensure_vllm_anthropic_mode()
 
 
-def test_ensure_ollama_running_starts_process(tmp_path: Path) -> None:
-    cfg = tmp_path / "litellm-local.yaml"
-    cfg.write_text(
-        "model_list:\n"
-        "  - model_name: claude-sonnet-4-6\n"
-        "    litellm_params:\n"
-        "      model: ollama_chat/qwen3-coder:30b\n"
-        "      api_base: http://localhost:11434\n"
-    )
+def test_ensure_vllm_anthropic_mode_raises_when_messages_endpoint_returns_500(
+    tmp_path: Path,
+) -> None:
+    """vLLM up on /v1/models but Anthropic router returns 5xx → distinct error."""
     mgr = ServiceManager(tmp_path)
+    bad_messages = MagicMock()
+    bad_messages.status = 500
+    bad_messages.read.return_value = b'{"error": "internal"}'
+    mock_conn = MagicMock()
+    mock_conn.getresponse.side_effect = [_models_ok_response(), bad_messages]
 
-    call_count = 0
-
-    def _probe_side_effect(*args: Any, **kwargs: Any) -> int:
-        nonlocal call_count
-        call_count += 1
-        # First call (already-up check) -> not up; subsequent calls (wait loop) -> up
-        return 1 if call_count == 1 else 0
-
-    mock_resp = MagicMock()
-    mock_resp.status = 200
-
-    with (
-        patch("socket.socket") as mock_sock_cls,
-        patch("subprocess.Popen") as mock_popen,
-        patch("http.client.HTTPConnection") as mock_conn_cls,
-    ):
-        mock_sock = MagicMock()
-        mock_sock.__enter__ = lambda s: s
-        mock_sock.__exit__ = MagicMock(return_value=False)
-        mock_sock.connect_ex.side_effect = _probe_side_effect
-        mock_sock_cls.return_value = mock_sock
-
-        mock_conn_cls.return_value.getresponse.return_value = mock_resp
-
-        mgr.ensure_ollama_running()
-
-    mock_popen.assert_called_once()
-    cmd = mock_popen.call_args[0][0]
-    assert cmd[0] == "ollama"
-    assert cmd[1] == "run"
-    assert cmd[2] == "qwen3-coder:30b"
-    assert "--keepalive" in cmd
-    assert "120m" in cmd
+    with patch("http.client.HTTPConnection", return_value=mock_conn):
+        with pytest.raises(RuntimeError, match="Anthropic router"):
+            mgr.ensure_vllm_anthropic_mode()
 
 
-def test_wait_for_ollama_ready_shutdown_interrupt(tmp_path: Path) -> None:
-    """RuntimeError raised promptly when _running is False before the call."""
+def test_ensure_vllm_anthropic_mode_raises_when_messages_returns_wrong_shape(
+    tmp_path: Path,
+) -> None:
+    """200 OK but payload missing type=message → still fails the gate."""
     mgr = ServiceManager(tmp_path)
-    mgr._running = False
+    wrong_shape = MagicMock()
+    wrong_shape.status = 200
+    wrong_shape.read.return_value = json.dumps({"choices": []}).encode("utf-8")
+    mock_conn = MagicMock()
+    mock_conn.getresponse.side_effect = [_models_ok_response(), wrong_shape]
 
-    import pytest
+    with patch("http.client.HTTPConnection", return_value=mock_conn):
+        with pytest.raises(RuntimeError, match="Anthropic router"):
+            mgr.ensure_vllm_anthropic_mode()
 
-    with pytest.raises(RuntimeError, match="shutting down"):
-        mgr._wait_for_ollama_ready()
 
-
-def test_wait_for_ollama_ready_http_retries(tmp_path: Path) -> None:
-    """HTTP /api/tags is retried until it returns 200."""
+def test_ensure_vllm_anthropic_mode_error_message_includes_launch_command(
+    tmp_path: Path,
+) -> None:
+    """Operator-facing: the failure must surface the vLLM launch command."""
     mgr = ServiceManager(tmp_path)
-    http_call_count = 0
-
-    def _conn_side_effect(*args: Any, **kwargs: Any) -> Any:
-        nonlocal http_call_count
-        http_call_count += 1
-        mock_conn = MagicMock()
-        if http_call_count < 3:
-            mock_conn.getresponse.side_effect = OSError("service not ready yet")
-        else:
-            mock_conn.getresponse.return_value = MagicMock(status=200)
-        return mock_conn
-
-    with (
-        patch("socket.socket") as mock_sock_cls,
-        patch("http.client.HTTPConnection", side_effect=_conn_side_effect),
-        patch("time.sleep"),
-    ):
-        mock_sock = MagicMock()
-        mock_sock.__enter__ = lambda s: s
-        mock_sock.__exit__ = MagicMock(return_value=False)
-        mock_sock.connect_ex.return_value = 0  # TCP always accepts
-        mock_sock_cls.return_value = mock_sock
-
-        mgr._wait_for_ollama_ready()
-
-    assert http_call_count == 3
+    with patch("http.client.HTTPConnection") as mock_conn_cls:
+        mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
+        with pytest.raises(RuntimeError) as exc_info:
+            mgr.ensure_vllm_anthropic_mode()
+    assert "vllm serve" in str(exc_info.value)
+    assert "qwen3-coder" in str(exc_info.value)

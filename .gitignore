@@ -45,15 +45,14 @@ Thumbs.db
 # Environment variables
 .env
 .env.*
+# Stale local LiteLLM config (the proxy was retired in WOR-368; kept gitignored
+# defensively so anyone with a leftover copy doesn't accidentally commit it).
 litellm-local.yaml
 # Claude Code local settings
 .claude/settings.local.json
 
 # Claude Code local worker artifacts (ephemeral, machine-generated)
 .claude/artifacts/
-
-# Local LiteLLM config
-litellm-local.yaml
 
 # Claude Code watcher logs
 .claude/*.log

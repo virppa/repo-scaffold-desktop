@@ -115,8 +115,7 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
             "app.core.watcher.watcher.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running"),
-        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
         patch.object(w._services, "probe_vllm_health"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")
@@ -250,8 +249,7 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
         patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
         patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
         patch("app.core.watcher.watcher.write_worker_pytest_config"),
-        patch.object(watcher._services, "ensure_ollama_running"),
-        patch.object(watcher._services, "ensure_litellm_running"),
+        patch.object(watcher._services, "ensure_vllm_anthropic_mode"),
         patch.object(watcher._services, "probe_vllm_health"),
         patch(
             "app.core.watcher.watcher.launch_worker",
@@ -267,11 +265,11 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _dispatch_next_ticket — ollama/litellm wiring
+# _dispatch_next_ticket — vLLM Anthropic-mode gate (WOR-368)
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_calls_ensure_litellm_but_not_ollama_for_local_effective_mode(
+def test_dispatch_calls_ensure_vllm_anthropic_mode_for_local_effective_mode(
     tmp_path: Path,
 ) -> None:
     manifest = _make_manifest(
@@ -301,14 +299,12 @@ def test_dispatch_calls_ensure_litellm_but_not_ollama_for_local_effective_mode(
             "app.core.watcher.watcher_subprocess.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running") as mock_ollama,
-        patch.object(w._services, "ensure_litellm_running") as mock_litellm,
+        patch.object(w._services, "ensure_vllm_anthropic_mode") as mock_vllm_anthropic,
         patch.object(w._services, "probe_vllm_health") as mock_probe,
     ):
         w._dispatch_next_ticket()
 
-    mock_ollama.assert_not_called()
-    mock_litellm.assert_called_once()
+    mock_vllm_anthropic.assert_called_once()
     mock_probe.assert_called_once()
 
 
@@ -340,20 +336,13 @@ def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
             "app.core.watcher.watcher_subprocess.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running") as mock_ollama,
-        patch.object(w._services, "ensure_litellm_running") as mock_litellm,
+        patch.object(w._services, "ensure_vllm_anthropic_mode") as mock_vllm_anthropic,
         patch.object(w._services, "probe_vllm_health") as mock_probe,
     ):
         w._dispatch_next_ticket()
 
-    mock_ollama.assert_not_called()
-    mock_litellm.assert_not_called()
+    mock_vllm_anthropic.assert_not_called()
     mock_probe.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# _handle_signal — SIGTERM triggers LiteLLM proxy cleanup and sets _running=False
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -549,20 +538,19 @@ def test_epic_completion_failed_ticket_blocks_comment(
 
 
 # ---------------------------------------------------------------------------
-# _handle_signal — SIGTERM triggers LiteLLM proxy cleanup and sets _running=False
+# _handle_signal — SIGTERM calls services.stop() and sets _running=False
 # ---------------------------------------------------------------------------
 
 
-def test_handle_signal_sigterm_terminates_litellm_proc_and_stops_running() -> None:
+def test_handle_signal_sigterm_calls_services_stop_and_clears_running() -> None:
+    """Post-WOR-368 the watcher no longer owns a LiteLLM process to terminate;
+    services.stop() is a no-op kept for call-site compat. The signal handler
+    must still invoke it AND clear _running so the poll loop exits."""
     w = Watcher(linear_client=MagicMock())
-    mock_proc = MagicMock(spec=subprocess.Popen)
-    mock_proc.pid = 99999
-    w._services._litellm_proc = mock_proc
+    with patch.object(w._services, "stop") as mock_stop:
+        w._handle_signal(signal.SIGTERM, None)
 
-    w._handle_signal(signal.SIGTERM, None)
-
-    mock_proc.terminate.assert_called_once()
-    assert w._services._litellm_proc is None
+    mock_stop.assert_called_once()
     assert w._running is False
 
 
@@ -725,8 +713,7 @@ def test_dispatch_proceeds_when_vllm_ready(tmp_path: Path) -> None:
             return_value=fake_process,
         ),
         patch.object(w._services, "probe_vllm_health", return_value=True),
-        patch.object(w._services, "ensure_ollama_running"),
-        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
     ):
         w._dispatch_next_ticket()
 
@@ -945,8 +932,7 @@ def test_dispatch_proceeds_when_manifest_blocked_by_tickets_is_empty(
             "app.core.watcher.watcher.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running"),
-        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
         patch.object(w._services, "probe_vllm_health"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")
@@ -985,8 +971,7 @@ def test_dispatch_proceeds_when_all_manifest_blockers_are_merged(
             "app.core.watcher.watcher.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running"),
-        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
         patch.object(w._services, "probe_vllm_health"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")

@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 from app.core.watcher.watcher_helpers import (
-    _parse_ollama_model,
     _parse_worker_api_retries,
     _parse_worker_subagent_spawns,
     _parse_worker_usage,
@@ -62,7 +61,7 @@ def test_multiple_active_partial_overlap() -> None:
 
 def test_cloud_mode_strips_base_url() -> None:
     base = {
-        "ANTHROPIC_BASE_URL": "http://localhost:8082",
+        "ANTHROPIC_BASE_URL": "http://localhost:8000",
         "PATH": "/usr/bin",
         "HOME": "/root",
     }
@@ -72,19 +71,38 @@ def test_cloud_mode_strips_base_url() -> None:
 
 
 def test_cloud_mode_strips_model_var() -> None:
-    base = {"ANTHROPIC_MODEL": "qwen3-coder:30b", "PATH": "/usr/bin"}
+    base = {"ANTHROPIC_MODEL": "qwen3-coder", "PATH": "/usr/bin"}
     env = build_worker_env("cloud", base)
     assert "ANTHROPIC_MODEL" not in env
 
 
-def test_local_mode_injects_base_url() -> None:
+def test_local_mode_injects_vllm_base_url() -> None:
+    """WOR-368: local mode points ANTHROPIC_BASE_URL at vLLM directly (port 8000),
+    not the retired LiteLLM proxy on 8082."""
     base = {"PATH": "/usr/bin"}
     env = build_worker_env("local", base)
-    assert env["ANTHROPIC_BASE_URL"] == "http://localhost:8082"
+    assert env["ANTHROPIC_BASE_URL"] == "http://localhost:8000"
+
+
+def test_local_env_routes_by_tier() -> None:
+    """WOR-368: with no --model on the cmd, Claude Code picks a model by tier
+    via ANTHROPIC_DEFAULT_*_MODEL. All three must point at the vLLM-served name."""
+    env = build_worker_env("local", {"PATH": "/usr/bin"})
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "qwen3-coder"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "qwen3-coder"
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "qwen3-coder"
+
+
+def test_local_env_sets_dummy_auth_credentials() -> None:
+    """vLLM does not validate the API key, but Claude Code requires the env var
+    to be present. 'dummy' is the vLLM-doc-recommended placeholder."""
+    env = build_worker_env("local", {"PATH": "/usr/bin"})
+    assert env["ANTHROPIC_API_KEY"] == "dummy"  # pragma: allowlist secret
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "dummy"  # pragma: allowlist secret
 
 
 def test_default_mode_passes_env_unchanged() -> None:
-    base = {"ANTHROPIC_BASE_URL": "http://localhost:8082", "PATH": "/usr/bin"}
+    base = {"ANTHROPIC_BASE_URL": "http://localhost:8000", "PATH": "/usr/bin"}
     env = build_worker_env("default", base)
     assert env == base
 
@@ -106,11 +124,13 @@ def test_cloud_cmd_has_no_model_flag(tmp_path: Path) -> None:
     assert "/implement-ticket WOR-10" in " ".join(cmd)
 
 
-def test_local_cmd_includes_model_flag(tmp_path: Path) -> None:
+def test_local_cmd_omits_model_flag(tmp_path: Path) -> None:
+    """WOR-368: local mode no longer passes --model. vLLM only serves
+    'qwen3-coder', so a hard-coded 'claude-sonnet-4-6' would fail Claude
+    Code's /v1/models validation. Routing happens via
+    ANTHROPIC_DEFAULT_*_MODEL env vars (see test_local_env_routes_by_tier)."""
     cmd = build_worker_cmd("WOR-10", "local", tmp_path)
-    assert "--model" in cmd
-    idx = cmd.index("--model")
-    assert cmd[idx + 1] == "claude-sonnet-4-6"
+    assert "--model" not in cmd
 
 
 def test_cmd_includes_dangerously_skip_permissions(tmp_path: Path) -> None:
@@ -780,39 +800,6 @@ def test_parse_worker_subagent_spawns_other_tools_ignored(tmp_path: Path) -> Non
 def test_parse_worker_subagent_spawns_missing_log(tmp_path: Path) -> None:
     """Missing log returns None."""
     assert _parse_worker_subagent_spawns(tmp_path / "no_such_file.log") is None
-
-
-# ---------------------------------------------------------------------------
-# _parse_ollama_model
-# ---------------------------------------------------------------------------
-
-
-def test_parse_ollama_model_returns_bare_model_name(tmp_path: Path) -> None:
-    cfg = tmp_path / "litellm-local.yaml"
-    cfg.write_text(
-        "model_list:\n"
-        "  - model_name: claude-sonnet-4-6\n"
-        "    litellm_params:\n"
-        "      model: ollama_chat/qwen3-coder:30b\n"
-        "      api_base: http://localhost:11434\n"
-    )
-    assert _parse_ollama_model(cfg) == "qwen3-coder:30b"
-
-
-def test_parse_ollama_model_raises_when_no_ollama_entry(tmp_path: Path) -> None:
-    import pytest
-
-    cfg = tmp_path / "litellm-local.yaml"
-    cfg.write_text("model_list:\n  - model_name: gpt-4\n")
-    with pytest.raises(ValueError, match="No ollama_chat/"):
-        _parse_ollama_model(cfg)
-
-
-def test_parse_ollama_model_raises_when_file_missing(tmp_path: Path) -> None:
-    import pytest
-
-    with pytest.raises(FileNotFoundError):
-        _parse_ollama_model(tmp_path / "nonexistent.yaml")
 
 
 # ---------------------------------------------------------------------------

@@ -68,7 +68,7 @@ def start_ticket(
             ):
                 logger.warning("%s", reason_msg)
             return
-        services.ensure_litellm_running()
+        services.ensure_vllm_anthropic_mode()
 
     worktree_path = create_worktree(_repo_root, manifest)
     copy_manifest_to_worktree(_repo_root, manifest, worktree_path)

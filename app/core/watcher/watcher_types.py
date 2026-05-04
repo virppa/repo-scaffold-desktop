@@ -20,13 +20,14 @@ _CLAUDE_DIR = ".claude"
 _ARTIFACTS_DIR = "artifacts"
 _PID_FILE = Path(_CLAUDE_DIR) / "watcher.pid"
 _IN_PROGRESS_STATE = "In Progress"
-_LITELLM_PORT = 8082
-_LITELLM_CONFIG = "litellm-local.yaml"
-_LOCAL_MODEL = "claude-sonnet-4-6"
-_LITELLM_BASE_URL = f"http://localhost:{_LITELLM_PORT}"
-_OLLAMA_PORT = 11434
 _VLLM_PORT = 8000
-_OLLAMA_KEEPALIVE = "120m"
+_VLLM_BASE_URL = f"http://localhost:{_VLLM_PORT}"
+_VLLM_SERVED_MODEL = "qwen3-coder"
+# Metrics label kept for backward compatibility with rows written before WOR-368;
+# Claude Code routes by tier via ANTHROPIC_DEFAULT_*_MODEL, so the on-the-wire
+# request reaches vLLM as "qwen3-coder" but Claude Code's accounting still says
+# this. A "served_model_name" column would be the cleaner long-term fix.
+_LOCAL_MODEL = "claude-sonnet-4-6"
 _WORKTREE_BASE = Path("worktrees")
 
 _ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(

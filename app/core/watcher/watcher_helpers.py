@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import IO
 
@@ -16,8 +15,8 @@ from app.core.manifest import ExecutionManifest
 
 from .watcher_types import (
     _ENV_VARS_TO_STRIP_FOR_CLOUD,
-    _LITELLM_BASE_URL,
-    _LOCAL_MODEL,
+    _VLLM_BASE_URL,
+    _VLLM_SERVED_MODEL,
     ActiveWorker,
 )
 
@@ -266,9 +265,13 @@ def build_worker_env(
 
     cloud   — strips ANTHROPIC_BASE_URL and related vars so the process routes
               to the real Anthropic API.
-    local   — injects ANTHROPIC_BASE_URL pointing to the LiteLLM proxy and sets
-              ANTHROPIC_API_KEY=sk-dummy if not already present (LiteLLM doesn't
-              validate the key; this satisfies Claude Code's auth check).
+    local   — points ANTHROPIC_BASE_URL at vLLM's native Anthropic Messages
+              endpoint and pins all three model-tier defaults
+              (ANTHROPIC_DEFAULT_OPUS_MODEL / _SONNET_MODEL / _HAIKU_MODEL) to
+              the vLLM-served name so Claude Code routes by tier without
+              needing --model on the command line. ANTHROPIC_API_KEY /
+              ANTHROPIC_AUTH_TOKEN are set to "dummy" only to satisfy Claude
+              Code's local auth check; vLLM does not validate.
     default — passes base_env unchanged.
     """
     env = dict(base_env)
@@ -276,8 +279,12 @@ def build_worker_env(
         for var in _ENV_VARS_TO_STRIP_FOR_CLOUD:
             env.pop(var, None)
     elif mode == "local":
-        env["ANTHROPIC_BASE_URL"] = _LITELLM_BASE_URL
-        env.setdefault("ANTHROPIC_API_KEY", "sk-dummy")
+        env["ANTHROPIC_BASE_URL"] = _VLLM_BASE_URL
+        env.setdefault("ANTHROPIC_API_KEY", "dummy")
+        env.setdefault("ANTHROPIC_AUTH_TOKEN", "dummy")
+        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = _VLLM_SERVED_MODEL
+        env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = _VLLM_SERVED_MODEL
+        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = _VLLM_SERVED_MODEL
         # Compact at ~180K tokens: 240K window × 75% PCT trigger.
         # vLLM FP8 throughput is flat 16K→262K (WOR-234/WOR-118), so there is no
         # throughput cliff to avoid — 240K gives generous context while leaving 80K
@@ -329,13 +336,11 @@ def build_worker_cmd(
         _effort = effort
     else:
         _effort = "xhigh" if mode == "local" else "max"
-    if mode == "local":
-        # (CLI values: low|medium|high|xhigh|max — "normal" was removed)
-        # When effort=None, fall back to xhigh for local, max for cloud.
-        base += ["--effort", _effort]
-        base += ["--model", _LOCAL_MODEL]
-    else:
-        base += ["--effort", _effort]
+    # Local-mode does not pass --model: vLLM's /v1/models endpoint only lists
+    # _VLLM_SERVED_MODEL ("qwen3-coder"), so a hard-coded "claude-sonnet-4-6"
+    # would fail Claude Code's model-existence validation. Routing happens via
+    # ANTHROPIC_DEFAULT_*_MODEL env vars in build_worker_env instead.
+    base += ["--effort", _effort]
     if disallowed_tools:
         base += ["--disallowed-tools", ",".join(disallowed_tools)]
     return base + ["-p", prompt]
@@ -416,29 +421,3 @@ def suppress_dedup(
 
     dedup_state[ticket_id] = reason
     return reason_msg
-
-
-# ---------------------------------------------------------------------------
-# Ollama config parsing
-# ---------------------------------------------------------------------------
-
-
-def _parse_ollama_model(config_path: Path) -> str:
-    """Return the bare Ollama model name from a LiteLLM YAML config.
-
-    Scans for the first 'model: ollama_chat/<name>' line and returns <name>.
-    Raises ValueError if none is found, FileNotFoundError if the file is absent.
-    """
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"LiteLLM config not found: {config_path}. "
-            "Copy litellm-local.yaml.example to litellm-local.yaml and configure it."
-        )
-    text = config_path.read_text(encoding="utf-8")
-    match = re.search(r"model:\s+ollama_chat/(\S+)", text)
-    if match is None:
-        raise ValueError(
-            f"No ollama_chat/ model found in {config_path}. "
-            "Add a model_list entry with litellm_params.model = 'ollama_chat/<model>'."
-        )
-    return match.group(1)

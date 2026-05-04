@@ -78,7 +78,7 @@ def test_start_ticket_local_happy_path_appends_to_local_active(tmp_path: Path) -
     assert len(local_active) == 1
     assert len(cloud_active) == 0
     mock_create.assert_called_once()
-    services.ensure_litellm_running.assert_called_once()
+    services.ensure_vllm_anthropic_mode.assert_called_once()
 
 
 def test_start_ticket_cloud_happy_path_appends_to_cloud_active(tmp_path: Path) -> None:
