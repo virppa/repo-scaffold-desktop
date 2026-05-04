@@ -76,6 +76,16 @@ class ActiveWorker:
     # Wall-clock (not monotonic) so it shares a frame of reference with the
     # log file's st_mtime.
     terminated_at: float | None = None
+    # WOR-370: vLLM /metrics snapshot taken at dispatch time when the
+    # worker was the only active session (dispatch_concurrency == 0).
+    # None means no snapshot (either concurrency > 0 at dispatch, or the
+    # /metrics endpoint was unreachable).
+    vllm_metrics_before: dict[str, float] | None = None
+    # WOR-370: True iff the worker was solo at dispatch AND no other worker
+    # was dispatched during this session. Flipped to False whenever a peer
+    # is dispatched. At reap, only workers with remained_solo=True get
+    # attributable vLLM /metrics deltas; the rest get a sentinel artifact.
+    remained_solo: bool = False
 
 
 # ---------------------------------------------------------------------------

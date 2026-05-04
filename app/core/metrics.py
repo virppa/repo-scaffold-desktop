@@ -232,6 +232,54 @@ class TicketMetrics(BaseModel):
             "throughput-vs-concurrency analysis."
         ),
     )
+    # WOR-370: vLLM /metrics deltas captured during this session. Only
+    # populated when dispatch_concurrency==0 at dispatch AND no peer was
+    # launched during the session. attribute=False sessions leave all fields
+    # below as None.
+    vllm_metrics_attributable: bool | None = Field(
+        default=None,
+        description=(
+            "True iff the worker was solo throughout its session and the "
+            "vLLM /metrics deltas below are attributable to this ticket. "
+            "False if a peer was dispatched during the session. None if "
+            "the snapshot was never captured (e.g. /metrics unreachable)."
+        ),
+    )
+    vllm_prefix_cache_hits: int | None = Field(
+        default=None, description="Delta of vllm:prefix_cache_hits_total"
+    )
+    vllm_prefix_cache_queries: int | None = Field(
+        default=None, description="Delta of vllm:prefix_cache_queries_total"
+    )
+    vllm_prefix_cache_hit_ratio: float | None = Field(
+        default=None,
+        description="Derived: hits/queries during the session, range 0-1",
+    )
+    vllm_prompt_tokens: int | None = Field(
+        default=None, description="Delta of vllm:prompt_tokens_total"
+    )
+    vllm_generation_tokens: int | None = Field(
+        default=None, description="Delta of vllm:generation_tokens_total"
+    )
+    vllm_ttft_seconds_sum: float | None = Field(
+        default=None,
+        description="Delta of vllm:time_to_first_token_seconds_sum",
+    )
+    vllm_ttft_count: int | None = Field(
+        default=None,
+        description="Delta of vllm:time_to_first_token_seconds_count",
+    )
+    vllm_ttft_mean_seconds: float | None = Field(
+        default=None,
+        description="Derived: ttft_seconds_sum / ttft_count for the session",
+    )
+    vllm_preemptions: int | None = Field(
+        default=None,
+        description=(
+            "Delta of vllm:num_preemptions_total during the session. >0 "
+            "indicates KV cache pressure forced request preemption."
+        ),
+    )
 
 
 class EpicSummary(BaseModel):
@@ -441,6 +489,52 @@ class MetricsStore:
         if "dispatch_concurrency" not in existing:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN dispatch_concurrency INTEGER"
+            )
+        # WOR-370: vLLM /metrics delta capture (only populated when
+        # dispatch_concurrency==0 at dispatch AND no peer was launched
+        # during the session — otherwise the server-wide counters mix
+        # multiple workers' traffic and per-ticket attribution breaks).
+        if "vllm_metrics_attributable" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics "
+                "ADD COLUMN vllm_metrics_attributable INTEGER"
+            )
+        if "vllm_prefix_cache_hits" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hits INTEGER"
+            )
+        if "vllm_prefix_cache_queries" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics "
+                "ADD COLUMN vllm_prefix_cache_queries INTEGER"
+            )
+        if "vllm_prefix_cache_hit_ratio" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hit_ratio REAL"
+            )
+        if "vllm_prompt_tokens" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_prompt_tokens INTEGER"
+            )
+        if "vllm_generation_tokens" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_generation_tokens INTEGER"
+            )
+        if "vllm_ttft_seconds_sum" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_seconds_sum REAL"
+            )
+        if "vllm_ttft_count" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_count INTEGER"
+            )
+        if "vllm_ttft_mean_seconds" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_mean_seconds REAL"
+            )
+        if "vllm_preemptions" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_preemptions INTEGER"
             )
 
     @contextmanager

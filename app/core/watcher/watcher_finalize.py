@@ -29,6 +29,8 @@ from .watcher_helpers import (
     _parse_worker_subagent_spawns,
     _parse_worker_usage,
     _read_result_flags,
+    capture_vllm_metrics,
+    compute_vllm_metrics_delta,
     resolve_effective_mode,
 )
 from .watcher_subprocess import (
@@ -99,6 +101,48 @@ def _estimate_cloud_cost(
     return (input_tokens / 1_000_000) * pricing["input"] + (
         output_tokens / 1_000_000
     ) * pricing["output"]
+
+
+def _write_vllm_metrics_artifact(
+    repo_root: Path,
+    ticket_id: str,
+    *,
+    attributable: bool,
+    before: dict[str, float] | None,
+    after: dict[str, float] | None,
+    deltas: dict[str, float | int | None],
+    reason: str | None = None,
+) -> None:
+    """Write the WOR-370 vLLM /metrics audit artifact for one session.
+
+    Goes to ``.claude/artifacts/<ticket>/vllm_metrics.json`` next to the
+    existing manifest copy. Failure is non-fatal — finalize_worker should
+    not crash on disk write errors.
+    """
+    slug = ticket_id.lower().replace("-", "_")
+    artifact_dir = repo_root / ".claude" / "artifacts" / slug
+    payload: dict[str, object] = {
+        "ticket_id": ticket_id,
+        "attributable": attributable,
+    }
+    if reason is not None:
+        payload["reason"] = reason
+    if before is not None:
+        payload["before"] = before
+    if after is not None:
+        payload["after"] = after
+    if deltas:
+        payload["deltas"] = deltas
+    try:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "vllm_metrics.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning(
+            "Could not write vLLM metrics artifact for %s: %s", ticket_id, exc
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +334,54 @@ def finalize_worker(
     # check_failures: store the list when non-empty, else None
     check_failures = failed_checks if failed_checks else None
 
+    # WOR-370: vLLM /metrics delta capture. Three states:
+    #   1. Attributable — worker was solo throughout. Take after-snapshot,
+    #      compute deltas, write artifact + populate TicketMetrics columns.
+    #   2. Concurrent during session — sentinel artifact, columns stay None,
+    #      attributable=False on the row.
+    #   3. Never captured — no artifact, columns stay None, attributable=None.
+    vllm_attributable: bool | None = None
+    vllm_deltas: dict[str, float | int | None] = {}
+    if worker.vllm_metrics_before is not None:
+        if worker.remained_solo:
+            after = capture_vllm_metrics()
+            if after is not None:
+                vllm_attributable = True
+                vllm_deltas = compute_vllm_metrics_delta(
+                    worker.vllm_metrics_before, after
+                )
+                _write_vllm_metrics_artifact(
+                    repo_root,
+                    worker.ticket_id,
+                    attributable=True,
+                    before=worker.vllm_metrics_before,
+                    after=after,
+                    deltas=vllm_deltas,
+                )
+            else:
+                # before captured, after failed — un-attributable, but the
+                # before is still useful for audit. Write sentinel.
+                _write_vllm_metrics_artifact(
+                    repo_root,
+                    worker.ticket_id,
+                    attributable=False,
+                    before=worker.vllm_metrics_before,
+                    after=None,
+                    deltas={},
+                    reason="after-snapshot failed (vLLM /metrics unreachable)",
+                )
+        else:
+            vllm_attributable = False
+            _write_vllm_metrics_artifact(
+                repo_root,
+                worker.ticket_id,
+                attributable=False,
+                before=worker.vllm_metrics_before,
+                after=None,
+                deltas={},
+                reason="concurrent worker dispatched during session",
+            )
+
     metrics.record(
         TicketMetrics(
             ticket_id=worker.ticket_id,
@@ -337,6 +429,17 @@ def finalize_worker(
             subagent_spawns=subagent_spawns,
             # WOR-363: persist dispatch-time worker pool size
             dispatch_concurrency=worker.dispatch_concurrency,
+            # WOR-370: vLLM /metrics deltas (None unless solo throughout)
+            vllm_metrics_attributable=vllm_attributable,
+            vllm_prefix_cache_hits=vllm_deltas.get("prefix_cache_hits"),  # type: ignore[arg-type]
+            vllm_prefix_cache_queries=vllm_deltas.get("prefix_cache_queries"),  # type: ignore[arg-type]
+            vllm_prefix_cache_hit_ratio=vllm_deltas.get("prefix_cache_hit_ratio"),
+            vllm_prompt_tokens=vllm_deltas.get("prompt_tokens"),  # type: ignore[arg-type]
+            vllm_generation_tokens=vllm_deltas.get("generation_tokens"),  # type: ignore[arg-type]
+            vllm_ttft_seconds_sum=vllm_deltas.get("ttft_seconds_sum"),
+            vllm_ttft_count=vllm_deltas.get("ttft_count"),  # type: ignore[arg-type]
+            vllm_ttft_mean_seconds=vllm_deltas.get("ttft_mean_seconds"),
+            vllm_preemptions=vllm_deltas.get("preemptions"),  # type: ignore[arg-type]
         )
     )
     metrics.record_run(

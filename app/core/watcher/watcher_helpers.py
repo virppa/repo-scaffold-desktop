@@ -473,3 +473,164 @@ def count_main_ahead_of_epic(epic_branch: str, repo_root: Path) -> int:
         return int(out.strip())
     except (subprocess.SubprocessError, ValueError, FileNotFoundError):
         return 0
+
+
+# ---------------------------------------------------------------------------
+# vLLM /metrics capture (WOR-370)
+# ---------------------------------------------------------------------------
+
+# Counters and gauges to snapshot. Keep in one place so capture and delta
+# parsing stay in sync. Each entry: (metric_name, kind) where kind is
+# "counter" (cumulative; produce delta = after-before) or "gauge" (point-in-
+# time; produce just `before` and `after` snapshots, no delta).
+_VLLM_COUNTERS = (
+    "vllm:prefix_cache_hits_total",
+    "vllm:prefix_cache_queries_total",
+    "vllm:prompt_tokens_total",
+    "vllm:generation_tokens_total",
+    "vllm:time_to_first_token_seconds_sum",
+    "vllm:time_to_first_token_seconds_count",
+    "vllm:num_preemptions_total",
+)
+
+
+def capture_vllm_metrics(timeout: float = 5.0) -> dict[str, float] | None:
+    """Snapshot the small subset of vLLM Prometheus metrics needed for
+    per-ticket attribution.
+
+    Returns a dict keyed by metric name (without label suffixes) mapping to
+    the most recent value, or ``None`` if the endpoint is unreachable or
+    returns malformed text. Failure is non-fatal — callers treat ``None``
+    as "no snapshot, skip attribution."
+
+    Prometheus text format lines look like:
+        vllm:prefix_cache_hits_total{model="qwen3-coder",engine="0"} 12345.0
+
+    We strip everything after the metric name, sum across labels (there's
+    typically just one model/engine combo, but be safe), and emit a flat dict.
+
+    Uses ``http.client`` (matching ``watcher_services.probe_vllm_health``)
+    rather than ``urllib.request`` — the latter accepts ``file://`` URLs
+    so semgrep flags any urlopen call. This API only speaks HTTP to a
+    fixed localhost host:port pair so there is no SSRF surface.
+    """
+    import http.client
+
+    # _VLLM_BASE_URL has the form "http://localhost:8000"; strip the scheme
+    # and split host:port for http.client.HTTPConnection.
+    netloc = _VLLM_BASE_URL.split("://", 1)[1]
+    host, _, port_str = netloc.partition(":")
+    port = int(port_str) if port_str else 80
+
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+        try:
+            conn.request("GET", "/metrics")
+            resp = conn.getresponse()
+            if resp.status != 200:
+                return None
+            body = resp.read().decode("utf-8", errors="replace")
+        finally:
+            conn.close()
+    except (OSError, http.client.HTTPException):
+        return None
+
+    targets = set(_VLLM_COUNTERS)
+    aggregated: dict[str, float] = {name: 0.0 for name in targets}
+    seen: dict[str, bool] = {name: False for name in targets}
+
+    for raw in body.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Metric name extends from start to first '{' or whitespace
+        for ch_idx, ch in enumerate(line):
+            if ch == "{" or ch.isspace():
+                metric_name = line[:ch_idx]
+                rest = line[ch_idx:]
+                break
+        else:
+            continue
+        if metric_name not in targets:
+            continue
+        # Value is the LAST whitespace-separated token
+        try:
+            value = float(rest.rsplit(maxsplit=1)[-1])
+        except (ValueError, IndexError):
+            continue
+        aggregated[metric_name] += value
+        seen[metric_name] = True
+
+    # If we saw none of the target metrics, treat as failure — endpoint
+    # responded but probably isn't a vLLM /metrics endpoint.
+    if not any(seen.values()):
+        return None
+    return aggregated
+
+
+def compute_vllm_metrics_delta(
+    before: dict[str, float],
+    after: dict[str, float],
+) -> dict[str, float | None]:
+    """Compute deltas + derived ratios from two snapshots taken via
+    ``capture_vllm_metrics``.
+
+    Counter deltas can be negative if vLLM was restarted between the two
+    snapshots (counters reset on restart). In that case the delta is
+    meaningless; callers should treat ratios as None when raw counts go
+    negative.
+
+    Returns a flat dict suitable for direct assignment to TicketMetrics
+    columns (keys match the column names without the ``vllm_`` prefix
+    being added by the caller).
+    """
+
+    def _delta(key: str) -> float:
+        return float(after.get(key, 0.0)) - float(before.get(key, 0.0))
+
+    hits = _delta("vllm:prefix_cache_hits_total")
+    queries = _delta("vllm:prefix_cache_queries_total")
+    prompt = _delta("vllm:prompt_tokens_total")
+    gen = _delta("vllm:generation_tokens_total")
+    ttft_sum = _delta("vllm:time_to_first_token_seconds_sum")
+    ttft_count = _delta("vllm:time_to_first_token_seconds_count")
+    preempt = _delta("vllm:num_preemptions_total")
+
+    # Negative delta = vLLM restarted between snapshots; flag as
+    # non-attributable by setting all derived to None.
+    counter_corrupt = any(
+        v < 0 for v in (hits, queries, prompt, gen, ttft_sum, ttft_count, preempt)
+    )
+
+    hit_ratio: float | None = None
+    if not counter_corrupt and queries > 0:
+        hit_ratio = hits / queries
+
+    ttft_mean: float | None = None
+    if not counter_corrupt and ttft_count > 0:
+        ttft_mean = ttft_sum / ttft_count
+
+    if counter_corrupt:
+        return {
+            "prefix_cache_hits": None,
+            "prefix_cache_queries": None,
+            "prefix_cache_hit_ratio": None,
+            "prompt_tokens": None,
+            "generation_tokens": None,
+            "ttft_seconds_sum": None,
+            "ttft_count": None,
+            "ttft_mean_seconds": None,
+            "preemptions": None,
+        }
+
+    return {
+        "prefix_cache_hits": int(hits),
+        "prefix_cache_queries": int(queries),
+        "prefix_cache_hit_ratio": hit_ratio,
+        "prompt_tokens": int(prompt),
+        "generation_tokens": int(gen),
+        "ttft_seconds_sum": ttft_sum,
+        "ttft_count": int(ttft_count),
+        "ttft_mean_seconds": ttft_mean,
+        "preemptions": int(preempt),
+    }

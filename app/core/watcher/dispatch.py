@@ -15,6 +15,7 @@ from app.core.manifest import ExecutionManifest
 
 from .watcher_finalize import safe_set_state
 from .watcher_helpers import (
+    capture_vllm_metrics,
     count_main_ahead_of_epic,
     resolve_effective_mode,
     suppress_dedup,
@@ -161,6 +162,25 @@ def start_ticket(
     # WOR-363: capture pool size BEFORE launching this worker. Counts OTHER
     # workers — does not include the one we're about to add.
     dispatch_concurrency = len(_local_active) + len(_cloud_active)
+
+    # WOR-370: vLLM /metrics attribution gate.
+    # 1. If we're solo (dispatch_concurrency==0) and the /metrics endpoint
+    #    responds, snapshot for later delta computation.
+    # 2. If we're NOT solo, any peer that previously had remained_solo=True
+    #    must lose that flag — they're no longer alone, so their session's
+    #    deltas would be polluted by this worker's traffic.
+    vllm_metrics_before: dict[str, float] | None = None
+    remained_solo = False
+    if dispatch_concurrency == 0:
+        snapshot = capture_vllm_metrics()
+        if snapshot is not None:
+            vllm_metrics_before = snapshot
+            remained_solo = True
+    else:
+        for peer in (*_local_active, *_cloud_active):
+            if peer.remained_solo:
+                peer.remained_solo = False
+
     process = launch_worker(
         _repo_root, manifest, worktree_path, effective_mode, worker_verbose
     )
@@ -172,6 +192,8 @@ def start_ticket(
         process=process,
         backed_up_plans=backed_up_plans,
         dispatch_concurrency=dispatch_concurrency,
+        vllm_metrics_before=vllm_metrics_before,
+        remained_solo=remained_solo,
     )
     if effective_mode == "local":
         _local_active.append(worker)
