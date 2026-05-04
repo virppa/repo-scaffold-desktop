@@ -59,3 +59,22 @@ forbidden_modules =
     app.core.watcher.watcher_subprocess
     app.core.watcher.watcher_worktrees
     app.core.watcher.watcher_services
+
+[importlinter:contract:bench-store-not-in-watcher]
+name = bench_store must not be imported by watcher modules
+type = forbidden
+# app.core.bench_store is a data store for benchmark run records.
+# If watcher modules import it, the benchmark runner becomes coupled to
+# the watcher runtime — a dependency that should not exist between
+# separate concerns (benchmark data vs. ticket orchestration).
+# CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
+source_modules =
+    app.core.watcher
+    app.core.watcher.watcher_finalize
+    app.core.watcher.watcher_helpers
+    app.core.watcher.watcher_services
+    app.core.watcher.watcher_subprocess
+    app.core.watcher.watcher_worktrees
+    app.core.watcher.watcher_types
+forbidden_modules =
+    app.core.bench_store

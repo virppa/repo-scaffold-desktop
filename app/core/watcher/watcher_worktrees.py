@@ -609,10 +609,11 @@ def _rmtree_force(path: Path) -> None:
     """
     import os
     import stat
+    from collections.abc import Callable
 
-    def _on_rm_error(func: object, p: str, _exc_info: object) -> None:
+    def _on_rm_error(func: Callable[..., object], p: str, _exc_info: object) -> None:
         os.chmod(p, stat.S_IWRITE)
-        func(p)  # type: ignore[operator]
+        func(p)
 
     shutil.rmtree(path, onexc=_on_rm_error)
 

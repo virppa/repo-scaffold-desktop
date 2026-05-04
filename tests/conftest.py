@@ -26,6 +26,10 @@ def make_manifest(**overrides: object) -> ExecutionManifest:
         "objective": "Do the thing.",
         "artifact_paths": ArtifactPaths.from_ticket_id("WOR-10"),
         "allowed_paths": ["app/core/foo.py"],
+        # WOR-378: dispatch refuses manifests with empty required_checks, so
+        # the conftest fixture defaults a non-empty list. Tests that exercise
+        # the empty-required_checks path can override explicitly.
+        "required_checks": ["pytest"],
     }
     defaults.update(overrides)
     return ExecutionManifest(**defaults)  # type: ignore[arg-type]

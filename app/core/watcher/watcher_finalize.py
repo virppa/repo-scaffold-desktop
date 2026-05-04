@@ -12,15 +12,26 @@ import os
 import subprocess  # nosec B404
 from pathlib import Path
 
-from app.core.escalation_policy import EscalationPolicy
+from app.core.escalation_policy import EscalationPolicy, get_waste_warn_threshold
 from app.core.linear_client import LinearError
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import MetricsStore, Outcome, TicketMetrics, TicketRunLog
+from app.core.metrics import (
+    MetricsStore,
+    Outcome,
+    TicketMetrics,
+    TicketRunLog,
+    compute_tags,
+)
 
 from .watcher_helpers import (
     _POLICY_FLAGS,
+    _parse_worker_api_retries,
+    _parse_worker_behavior,
+    _parse_worker_subagent_spawns,
     _parse_worker_usage,
     _read_result_flags,
+    capture_vllm_metrics,
+    compute_vllm_metrics_delta,
     resolve_effective_mode,
 )
 from .watcher_subprocess import (
@@ -32,6 +43,7 @@ from .watcher_subprocess import (
 from .watcher_tui import TrackedPR
 from .watcher_types import (
     _CLAUDE_DIR,
+    _IN_PROGRESS_STATE,
     _LOCAL_MODEL,
     ActiveWorker,
     LinearClientProtocol,
@@ -44,6 +56,7 @@ from .watcher_worktrees import (
     restore_plan_files,
     squash_wip_commits,
 )
+from .worker_waste import compute_waste_score
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +102,48 @@ def _estimate_cloud_cost(
     return (input_tokens / 1_000_000) * pricing["input"] + (
         output_tokens / 1_000_000
     ) * pricing["output"]
+
+
+def _write_vllm_metrics_artifact(
+    repo_root: Path,
+    ticket_id: str,
+    *,
+    attributable: bool,
+    before: dict[str, float] | None,
+    after: dict[str, float] | None,
+    deltas: dict[str, float | int | None],
+    reason: str | None = None,
+) -> None:
+    """Write the WOR-370 vLLM /metrics audit artifact for one session.
+
+    Goes to ``.claude/artifacts/<ticket>/vllm_metrics.json`` next to the
+    existing manifest copy. Failure is non-fatal — finalize_worker should
+    not crash on disk write errors.
+    """
+    slug = ticket_id.lower().replace("-", "_")
+    artifact_dir = repo_root / ".claude" / "artifacts" / slug
+    payload: dict[str, object] = {
+        "ticket_id": ticket_id,
+        "attributable": attributable,
+    }
+    if reason is not None:
+        payload["reason"] = reason
+    if before is not None:
+        payload["before"] = before
+    if after is not None:
+        payload["after"] = after
+    if deltas:
+        payload["deltas"] = deltas
+    try:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "vllm_metrics.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning(
+            "Could not write vLLM metrics artifact for %s: %s", ticket_id, exc
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +233,7 @@ def finalize_worker(
     project_id: str,
     tracked_prs: list[TrackedPR] | None = None,
 ) -> Outcome:
-    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, pr_url = (
+    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, _ = (
         _execute_finalization(
             worker,
             returncode,
@@ -192,10 +247,25 @@ def finalize_worker(
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-    input_tokens, output_tokens, context_compactions = _parse_worker_usage(log_path)
+    input_tokens, output_tokens, context_compactions, compact_duration_ms = (
+        _parse_worker_usage(log_path)
+    )
+    api_retry_count = _parse_worker_api_retries(log_path)
+    subagent_spawns = _parse_worker_subagent_spawns(log_path)
+    # WOR-380: per-worker behavior telemetry. Concurrency-safe — extracted
+    # from this worker's own log file.
+    behavior = _parse_worker_behavior(log_path)
+    tool_breakdown_json: str | None = (
+        json.dumps(behavior.tool_calls_breakdown, sort_keys=True)
+        if behavior.tool_calls_breakdown is not None
+        else None
+    )
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
 
     # Parse git diff --shortstat to populate lines_changed / files_changed.
+    # Three-dot diff against the merge-base — invariant under base_branch
+    # advancing during the worker's lifetime (WOR-354). Two-dot would attribute
+    # sibling-merge upstream commits to this worker.
     # Must run before preserve_worker_artifacts tears down the worktree.
     try:
         diff_output = subprocess.run(  # nosec B603 B607
@@ -205,7 +275,7 @@ def finalize_worker(
                 str(worker.worktree_path),
                 "diff",
                 "--shortstat",
-                worker.manifest.base_branch,
+                f"{worker.manifest.base_branch}...HEAD",
             ],
             capture_output=True,
             text=True,
@@ -213,7 +283,7 @@ def finalize_worker(
         )
         raw_shortstat = (diff_output.stdout or "") + (diff_output.stderr or "")
         lines_changed, files_changed = parse_git_shortstat(raw_shortstat)
-    except (OSError, subprocess.TimeoutExpired, OSError):
+    except (OSError, subprocess.TimeoutExpired):
         lines_changed, files_changed = 0, 0
 
     # Cloud metrics — populated only when eff == "cloud"
@@ -231,7 +301,7 @@ def finalize_worker(
     local_tokens: int | None = None
     local_input_tokens: int | None = None
     local_output_tokens: int | None = None
-    local_output_tokens_per_second: float | None = None
+    output_tokens_per_wall_second: float | None = None
     local_model_str: str | None = None
     if eff == "local":
         local_tokens = (
@@ -243,13 +313,83 @@ def finalize_worker(
         local_output_tokens = output_tokens
         local_model_str = _LOCAL_MODEL
         if output_tokens is not None and wall_time and wall_time > 0:
-            local_output_tokens_per_second = output_tokens / wall_time
+            output_tokens_per_wall_second = output_tokens / wall_time
+
+    # Compute waste score from the worker log (WOR-277).
+    waste_report = compute_waste_score(log_path)
+    waste_score: int | None = waste_report.score if waste_report.score > 0 else None
+    waste_breakdown_json: str | None = (
+        json.dumps(waste_report.breakdown) if waste_report.score > 0 else None
+    )
+    if waste_score is not None and waste_score > get_waste_warn_threshold():
+        top_reasons = ", ".join(
+            f"{k}={v}"
+            for k, v in sorted(
+                waste_report.breakdown.items(), key=lambda x: x[1], reverse=True
+            )
+            if v > 0
+        )
+        logger.warning(
+            "High waste score for %s: %d/100 (%s)",
+            worker.ticket_id,
+            waste_score,
+            top_reasons,
+        )
+
     # Derive the first failed check name for TicketRunLog (WOR-261)
     first_failed_check: str | None = (
         str(failed_checks[0]["check"]) if failed_checks else None
     )
     # check_failures: store the list when non-empty, else None
     check_failures = failed_checks if failed_checks else None
+
+    # WOR-370: vLLM /metrics delta capture. Three states:
+    #   1. Attributable — worker was solo throughout. Take after-snapshot,
+    #      compute deltas, write artifact + populate TicketMetrics columns.
+    #   2. Concurrent during session — sentinel artifact, columns stay None,
+    #      attributable=False on the row.
+    #   3. Never captured — no artifact, columns stay None, attributable=None.
+    vllm_attributable: bool | None = None
+    vllm_deltas: dict[str, float | int | None] = {}
+    if worker.vllm_metrics_before is not None:
+        if worker.remained_solo:
+            after = capture_vllm_metrics()
+            if after is not None:
+                vllm_attributable = True
+                vllm_deltas = compute_vllm_metrics_delta(
+                    worker.vllm_metrics_before, after
+                )
+                _write_vllm_metrics_artifact(
+                    repo_root,
+                    worker.ticket_id,
+                    attributable=True,
+                    before=worker.vllm_metrics_before,
+                    after=after,
+                    deltas=vllm_deltas,
+                )
+            else:
+                # before captured, after failed — un-attributable, but the
+                # before is still useful for audit. Write sentinel.
+                _write_vllm_metrics_artifact(
+                    repo_root,
+                    worker.ticket_id,
+                    attributable=False,
+                    before=worker.vllm_metrics_before,
+                    after=None,
+                    deltas={},
+                    reason="after-snapshot failed (vLLM /metrics unreachable)",
+                )
+        else:
+            vllm_attributable = False
+            _write_vllm_metrics_artifact(
+                repo_root,
+                worker.ticket_id,
+                attributable=False,
+                before=worker.vllm_metrics_before,
+                after=None,
+                deltas={},
+                reason="concurrent worker dispatched during session",
+            )
 
     metrics.record(
         TicketMetrics(
@@ -267,7 +407,7 @@ def finalize_worker(
             local_output_tokens=local_output_tokens,
             local_tokens=local_tokens,
             local_wall_time=wall_time,
-            local_output_tokens_per_second=local_output_tokens_per_second,
+            output_tokens_per_wall_second=output_tokens_per_wall_second,
             escalated_to_cloud=escalated,
             outcome=outcome,
             retry_count=worker.retry_count,
@@ -286,6 +426,39 @@ def finalize_worker(
             ac_specificity=worker.manifest.ac_specificity,
             tech_stack=worker.manifest.tech_stack,
             raw_extensions=worker.manifest.raw_extensions,
+            waste_score=waste_score,
+            waste_breakdown_json=waste_breakdown_json,
+            # WOR-348: persist manifest effort for retro analytics
+            effort=worker.manifest.effort,
+            # WOR-358: persist total compaction time for throughput analysis
+            compact_duration_ms=compact_duration_ms,
+            # WOR-360: persist Claude Code's internal retry count
+            api_retry_count=api_retry_count,
+            # WOR-364: persist Task-tool subagent count
+            subagent_spawns=subagent_spawns,
+            # WOR-363: persist dispatch-time worker pool size
+            dispatch_concurrency=worker.dispatch_concurrency,
+            # WOR-370: vLLM /metrics deltas (None unless solo throughout)
+            vllm_metrics_attributable=vllm_attributable,
+            vllm_prefix_cache_hits=vllm_deltas.get("prefix_cache_hits"),  # type: ignore[arg-type]
+            vllm_prefix_cache_queries=vllm_deltas.get("prefix_cache_queries"),  # type: ignore[arg-type]
+            vllm_prefix_cache_hit_ratio=vllm_deltas.get("prefix_cache_hit_ratio"),
+            vllm_prompt_tokens=vllm_deltas.get("prompt_tokens"),  # type: ignore[arg-type]
+            vllm_generation_tokens=vllm_deltas.get("generation_tokens"),  # type: ignore[arg-type]
+            vllm_ttft_seconds_sum=vllm_deltas.get("ttft_seconds_sum"),
+            vllm_ttft_count=vllm_deltas.get("ttft_count"),  # type: ignore[arg-type]
+            vllm_ttft_mean_seconds=vllm_deltas.get("ttft_mean_seconds"),
+            vllm_preemptions=vllm_deltas.get("preemptions"),  # type: ignore[arg-type]
+            # WOR-380: per-worker behavior telemetry (any concurrency)
+            turn_count=behavior.turn_count,
+            tool_calls_total=behavior.tool_calls_total,
+            tool_calls_breakdown=tool_breakdown_json,
+            thinking_blocks=behavior.thinking_blocks,
+            thinking_chars_total=behavior.thinking_chars_total,
+            input_tokens_max=behavior.input_tokens_max,
+            input_tokens_first=behavior.input_tokens_first,
+            input_tokens_last=behavior.input_tokens_last,
+            redundant_reads_count=behavior.redundant_reads_count,
         )
     )
     metrics.record_run(
@@ -298,18 +471,32 @@ def finalize_worker(
             wall_time_s=wall_time,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            output_tok_per_s=local_output_tokens_per_second,
+            output_tok_per_s=output_tokens_per_wall_second,
             context_compactions=context_compactions,
         )
     )
 
-    restore_plan_files(worker.backed_up_plans)
-    if artifacts_preserved:
-        # Success path — artifacts already saved upstream; remove worktree.
-        cleanup_worktree(repo_root, worker.worktree_path)
-        return outcome
+    # Auto-detect tags for morning retros (WOR-332).
+    _manifest = worker.manifest
+    _row = metrics.get_by_ticket(worker.ticket_id, project_id)
+    if _row is not None:
+        _tags = compute_tags(
+            _row,
+            _read_result_status(repo_root, _manifest) or "",
+            _read_result_flags(repo_root / _manifest.artifact_paths.result_json),
+            tracked_prs,
+        )
+        if _tags:
+            metrics.set_tags(worker.ticket_id, project_id, _tags)
 
-    # Failure path — preserve WIP before considering teardown (WOR-258, WOR-288).
+    restore_plan_files(worker.backed_up_plans)
+
+    # Always preserve any uncommitted WIP before deciding cleanup (WOR-347).
+    # Workers can exit rc=0 with all checks passing yet never have committed
+    # the work — the previous success path skipped commit_wip_state and
+    # destroyed uncommitted edits with the worktree. Running it on every path
+    # makes the worst case "an extra WIP commit on the worker branch" rather
+    # than "all work lost".
     backup_root = repo_root / _CLAUDE_DIR / "artifacts"
     wip_result = commit_wip_state(
         worker.worktree_path,
@@ -319,7 +506,12 @@ def finalize_worker(
     )
     if wip_result.sha is not None:
         _write_wip_sha_to_last_failure(worker, wip_result.sha)
-    preserve_worker_artifacts(repo_root, worker)
+
+    if not artifacts_preserved:
+        # Failure path: also preserve full worker artifacts (logs, last_failure,
+        # etc.) for forensic analysis. Success path doesn't need this — the PR
+        # itself is the artifact.
+        preserve_worker_artifacts(repo_root, worker)
 
     if wip_result.status in ("clean", "pushed", "backup"):
         cleanup_worktree(repo_root, worker.worktree_path)
@@ -365,7 +557,7 @@ def _read_result_status(repo_root: Path, manifest: ExecutionManifest) -> str | N
         return None
     try:
         data = json.loads(raw)
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         return None
     status = data.get("status") if isinstance(data, dict) else None
     return status if isinstance(status, str) else None
@@ -420,7 +612,7 @@ def _execute_finalization(
             escalated = bool(manifest.failure_policy.escalate_to_cloud)
             if escalated:
                 logger.info("Escalating %s to cloud per failure policy", ticket_id)
-                safe_set_state(linear, linear_id, "In Progress", ticket_id)
+                safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
                 _try_post_comment(
                     linear,
                     linear_id,
@@ -447,7 +639,7 @@ def _execute_finalization(
         escalated = bool(manifest.failure_policy.escalate_to_cloud)
         if escalated:
             logger.info("Escalating %s to cloud after check failure", ticket_id)
-            safe_set_state(linear, linear_id, "In Progress", ticket_id)
+            safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
             _try_post_comment(
                 linear,
                 linear_id,
@@ -499,7 +691,7 @@ def _handle_policy_outcome(
     if action == "escalate":
         triggering = next((f for f in _POLICY_FLAGS if flags.get(f)), "unknown")
         logger.info("Escalating %s to cloud (flag=%s)", ticket_id, triggering)
-        safe_set_state(linear, linear_id, "In Progress", ticket_id)
+        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(
             linear,
             linear_id,
@@ -522,10 +714,8 @@ def _handle_policy_outcome(
 
     # fix_locally — check Sonar findings before creating PR
     sonar_findings = fetch_sonar_findings(manifest.worker_branch)
-    if _sonar_requires_escalation(
-        sonar_findings, ticket_id, linear_id, linear, escalation_policy
-    ):
-        safe_set_state(linear, linear_id, "In Progress", ticket_id)
+    if _sonar_requires_escalation(sonar_findings, ticket_id, escalation_policy):
+        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(
             linear,
             linear_id,
@@ -551,8 +741,6 @@ def _handle_policy_outcome(
 def _sonar_requires_escalation(
     sonar_findings: list[str] | None,
     ticket_id: str,
-    linear_id: str,
-    linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
 ) -> bool:
     if not sonar_findings:

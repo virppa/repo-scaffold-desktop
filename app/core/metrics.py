@@ -13,7 +13,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator, Literal
+from typing import Any, Generator, Literal
 
 from pydantic import BaseModel, Field
 
@@ -22,7 +22,7 @@ Outcome = Literal["success", "failure", "escalated", "aborted"]
 CheckOutcome = Literal["passed", "failed"]
 
 _APP_DIR = "repo-scaffold"
-_DB_NAME = "metrics.db"
+_DB_NAME = "app.db"
 
 _CREATE_CHECK_RUN_LOG = """
 CREATE TABLE IF NOT EXISTS check_run_log (
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     local_output_tokens   INTEGER,
     local_tokens          INTEGER,
     local_wall_time       REAL,
-    local_output_tokens_per_second REAL,
+    output_tokens_per_wall_second REAL,
     escalated_to_cloud    INTEGER NOT NULL DEFAULT 0,
     outcome               TEXT NOT NULL,
     retry_count           INTEGER NOT NULL DEFAULT 0,
@@ -85,6 +85,15 @@ CREATE TABLE IF NOT EXISTS ticket_metrics (
     ac_specificity        INTEGER,
     tech_stack            TEXT,
     raw_extensions        TEXT,
+    waste_score           INTEGER,
+    waste_breakdown_json  TEXT,
+    tags                  TEXT,
+    notes                 TEXT,
+    effort                TEXT,
+    compact_duration_ms   INTEGER,
+    api_retry_count       INTEGER,
+    subagent_spawns       INTEGER,
+    dispatch_concurrency  INTEGER,
     recorded_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ticket_id, project_id)
 )
@@ -109,8 +118,15 @@ class TicketMetrics(BaseModel):
     local_input_tokens: int | None = None
     local_output_tokens: int | None = None
     local_tokens: int | None = None
-    local_output_tokens_per_second: float | None = Field(
-        default=None, description="output_tokens / wall_time when both present"
+    output_tokens_per_wall_second: float | None = Field(
+        default=None,
+        description=(
+            "output_tokens / total local_wall_time. WOR-361: this is NOT decode "
+            "throughput — wall_time includes prefill, tool exec, hooks, and "
+            "compaction. For real decode rate, query vLLM /metrics directly. "
+            "Useful only for 'did this ticket take a long time relative to its "
+            "output' style questions."
+        ),
     )
     local_wall_time: float | None = Field(default=None, description="Seconds")
     escalated_to_cloud: bool = False
@@ -164,6 +180,148 @@ class TicketMetrics(BaseModel):
     raw_extensions: str | None = Field(
         default=None,
         description="JSON array string of file extensions touched",
+    )
+    waste_score: int | None = Field(
+        default=None,
+        description="0-100 waste score for the worker session",
+    )
+    waste_breakdown_json: str | None = Field(
+        default=None,
+        description="JSON string of per-signal breakdown for dashboard drill-down",
+    )
+    tags: str | None = Field(
+        default=None,
+        description="JSON array string of auto-detected tags, "
+        'e.g. "[\\"zero_tokens_high_wall_time\\",\\"high_waste\\"]"',
+    )
+    notes: str | None = Field(
+        default=None,
+        description="Free-form operator notes for morning retros",
+    )
+    effort: str | None = Field(
+        default=None,
+        description="Effort level from the manifest: low/medium/high/xhigh/max",
+    )
+    compact_duration_ms: int | None = Field(
+        default=None,
+        description=(
+            "Cumulative ms spent on context compaction during the session "
+            "(WOR-358). Sum of compact_metadata.duration_ms across all "
+            "compact_boundary system events."
+        ),
+    )
+    api_retry_count: int | None = Field(
+        default=None,
+        description=(
+            "Count of system/api_retry events (WOR-360) — Claude Code's "
+            "transient backend retries. Backend-stability proxy."
+        ),
+    )
+    subagent_spawns: int | None = Field(
+        default=None,
+        description=(
+            "Count of Task-tool invocations (WOR-364). Each spawns a subagent "
+            "with its own LLM stream — multiplies effective vLLM concurrency."
+        ),
+    )
+    dispatch_concurrency: int | None = Field(
+        default=None,
+        description=(
+            "Count of OTHER active workers (local + cloud) at the moment this "
+            "worker launched (WOR-363). 0 = solo dispatch. Empirical input for "
+            "throughput-vs-concurrency analysis."
+        ),
+    )
+    # WOR-370: vLLM /metrics deltas captured during this session. Only
+    # populated when dispatch_concurrency==0 at dispatch AND no peer was
+    # launched during the session. attribute=False sessions leave all fields
+    # below as None.
+    vllm_metrics_attributable: bool | None = Field(
+        default=None,
+        description=(
+            "True iff the worker was solo throughout its session and the "
+            "vLLM /metrics deltas below are attributable to this ticket. "
+            "False if a peer was dispatched during the session. None if "
+            "the snapshot was never captured (e.g. /metrics unreachable)."
+        ),
+    )
+    vllm_prefix_cache_hits: int | None = Field(
+        default=None, description="Delta of vllm:prefix_cache_hits_total"
+    )
+    vllm_prefix_cache_queries: int | None = Field(
+        default=None, description="Delta of vllm:prefix_cache_queries_total"
+    )
+    vllm_prefix_cache_hit_ratio: float | None = Field(
+        default=None,
+        description="Derived: hits/queries during the session, range 0-1",
+    )
+    vllm_prompt_tokens: int | None = Field(
+        default=None, description="Delta of vllm:prompt_tokens_total"
+    )
+    vllm_generation_tokens: int | None = Field(
+        default=None, description="Delta of vllm:generation_tokens_total"
+    )
+    vllm_ttft_seconds_sum: float | None = Field(
+        default=None,
+        description="Delta of vllm:time_to_first_token_seconds_sum",
+    )
+    vllm_ttft_count: int | None = Field(
+        default=None,
+        description="Delta of vllm:time_to_first_token_seconds_count",
+    )
+    vllm_ttft_mean_seconds: float | None = Field(
+        default=None,
+        description="Derived: ttft_seconds_sum / ttft_count for the session",
+    )
+    vllm_preemptions: int | None = Field(
+        default=None,
+        description=(
+            "Delta of vllm:num_preemptions_total during the session. >0 "
+            "indicates KV cache pressure forced request preemption."
+        ),
+    )
+    # WOR-380: per-worker behavior telemetry from stream-json log.
+    # Concurrency-safe — derived from the worker's own log file.
+    turn_count: int | None = Field(
+        default=None,
+        description="Number of assistant messages (turns) in the session.",
+    )
+    tool_calls_total: int | None = Field(
+        default=None, description="Total tool_use blocks emitted during the session."
+    )
+    tool_calls_breakdown: str | None = Field(
+        default=None,
+        description=(
+            "JSON-serialized dict of tool_use counts by tool name, e.g. "
+            '\'{"Read": 7, "Edit": 6, "Bash": 10}\'.'
+        ),
+    )
+    thinking_blocks: int | None = Field(
+        default=None,
+        description="Count of `type=thinking` content blocks (Qwen3 reasoning).",
+    )
+    thinking_chars_total: int | None = Field(
+        default=None,
+        description="Sum of len(text) across all thinking blocks (reasoning depth).",
+    )
+    input_tokens_max: int | None = Field(
+        default=None,
+        description="Max input_tokens across turns (context-window pressure proxy).",
+    )
+    input_tokens_first: int | None = Field(
+        default=None, description="input_tokens of the first assistant turn."
+    )
+    input_tokens_last: int | None = Field(
+        default=None, description="input_tokens of the last assistant turn."
+    )
+    redundant_reads_count: int | None = Field(
+        default=None,
+        description=(
+            "Number of distinct file paths read more than 2 times in the "
+            "session (WOR-355 cap). With WOR-371's hook live this should "
+            "trend to 0; useful retro signal for sessions before the hook "
+            "or for cap-exceeded violations that slipped through."
+        ),
     )
 
 
@@ -265,10 +423,10 @@ SELECT
 FROM ticket_metrics
 """
 _COST_ROLLUP_SQL_TODAY = (
-    _COST_ROLLUP_SQL_BASE + "WHERE started_at >= date('now', 'start of day')"
+    _COST_ROLLUP_SQL_BASE + "WHERE recorded_at >= date('now', 'start of day')"
 )
 _COST_ROLLUP_SQL_WEEK = (
-    _COST_ROLLUP_SQL_BASE + "WHERE started_at >= date('now', '-7 days')"
+    _COST_ROLLUP_SQL_BASE + "WHERE recorded_at >= date('now', '-7 days')"
 )
 _COST_ROLLUP_SQL_ALL = _COST_ROLLUP_SQL_BASE
 
@@ -312,11 +470,22 @@ class MetricsStore:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN local_output_tokens INTEGER"
             )
-        if "local_output_tokens_per_second" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics "
-                "ADD COLUMN local_output_tokens_per_second REAL"
-            )
+        # WOR-361: rename misleading column. Idempotent across states:
+        # - fresh DB: CREATE TABLE already used the new name
+        # - already-migrated: new name exists, skip
+        # - pre-rename DB: rename old → new
+        # - very old DB without either: ADD COLUMN with new name
+        if "output_tokens_per_wall_second" not in existing:
+            if "local_output_tokens_per_second" in existing:
+                conn.execute(
+                    "ALTER TABLE ticket_metrics RENAME COLUMN "
+                    "local_output_tokens_per_second TO output_tokens_per_wall_second"
+                )
+            else:
+                conn.execute(
+                    "ALTER TABLE ticket_metrics "
+                    "ADD COLUMN output_tokens_per_wall_second REAL"
+                )
         # WOR-262 taxonomy columns
         if "change_type" not in existing:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN change_type TEXT")
@@ -336,6 +505,117 @@ class MetricsStore:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN tech_stack TEXT")
         if "raw_extensions" not in existing:
             conn.execute("ALTER TABLE ticket_metrics ADD COLUMN raw_extensions TEXT")
+        if "waste_score" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN waste_score INTEGER")
+        if "waste_breakdown_json" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN waste_breakdown_json TEXT"
+            )
+        if "tags" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN tags TEXT")
+        if "notes" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN notes TEXT")
+        if "effort" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN effort TEXT")
+        if "compact_duration_ms" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN compact_duration_ms INTEGER"
+            )
+        if "api_retry_count" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN api_retry_count INTEGER"
+            )
+        if "subagent_spawns" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN subagent_spawns INTEGER"
+            )
+        if "dispatch_concurrency" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN dispatch_concurrency INTEGER"
+            )
+        # WOR-370: vLLM /metrics delta capture (only populated when
+        # dispatch_concurrency==0 at dispatch AND no peer was launched
+        # during the session — otherwise the server-wide counters mix
+        # multiple workers' traffic and per-ticket attribution breaks).
+        if "vllm_metrics_attributable" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics "
+                "ADD COLUMN vllm_metrics_attributable INTEGER"
+            )
+        if "vllm_prefix_cache_hits" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hits INTEGER"
+            )
+        if "vllm_prefix_cache_queries" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics "
+                "ADD COLUMN vllm_prefix_cache_queries INTEGER"
+            )
+        if "vllm_prefix_cache_hit_ratio" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hit_ratio REAL"
+            )
+        if "vllm_prompt_tokens" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_prompt_tokens INTEGER"
+            )
+        if "vllm_generation_tokens" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_generation_tokens INTEGER"
+            )
+        if "vllm_ttft_seconds_sum" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_seconds_sum REAL"
+            )
+        if "vllm_ttft_count" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_count INTEGER"
+            )
+        if "vllm_ttft_mean_seconds" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_mean_seconds REAL"
+            )
+        if "vllm_preemptions" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN vllm_preemptions INTEGER"
+            )
+        # WOR-380: per-worker behavior telemetry from stream-json log.
+        # Concurrency-safe sibling to WOR-370 — all derived from the
+        # worker's own log file.
+        if "turn_count" not in existing:
+            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN turn_count INTEGER")
+        if "tool_calls_total" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_total INTEGER"
+            )
+        if "tool_calls_breakdown" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_breakdown TEXT"
+            )
+        if "thinking_blocks" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN thinking_blocks INTEGER"
+            )
+        if "thinking_chars_total" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN thinking_chars_total INTEGER"
+            )
+        if "input_tokens_max" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_max INTEGER"
+            )
+        if "input_tokens_first" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_first INTEGER"
+            )
+        if "input_tokens_last" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_last INTEGER"
+            )
+        if "redundant_reads_count" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN redundant_reads_count INTEGER"
+            )
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -356,26 +636,32 @@ class MetricsStore:
                     ticket_id, project_id, epic_id, implementation_mode,
                     cloud_used, cloud_model, cloud_tokens, cloud_cost_estimate,
                     local_used, local_model, local_input_tokens, local_output_tokens,
-                    local_tokens, local_wall_time, local_output_tokens_per_second,
+                    local_tokens, local_wall_time, output_tokens_per_wall_second,
                     escalated_to_cloud, outcome,
                     retry_count, check_failures_json,
                     lines_changed, files_changed,
                     sonar_findings_count, context_compactions,
                     change_type, reasoning_demand, scope_clarity,
-                    constraint_density, ac_specificity, tech_stack, raw_extensions
+                    constraint_density, ac_specificity, tech_stack, raw_extensions,
+                    waste_score, waste_breakdown_json, tags, notes, effort,
+                    compact_duration_ms, api_retry_count, subagent_spawns,
+                    dispatch_concurrency
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
                     :local_used, :local_model,
                     :local_input_tokens, :local_output_tokens,
                     :local_tokens, :local_wall_time,
-                    :local_output_tokens_per_second,
+                    :output_tokens_per_wall_second,
                     :escalated_to_cloud, :outcome,
                     :retry_count, :check_failures_json,
                     :lines_changed, :files_changed,
                     :sonar_findings_count, :context_compactions,
                     :change_type, :reasoning_demand, :scope_clarity,
-                    :constraint_density, :ac_specificity, :tech_stack, :raw_extensions
+                    :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
+                    :waste_score, :waste_breakdown_json, :tags, :notes, :effort,
+                    :compact_duration_ms, :api_retry_count, :subagent_spawns,
+                    :dispatch_concurrency
                 )
                 """,
                 {
@@ -401,6 +687,16 @@ class MetricsStore:
         if row is None:
             return None
         return _row_to_metrics(row)
+
+    def set_tags(self, ticket_id: str, project_id: str, tags: list[str] | None) -> None:
+        """Set the auto-detected tags for a ticket (overwrite existing)."""
+        tags_json = json.dumps(tags) if tags else None
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE ticket_metrics SET tags = ? "
+                "WHERE ticket_id = ? AND project_id = ?",
+                (tags_json, ticket_id, project_id),
+            )
 
     def get_by_epic(self, epic_id: str, project_id: str) -> list[TicketMetrics]:
         """Return all ticket metrics for an epic."""
@@ -450,8 +746,8 @@ class MetricsStore:
     def get_cost_rollup(self, period: Literal["today", "week", "all"]) -> CostRollup:
         """Return aggregated cost economics for *period*.
 
-        *today*   = rows where ``started_at >= date('now', 'start of day')``
-        *week*    = rows where ``started_at >= date('now', '-7 days')``
+        *today*   = rows where ``recorded_at >= date('now', 'start of day')``
+        *week*    = rows where ``recorded_at >= date('now', '-7 days')``
         *all*     = no filter
 
         cloud_spent  = SUM(cloud_cost_estimate) where cloud_used=1
@@ -542,6 +838,100 @@ class MetricsStore:
             )
             for r in rows
         ]
+
+
+def compute_tags(
+    ticket_metrics_row: TicketMetrics,
+    result_json_status: str,
+    result_json_flags: dict[str, bool] | None = None,
+    tracked_prs: list[Any] | None = None,
+) -> list[str]:
+    """Return auto-detected tags for a ticket metrics row.
+
+    Pure function — no I/O, no logging, no side effects.  Easy to unit-test.
+
+    Four anomaly-detection rules (from the 2026-05-03 retro) and five
+    categorization rules (from existing result.json signals).
+
+    Args:
+        ticket_metrics_row: The TicketMetrics record as written by finalize_worker.
+        result_json_status: The ``status`` field from the worker's result.json.
+        result_json_flags: Parsed flags dict from result.json (scope_drift, etc.).
+        tracked_prs: List of TrackedPR objects that were populated during PR creation.
+
+    Returns:
+        A list of tag name strings.  May be empty.
+    """
+    tags: list[str] = []
+    outcome = ticket_metrics_row.outcome
+    lines_changed = ticket_metrics_row.lines_changed
+    waste_score = ticket_metrics_row.waste_score
+    retry_count = ticket_metrics_row.retry_count
+    local_tokens = ticket_metrics_row.local_tokens
+    local_wall_time = ticket_metrics_row.local_wall_time
+    api_retry_count = ticket_metrics_row.api_retry_count
+    context_compactions = ticket_metrics_row.context_compactions
+
+    # --- Anomaly detection rules (4) ---
+    # Type-strict guards (isinstance vs `is not None`) so the function is
+    # robust to non-numeric inputs (e.g. MagicMock leaking through tests that
+    # mock `metrics.get_by_ticket`). Without this guard, comparisons against
+    # non-numeric values raise TypeError and break unrelated tests.
+
+    # zero_tokens_high_wall_time: local worker burned wall time with almost no
+    # tokens — likely a failed run that still consumed time (2026-05-03 retro).
+    if isinstance(local_tokens, (int, float)) and isinstance(
+        local_wall_time, (int, float)
+    ):
+        if local_tokens < 100_000 and local_wall_time > 1_800:
+            tags.append("zero_tokens_high_wall_time")
+
+    # no_diff_against_base: the worker reported failure but produced no diff —
+    # it never got far enough to write code (2026-05-03 retro).
+    if outcome == "failure" and isinstance(lines_changed, int) and lines_changed == 0:
+        tags.append("no_diff_against_base")
+
+    # success_outcome_state_mismatch: result.json says success but metrics
+    # record captured failure — state machine inconsistency (2026-05-03 retro).
+    if result_json_status == "success" and outcome == "failure":
+        tags.append("success_outcome_state_mismatch")
+
+    # success_pr_create_failed: the worker succeeded but the PR push failed —
+    # the PR is not visible in the repo (2026-05-03 retro).
+    if outcome == "success" and tracked_prs is not None and len(tracked_prs) == 0:
+        tags.append("success_pr_create_failed")
+
+    # --- Categorization rules (4) ---
+
+    # scope_drift: the worker itself flagged that it went beyond scope.
+    if result_json_flags and result_json_flags.get("scope_drift"):
+        tags.append("scope_drift")
+
+    # escalated: the final outcome was an escalation to cloud.
+    if outcome == "escalated":
+        tags.append("escalated")
+
+    # high_waste: the waste score exceeds the 80 threshold.
+    if isinstance(waste_score, (int, float)) and waste_score > 80:
+        tags.append("high_waste")
+
+    # rework: the ticket required at least one retry.
+    if isinstance(retry_count, int) and retry_count > 0:
+        tags.append("rework")
+
+    # mid_session_compaction: the session performed at least one context
+    # compaction — the LLM context was truncated during the run.
+    if isinstance(context_compactions, int) and context_compactions > 0:
+        tags.append("mid_session_compaction")
+
+    # backend_unstable: high count of Claude Code internal api_retry events.
+    # Threshold 6 calibrated on 2026-05-04 backfill — Pearson r=0.665 vs
+    # wall_time, with the 6+ bucket running 4× slower than the no-retry
+    # baseline (28 min vs 121 min mean). WOR-366.
+    if isinstance(api_retry_count, int) and api_retry_count >= 6:
+        tags.append("backend_unstable")
+
+    return tags
 
 
 def _row_to_metrics(row: sqlite3.Row) -> TicketMetrics:

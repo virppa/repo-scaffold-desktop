@@ -1,0 +1,556 @@
+{
+  "base_url": "http://localhost:8000",
+  "timestamp_utc": "20260503T183134Z",
+  "pass1_relevant": [
+    {
+      "name": "vllm:num_requests_waiting_by_reason",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\",reason=\"capacity\"}",
+      "value": 0.0,
+      "type": "gauge",
+      "help": "Number of waiting requests by reason. Reason labels: 'capacity' = waiting for scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status). Sum of all reasons equals vllm:num_requests_waiting."
+    },
+    {
+      "name": "vllm:num_requests_waiting_by_reason",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\",reason=\"deferred\"}",
+      "value": 0.0,
+      "type": "gauge",
+      "help": "Number of waiting requests by reason. Reason labels: 'capacity' = waiting for scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status). Sum of all reasons equals vllm:num_requests_waiting."
+    },
+    {
+      "name": "vllm:kv_cache_usage_perc",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "gauge",
+      "help": "KV-cache usage. 1 means 100 percent usage."
+    },
+    {
+      "name": "vllm:prefix_cache_queries_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 4952265054.0,
+      "type": "counter",
+      "help": "Prefix cache queries, in terms of number of queried tokens."
+    },
+    {
+      "name": "vllm:prefix_cache_queries_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7132852,
+      "type": "gauge",
+      "help": "Prefix cache queries, in terms of number of queried tokens."
+    },
+    {
+      "name": "vllm:prefix_cache_hits_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 252614112.0,
+      "type": "counter",
+      "help": "Prefix cache hits, in terms of number of cached tokens."
+    },
+    {
+      "name": "vllm:prefix_cache_hits_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7132905,
+      "type": "gauge",
+      "help": "Prefix cache hits, in terms of number of cached tokens."
+    },
+    {
+      "name": "vllm:external_prefix_cache_queries_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "counter",
+      "help": "External prefix cache queries from KV connector cross-instance cache sharing, in terms of number of queried tokens."
+    },
+    {
+      "name": "vllm:external_prefix_cache_queries_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.713297,
+      "type": "gauge",
+      "help": "External prefix cache queries from KV connector cross-instance cache sharing, in terms of number of queried tokens."
+    },
+    {
+      "name": "vllm:external_prefix_cache_hits_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "counter",
+      "help": "External prefix cache hits from KV connector cross-instance cache sharing, in terms of number of cached tokens."
+    },
+    {
+      "name": "vllm:external_prefix_cache_hits_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7133036,
+      "type": "gauge",
+      "help": "External prefix cache hits from KV connector cross-instance cache sharing, in terms of number of cached tokens."
+    },
+    {
+      "name": "vllm:mm_cache_queries_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "counter",
+      "help": "Multi-modal cache queries, in terms of number of queried items."
+    },
+    {
+      "name": "vllm:mm_cache_queries_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7133098,
+      "type": "gauge",
+      "help": "Multi-modal cache queries, in terms of number of queried items."
+    },
+    {
+      "name": "vllm:mm_cache_hits_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "counter",
+      "help": "Multi-modal cache hits, in terms of number of cached items."
+    },
+    {
+      "name": "vllm:mm_cache_hits_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7133152,
+      "type": "gauge",
+      "help": "Multi-modal cache hits, in terms of number of cached items."
+    },
+    {
+      "name": "vllm:prompt_tokens_cached_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 56315328.0,
+      "type": "counter",
+      "help": "Number of cached prompt tokens (local + external)."
+    },
+    {
+      "name": "vllm:prompt_tokens_cached_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7133462,
+      "type": "gauge",
+      "help": "Number of cached prompt tokens (local + external)."
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"1.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"2.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"5.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"10.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"20.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 822.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"50.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 822.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"100.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 822.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"200.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 822.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"500.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 826.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"1000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 831.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"2000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 840.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"5000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 919.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"10000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 924.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"20000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1049.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"50000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1960.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"100000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 3012.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"200000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 3197.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"+Inf\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 3197.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_count",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 3197.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_sum",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 129416889.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.714513,
+      "type": "gauge",
+      "help": "Histogram of new KV tokens computed during prefill (excluding cached tokens)."
+    },
+    {
+      "name": "vllm:cache_config_info",
+      "labels": "{_block_size_resolved=\"True\",block_size=\"16\",cache_dtype=\"fp8\",calculate_kv_scales=\"False\",enable_prefix_caching=\"True\",engine=\"0\",gpu_memory_utilization=\"0.92\",hash_block_size=\"None\",is_attention_free=\"False\",kv_cache_dtype_skip_layers=\"[]\",kv_cache_memory_bytes=\"None\",kv_offloading_backend=\"native\",kv_offloading_size=\"None\",kv_sharing_fast_prefill=\"False\",mamba_block_size=\"16\",mamba_cache_dtype=\"auto\",mamba_cache_mode=\"align\",mamba_page_size_padded=\"None\",mamba_ssm_cache_dtype=\"float32\",num_cpu_blocks=\"None\",num_gpu_blocks=\"310\",num_gpu_blocks_override=\"None\",prefix_caching_hash_algo=\"sha256\",sliding_window=\"None\",user_specified_block_size=\"False\",user_specified_mamba_block_size=\"False\"}",
+      "value": 1.0,
+      "type": "gauge",
+      "help": "Information of the LLMEngine CacheConfig"
+    }
+  ],
+  "pass2_relevant": [
+    {
+      "name": "vllm:num_requests_waiting_by_reason",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\",reason=\"capacity\"}",
+      "value": 0.0,
+      "type": "gauge",
+      "help": "Number of waiting requests by reason. Reason labels: 'capacity' = waiting for scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status). Sum of all reasons equals vllm:num_requests_waiting."
+    },
+    {
+      "name": "vllm:num_requests_waiting_by_reason",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\",reason=\"deferred\"}",
+      "value": 0.0,
+      "type": "gauge",
+      "help": "Number of waiting requests by reason. Reason labels: 'capacity' = waiting for scheduling capacity; 'deferred' = deferred by transient constraints (LoRA budget, KV transfer, blocked status). Sum of all reasons equals vllm:num_requests_waiting."
+    },
+    {
+      "name": "vllm:kv_cache_usage_perc",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "gauge",
+      "help": "KV-cache usage. 1 means 100 percent usage."
+    },
+    {
+      "name": "vllm:prefix_cache_queries_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 4952265054.0,
+      "type": "counter",
+      "help": "Prefix cache queries, in terms of number of queried tokens."
+    },
+    {
+      "name": "vllm:prefix_cache_queries_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7132852,
+      "type": "gauge",
+      "help": "Prefix cache queries, in terms of number of queried tokens."
+    },
+    {
+      "name": "vllm:prefix_cache_hits_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 252614112.0,
+      "type": "counter",
+      "help": "Prefix cache hits, in terms of number of cached tokens."
+    },
+    {
+      "name": "vllm:prefix_cache_hits_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7132905,
+      "type": "gauge",
+      "help": "Prefix cache hits, in terms of number of cached tokens."
+    },
+    {
+      "name": "vllm:external_prefix_cache_queries_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "counter",
+      "help": "External prefix cache queries from KV connector cross-instance cache sharing, in terms of number of queried tokens."
+    },
+    {
+      "name": "vllm:external_prefix_cache_queries_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.713297,
+      "type": "gauge",
+      "help": "External prefix cache queries from KV connector cross-instance cache sharing, in terms of number of queried tokens."
+    },
+    {
+      "name": "vllm:external_prefix_cache_hits_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "counter",
+      "help": "External prefix cache hits from KV connector cross-instance cache sharing, in terms of number of cached tokens."
+    },
+    {
+      "name": "vllm:external_prefix_cache_hits_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7133036,
+      "type": "gauge",
+      "help": "External prefix cache hits from KV connector cross-instance cache sharing, in terms of number of cached tokens."
+    },
+    {
+      "name": "vllm:mm_cache_queries_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "counter",
+      "help": "Multi-modal cache queries, in terms of number of queried items."
+    },
+    {
+      "name": "vllm:mm_cache_queries_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7133098,
+      "type": "gauge",
+      "help": "Multi-modal cache queries, in terms of number of queried items."
+    },
+    {
+      "name": "vllm:mm_cache_hits_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "counter",
+      "help": "Multi-modal cache hits, in terms of number of cached items."
+    },
+    {
+      "name": "vllm:mm_cache_hits_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7133152,
+      "type": "gauge",
+      "help": "Multi-modal cache hits, in terms of number of cached items."
+    },
+    {
+      "name": "vllm:prompt_tokens_cached_total",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 56315328.0,
+      "type": "counter",
+      "help": "Number of cached prompt tokens (local + external)."
+    },
+    {
+      "name": "vllm:prompt_tokens_cached_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.7133462,
+      "type": "gauge",
+      "help": "Number of cached prompt tokens (local + external)."
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"1.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"2.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"5.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"10.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 0.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"20.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 822.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"50.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 822.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"100.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 822.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"200.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 822.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"500.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 826.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"1000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 831.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"2000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 840.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"5000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 919.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"10000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 924.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"20000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1049.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"50000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1960.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"100000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 3012.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"200000.0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 3197.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_bucket",
+      "labels": "{engine=\"0\",le=\"+Inf\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 3197.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_count",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 3197.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_sum",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 129416889.0,
+      "type": "?",
+      "help": ""
+    },
+    {
+      "name": "vllm:request_prefill_kv_computed_tokens_created",
+      "labels": "{engine=\"0\",model_name=\"/home/antti/models/Qwen3.6-35B-A3B-NVFP4\"}",
+      "value": 1777754940.714513,
+      "type": "gauge",
+      "help": "Histogram of new KV tokens computed during prefill (excluding cached tokens)."
+    },
+    {
+      "name": "vllm:cache_config_info",
+      "labels": "{_block_size_resolved=\"True\",block_size=\"16\",cache_dtype=\"fp8\",calculate_kv_scales=\"False\",enable_prefix_caching=\"True\",engine=\"0\",gpu_memory_utilization=\"0.92\",hash_block_size=\"None\",is_attention_free=\"False\",kv_cache_dtype_skip_layers=\"[]\",kv_cache_memory_bytes=\"None\",kv_offloading_backend=\"native\",kv_offloading_size=\"None\",kv_sharing_fast_prefill=\"False\",mamba_block_size=\"16\",mamba_cache_dtype=\"auto\",mamba_cache_mode=\"align\",mamba_page_size_padded=\"None\",mamba_ssm_cache_dtype=\"float32\",num_cpu_blocks=\"None\",num_gpu_blocks=\"310\",num_gpu_blocks_override=\"None\",prefix_caching_hash_algo=\"sha256\",sliding_window=\"None\",user_specified_block_size=\"False\",user_specified_mamba_block_size=\"False\"}",
+      "value": 1.0,
+      "type": "gauge",
+      "help": "Information of the LLMEngine CacheConfig"
+    }
+  ],
+  "deltas": [],
+  "total_metrics_first_pass": 450
+}

@@ -36,7 +36,7 @@ Options:
   --generate-fixtures Write scripts/bench/fixtures/prefill_50k.txt
   --export-json PATH  Export sweep results to JSON
   --export-csv PATH   Export sweep results to CSV
-  --browse            Open bench.db in Datasette browser UI
+  --browse            Open app.db in Datasette browser UI
 ```
 
 ## Benchmark tiers
@@ -102,7 +102,7 @@ selects `VllmDriver`.
 python scripts/bench/run_bench.py --tier coding --resume run_20260425_192600
 ```
 
-Each case is written to `bench.db` before the next one starts — the runner
+Each case is written to `app.db` (same file as `metrics.db`) before the next one starts — the runner
 never loses completed results on interruption.
 
 ## Ranking and recommendations
@@ -119,14 +119,14 @@ Ineligible configs are listed with the reason they were excluded.
 
 ## Data store
 
-Results are written to `bench.db` (platform config dir, same parent as
+Results are written to `app.db` (platform config dir, same file as
 `metrics.db`). Use Datasette to explore:
 
 ```bash
 python scripts/bench/run_bench.py --browse
 # or directly:
-datasette ~/AppData/Roaming/repo-scaffold/bench.db   # Windows
-datasette ~/.config/repo-scaffold/bench.db            # Linux/macOS
+datasette ~/AppData/Roaming/repo-scaffold/app.db   # Windows
+datasette ~/.config/repo-scaffold/app.db            # Linux/macOS
 ```
 
 ## Adding a new backend

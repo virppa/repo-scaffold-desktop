@@ -20,7 +20,7 @@ from scripts.bench.reporter import print_ranking, print_summary_table
 
 
 def _store(tmp_path: Path) -> BenchStore:
-    return BenchStore(db_path=tmp_path / "bench.db")
+    return BenchStore(db_path=tmp_path / "app.db")
 
 
 def _run(**kwargs: object) -> BenchRun:
@@ -35,19 +35,19 @@ def _run(**kwargs: object) -> BenchRun:
 
 class TestSchemaCreation:
     def test_db_file_created_on_init(self, tmp_path: Path) -> None:
-        db = tmp_path / "bench.db"
+        db = tmp_path / "app.db"
         assert not db.exists()
         BenchStore(db_path=db)
         assert db.exists()
 
     def test_second_init_is_idempotent(self, tmp_path: Path) -> None:
-        BenchStore(db_path=tmp_path / "bench.db")
-        BenchStore(db_path=tmp_path / "bench.db")
+        BenchStore(db_path=tmp_path / "app.db")
+        BenchStore(db_path=tmp_path / "app.db")
 
     def test_index_exists_after_init(self, tmp_path: Path) -> None:
         import sqlite3
 
-        db = tmp_path / "bench.db"
+        db = tmp_path / "app.db"
         BenchStore(db_path=db)
         conn = sqlite3.connect(db)
         rows = conn.execute(
@@ -61,7 +61,7 @@ class TestSchemaCreation:
 class TestGetDbPath:
     def test_path_ends_with_bench_db(self) -> None:
         path = BenchStore.get_db_path()
-        assert path.name == "bench.db"
+        assert path.name == "app.db"
 
     def test_path_is_in_platform_config_dir(self) -> None:
         path = BenchStore.get_db_path()
@@ -337,7 +337,7 @@ class TestNewColumns:
         assert result.total_vram_gb == pytest.approx(24.0)
 
     def test_migration_adds_columns_to_existing_db(self, tmp_path: Path) -> None:
-        """An existing bench.db without new columns opens cleanly after migration."""
+        """An existing app.db without new columns opens cleanly after migration."""
         db_path = tmp_path / "old.db"
         # Build an old-schema DB without the new columns
         conn = sqlite3.connect(db_path)
@@ -547,26 +547,26 @@ class TestThermalThrottleColumns:
     """Tests for min_sm_clock_mhz and thermal_throttle_detected added in WOR-205."""
 
     def test_new_columns_default_to_none(self, tmp_path: Path) -> None:
-        store = BenchStore(db_path=tmp_path / "bench.db")
+        store = BenchStore(db_path=tmp_path / "app.db")
         store.record(_run())
         result = store.get_by_run_id("run-001")[0]
         assert result.min_sm_clock_mhz is None
         assert result.thermal_throttle_detected is None
 
     def test_min_sm_clock_mhz_round_trips(self, tmp_path: Path) -> None:
-        store = BenchStore(db_path=tmp_path / "bench.db")
+        store = BenchStore(db_path=tmp_path / "app.db")
         store.record(_run(min_sm_clock_mhz=1200.0))
         result = store.get_by_run_id("run-001")[0]
         assert result.min_sm_clock_mhz == pytest.approx(1200.0)
 
     def test_thermal_throttle_detected_true_round_trips(self, tmp_path: Path) -> None:
-        store = BenchStore(db_path=tmp_path / "bench.db")
+        store = BenchStore(db_path=tmp_path / "app.db")
         store.record(_run(thermal_throttle_detected=True))
         result = store.get_by_run_id("run-001")[0]
         assert result.thermal_throttle_detected is True
 
     def test_thermal_throttle_detected_false_round_trips(self, tmp_path: Path) -> None:
-        store = BenchStore(db_path=tmp_path / "bench.db")
+        store = BenchStore(db_path=tmp_path / "app.db")
         store.record(_run(thermal_throttle_detected=False))
         result = store.get_by_run_id("run-001")[0]
         assert result.thermal_throttle_detected is False
@@ -602,13 +602,13 @@ class TestTtfutColumn:
     """Tests for ttfut_s added in WOR-202."""
 
     def test_ttfut_s_defaults_to_none(self, tmp_path: Path) -> None:
-        store = BenchStore(db_path=tmp_path / "bench.db")
+        store = BenchStore(db_path=tmp_path / "app.db")
         store.record(_run())
         result = store.get_by_run_id("run-001")[0]
         assert result.ttfut_s is None
 
     def test_ttfut_s_round_trips(self, tmp_path: Path) -> None:
-        store = BenchStore(db_path=tmp_path / "bench.db")
+        store = BenchStore(db_path=tmp_path / "app.db")
         store.record(_run(ttfut_s=1.234))
         result = store.get_by_run_id("run-001")[0]
         assert result.ttfut_s == pytest.approx(1.234)

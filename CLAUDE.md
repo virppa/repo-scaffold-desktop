@@ -39,6 +39,8 @@ python -m app.cli watcher --max-cloud-workers 3  # default 3; parallelisable
 python -m app.cli watcher --max-workers 2        # backward-compat alias: sets both to 2
 python -m app.cli watcher --verbose              # stream worker stdout/stderr live, prefixed with [WOR-NN]
 python -m app.cli watcher --no-epic-shutdown     # keep daemon running after current epic completes
+# Smoke test (5s): LINEAR_API_KEY=dummy python -m app.cli watcher --no-epic-shutdown
+#   (timeout 5 python -m app.cli watcher --no-epic-shutdown; exit 0 if killed by timeout)
 
 # Benchmark runner (do not run without explicit instruction)
 python scripts/bench/run_bench.py --tier speed
@@ -91,20 +93,46 @@ Module responsibilities:
 - `manifest.py` — `ExecutionManifest` Pydantic model: cloud→local worker contract; includes `effort` (low/medium/high/xhigh/max) and 7 taxonomy fields (`change_type`, `reasoning_demand`, `scope_clarity`, `constraint_density`, `ac_specificity`, `tech_stack`, `raw_extensions`) populated at /start-ticket plan time
 - `escalation_policy.py` — `EscalationPolicy` Pydantic model: loads `config/escalation_policy.toml`, classifies result-artifact flags and Sonar findings into watcher actions
 - `linear_client.py` — thin Linear GraphQL client (stdlib `urllib` only, no third-party HTTP deps); requires `LINEAR_API_KEY` env var
-- `metrics.py` — SQLite-backed store for per-ticket cost and execution metrics; watcher is sole writer, workers emit JSON result files only. Tables: `ticket_metrics` (per-ticket summary, includes 7 taxonomy + cost columns), `ticket_run_log` (per-attempt records for retry analysis), `check_run_log` (per-check timing/outcome), `rework_events`
+- `metrics.py` — SQLite-backed store for per-ticket cost and execution metrics; watcher is sole writer, workers emit JSON result files only. Tables: `ticket_metrics` (per-ticket summary, includes 7 taxonomy + cost columns), `ticket_run_log` (per-attempt records for retry analysis), `check_run_log` (per-check timing/outcome)
 - `watcher/` — watcher subpackage (subpackage boundary, not flat files):
   - `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
   - `watcher_dispatch.py` — extracted ticket start logic: `start_ticket` module function plus thin class wrappers
   - `watcher_finalize.py` — worker finalization logic: `finalize_worker`, `attempt_pr`, `safe_set_state`
-  - `watcher_helpers.py` — pure stateless functions: `check_allowed_paths_overlap`, `build_worker_env`, `build_worker_cmd`, `resolve_effective_mode`, `_tee_worker_output`, `_parse_worker_usage`, `_parse_ollama_model`
-  - `watcher_services.py` — `ServiceManager` class: LiteLLM proxy and Ollama process management
+  - `watcher_helpers.py` — pure stateless functions: `check_allowed_paths_overlap`, `build_worker_env`, `build_worker_cmd`, `resolve_effective_mode`, `_tee_worker_output`, `_parse_worker_usage`
+  - `watcher_services.py` — `ServiceManager` class: vLLM readiness gate (probe + ensure-Anthropic-mode); no longer spawns subprocesses post-WOR-368
   - `watcher_subprocess.py` — worker subprocess lifecycle: `launch_worker`, `run_checks`, `fetch_sonar_findings`, `create_pr`, `build_snippet_tool_restrictions`
   - `watcher_types.py` — constants, `LinearClientProtocol`, `ActiveWorker` dataclass, `is_watcher_running`, `_to_metrics_mode`
   - `watcher_worktrees.py` — git worktree lifecycle: `create_worktree`, `rebase_worktree_from_base`, `copy_manifest_to_worktree`, `preserve_worker_artifacts`, `cleanup_worktree`, `cleanup_orphaned_worktrees`, `backup_plan_files`, `restore_plan_files`, `write_worker_pytest_config`
-- `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records (`bench.db`); mirrors `metrics.py` structure but stores hardware/timing/quality columns per run
+- `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records; shares the same `app.db` file as `metrics.py` (separate `bench_run` table); stores hardware/timing/quality columns per run
 - `main.py` — PySide6 `QApplication` entry point
 
 Data flows one way: UI → config model → generator → disk. Post-setup runs after generation.
+
+### Schema philosophy
+
+One SQLite file. No gold tables, no marts, no star schemas.
+
+`app.db` holds everything: ticket metrics, run logs, check logs, benchmark runs.
+Each domain has its own table. There are no cross-table foreign keys, no views,
+no materialized summaries. If you need a join, write a query — don't build a
+pipeline to maintain it.
+
+**Bronze/Silver is implicit.** Raw rows are the source of truth. Aggregations
+(epic summaries, cost rollups) are computed on read via SQL queries in the
+store class. They are never persisted as separate tables. If a query is run
+frequently enough to warrant caching, add it as a method — not a table.
+
+**No schema evolution beyond column additions.** ALTER TABLE ADD COLUMN is the
+only migration strategy. Never drop columns, rename tables, or restructure rows.
+The `_migrate()` method in each store class checks `PRAGMA table_info()` and
+adds what's missing. Old columns stay forever.
+
+**One file, separate tables.** `metrics.py` owns `ticket_metrics`,
+`ticket_run_log`, `check_run_log`. `bench_store.py` owns `bench_run`. Both
+write to the same `app.db` path. No module-level coupling between the two —
+they share a file, not an import. The `.importlinter` contract
+`bench-store-not-in-watcher` remains valid: file-level coupling is fine;
+module-level imports between `metrics` and `bench_store` are not.
 
 ---
 
@@ -167,6 +195,13 @@ Each ticket follows these phases. Use the corresponding slash command to enter e
                           # create epic → main PR (human review required)
                           # Linear: epic → EpicReadyForCloudReview → MainPRReady → Done
 ```
+
+### Bulk skills
+
+Two skills operate on epics rather than single tickets:
+
+- `/start-epic WOR-NNN` — batch-plan all groomed sub-tickets of an existing epic, file-conflict detection, queue Batch 1 as ReadyForLocal and Batch 2+ as WaitingForDeps. Use when an epic has 3-8 sub-tickets that need to be queued for the watcher.
+- `/prepare-overnight-epic` — auto-mine 20-30 single-bound parallel-safe candidates from existing Linear backlog + SonarQube findings, create a fire-and-forget mega-epic, queue all as ReadyForLocal. Use to fill the watcher with mechanical fixes for an unattended overnight run. Two operator gates (candidate-list approval + launch confirmation) before any worker dispatches. Per-ticket failures are accepted losses; morning workflow is `/close-epic` → epic→main PR with whatever shipped.
 
 ### Hybrid lifecycle states
 
@@ -241,28 +276,31 @@ No setup needed — hooks activate as soon as Claude Code loads the project.
 
 ## Local model development
 
-To run Claude Code routed to a local vLLM server instead of the Anthropic API:
+vLLM 0.20.0 serves the Anthropic Messages API natively (`/v1/messages`), so Claude Code talks to it directly with no proxy in the path (the LiteLLM proxy was retired in WOR-368; spike findings: `docs/spikes/wor-344-vllm-native-anthropic-api.md`).
 
 ```bash
 # 1. Start vLLM server in WSL2 (keep terminal open)
 /home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+  --served-model-name qwen3-coder \
   --max-model-len 262144 --max-num-seqs 16 \
   --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \
   --reasoning-parser qwen3 --enable-prefix-caching \
   --language-model-only --safetensors-load-strategy prefetch \
   --enable-auto-tool-choice --tool-call-parser qwen3_coder
 
-# 2. Copy the example config and start LiteLLM proxy (keep terminal open)
-cp litellm-local.yaml.example litellm-local.yaml
-litellm --config litellm-local.yaml --port 8082 --drop_params
-
-# 3. Launch Claude Code in a new terminal
-set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
-set ANTHROPIC_API_KEY=sk-dummy
-claude --model claude-sonnet-4-6
+# 2. Launch Claude Code in a new terminal (Windows / cmd.exe)
+set ANTHROPIC_BASE_URL=http://localhost:8000
+set ANTHROPIC_API_KEY=dummy
+set ANTHROPIC_AUTH_TOKEN=dummy
+set ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3-coder
+set ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3-coder
+set ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3-coder
+claude
 ```
 
-`litellm-local.yaml` is gitignored. See `docs/spikes/vllm-benchmark-plan.md` for the current production model config (Qwen3.6-35B-A3B-NVFP4 via vLLM). `docs/spikes/local-model-setup.md` covers the original Ollama/qwen3-coder:30b setup (historical).
+The three `ANTHROPIC_DEFAULT_*_MODEL` env vars route by tier (Opus / Sonnet / Haiku) — Claude Code substitutes them when `--model` is not passed. **Do not pass `--model claude-sonnet-4-6`** unless you also serve that name via `--served-model-name qwen3-coder claude-sonnet-4-6 claude-opus-4-7 claude-haiku-4-5-20251001` (the flag accepts a list, lets `--model` continue to work for muscle memory).
+
+See `docs/spikes/vllm-benchmark-plan.md` for the production model config. `docs/spikes/local-model-setup.md` covers the original Ollama setup (historical).
 
 ---
 
@@ -319,7 +357,7 @@ for f in ['app/core/watcher.py', 'app/core/watcher_types.py', ...]:
 "
 ```
 
-**Trust the Edit tool and hooks — do not re-read after editing.** The Edit tool confirms the change was applied. PostToolUse hooks (ruff, mypy, bandit, lint-imports) report any issues immediately in the tool result. Re-reading a file after editing to "verify" wastes a round-trip per edit. Only re-read if a hook explicitly reported an error you need to inspect in context.
+**Trust the Edit tool and hooks — do not re-read after editing.** The Edit tool confirms the change was applied. PostToolUse hooks (ruff, mypy, bandit, lint-imports) report any issues immediately in the tool result. Re-reading a file after editing to "verify" wastes a round-trip per edit. Only re-read if a hook explicitly reported an error you need to inspect in context. **Per-file 2-read cap is universal** (WOR-355) — a file may be read at most twice per session whether or not `context_snippets` populated it; the cap applies even when the manifest's snippets list is empty. WOR-322 evidence: 27 reads of a single 480-LOC file across one session contributed materially to the 76-minute wall time.
 
 **Update mock patch paths after any module move.** `unittest.mock.patch()` targets are string literals — they are not updated by import fixers and will silently break tests. After moving or renaming any module, run two greps — one for mock strings, one for bare from-imports (conftest.py and fixture files use these and they are missed by the patch grep):
 ```bash
@@ -343,6 +381,10 @@ and convert every match to `patch("new.module.path.function_name")`.
 **Package reorganizations: move all files first, __init__.py last.** When moving multiple files into a new subpackage: (1) move all source files, (2) update all imports in every consumer, (3) write `__init__.py` last. Do not run pytest at any intermediate step — the package is invalid mid-move and pytest will always fail with `ModuleNotFoundError` until every file is in place. After all files are moved and imports updated (but before `__init__.py`), make a WIP commit: `git add -A && git commit -m "WIP: ..."` — preserves structural work if the session ends before checks pass.
 
 **Use `replace_all=True` for bulk patch string migrations.** When updating `unittest.mock.patch()` strings after a module rename, use `Edit(old_string="app.core.old_module", new_string="app.core.new.module", replace_all=True)` rather than replacing each occurrence individually. One Edit call per (file, module-name) pair covers the entire migration in a single round-trip.
+
+**Run the unscoped `pytest` from `required_checks` before declaring success.** When the manifest's `required_checks` contains plain `pytest` (no args), the worker MUST run the full suite once before writing the success result artifact — not just the test files in `allowed_paths`. Sibling test files (e.g. `tests/test_X_metrics.py`, `tests/test_X_recovery.py`) often import the same source module the worker modified and fail when their fixtures don't anticipate the change. Skipping the unscoped run causes the watcher's `required_checks` step to catch the regression after the session has ended, marking the ticket Blocked even though the worker reported success. Targeted pytest is fine for fast iteration; the unscoped final run is mandatory. (See WOR-353.)
+
+**Test allowed_paths are auto-globbed at `/start-ticket` time.** When the architect lists `tests/test_X.py` in `allowed_paths`, the manifest writer expands it to `tests/test_X*.py` so sibling test files are explicitly in scope. Architects do NOT need to enumerate sibling tests manually. Already-globbed entries (e.g. `tests/test_*.py`) are left unchanged.
 
 ---
 

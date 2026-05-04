@@ -28,6 +28,10 @@ path and line numbers in the header comment.
 
 Log the snippet count on startup: `"Loading {N} context snippets from manifest."`
 
+**Per-file 2-read cap (universal — WOR-355).** Each file may be read at most 2 times per session, regardless of whether `context_snippets` is populated. The cap counts every Read tool call against the same file path: if `context_snippets` pre-loads `app/core/X.py`, that counts as the first read; the next Read on it is the second; any further is a violation. If `context_snippets` is empty, the cap still applies — your first explicit Read is read 1, the second is read 2, no third. If you need more content from a file beyond what 2 reads provide (e.g. a function past line 80), note the missing content in the result artifact rather than re-reading. This rule prevents context bloat that drives 30K → 70K input token growth across a session.
+
+**Do NOT re-read a file after Edit-ing it (WOR-355).** The Edit tool returns the change confirmation in its tool result — including the new line numbers and surrounding context. PostToolUse hooks (ruff, mypy, bandit, lint-imports) run automatically and report any issues immediately in the same tool result. Re-reading to "verify the edit applied" wastes a full LLM round-trip (~50s at current local throughput, multiplied by every Edit you do). The most common violation is reading the same source file 5+ times during a multi-edit session — a pattern that turned WOR-322's 4 docstring edits into 76 minutes of wall time. If a hook flags an error you need to inspect in context, that hook output IS in your tool result — don't call Read; act on what's already there.
+
 ### 0.1. Inspect last_failure.json for WIP state (WOR-258)
 
 If `.claude/artifacts/<ticket_id_lower>/last_failure.json` exists in the
@@ -148,13 +152,43 @@ the PR is created, giving fine-grained retry resume.
 
 ### 4. Run required checks
 
-After implementation, run each command in `required_checks` in order:
+After implementation, run each command in `required_checks` in order. Run them
+**verbatim** as written in the manifest — do NOT scope them down to specific
+files for "speed", because the watcher will run them at the manifest's full
+scope and any regression you missed will fail the ticket (WOR-353).
 
 ```bash
 <check command 1>
 <check command 2>
 ...
 ```
+
+**Pytest scope rule (WOR-353):** When `required_checks` contains `pytest`
+without arguments, run the **full** test suite — not just the test files
+listed in `allowed_paths`. Sibling test files (e.g. `tests/test_X_metrics.py`,
+`tests/test_X_recovery.py`) often import the same module you modified and
+fail when their fixtures don't anticipate your changes.
+
+If you want a fast iteration loop while implementing, you may run
+`pytest <subset>` early — but **always run the unscoped `pytest` from
+`required_checks` once before declaring success**. If it fails, you still
+have the session context to fix it; if you skip it, the watcher catches
+the failure after your session ends and the ticket is marked Blocked.
+
+To proactively widen iteration scope without running the full suite, grep
+for tests importing each modified source module:
+
+```bash
+# Find test files that import any module you modified
+git diff --name-only $BASE_BRANCH...HEAD -- 'app/**/*.py' | while read f; do
+  module="${f%.py}"
+  module_path=$(echo "$module" | sed 's|/|.|g')
+  grep -l "from $module_path" tests/*.py 2>/dev/null
+done | sort -u
+```
+
+Pass that list (plus your scoped tests) to pytest during iteration. The
+final unscoped `pytest` from `required_checks` is still mandatory.
 
 If any required check fails:
 - Record the failure in the result artifact (step 5)
@@ -205,7 +239,14 @@ Write a JSON result file to `artifact_paths.result_json`. Create parent dirs as 
 }
 ```
 
-Also copy the manifest to `artifact_paths.manifest_copy` for audit purposes.
+**Do NOT copy the manifest anywhere.** `artifact_paths.manifest_copy` already
+points at the path where `/start-ticket` wrote the manifest (the same one you
+loaded in step 0). The watcher's `copy_manifest_to_worktree` step also placed
+it there before launching this session. There is nothing to copy — the manifest
+is already at its documented audit path. (Earlier skill text instructed a
+"copy manifest" step; that was a no-op that wasted 2-3 turns per session as
+the model attempted to `cp` a file onto itself before realizing the
+redundancy. WOR-322 paid ~12 minutes of wall time to this. WOR-356.)
 
 ### 6. Linear updates (comments only — state is owned by the watcher)
 

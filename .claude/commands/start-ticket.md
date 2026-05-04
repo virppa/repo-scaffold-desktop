@@ -35,8 +35,12 @@ Watcher: not running
   Cloud mode (Anthropic API):
     python -m app.cli watcher --worker-mode cloud
 
-  Local mode (RTX 5090 + Ollama — pre-warm GPU first):
-    set OLLAMA_KEEP_ALIVE=-1 && ollama run qwen3-coder:30b ""      # loads model into VRAM indefinitely; exit immediately after
+  Local mode (RTX 5090 + vLLM — start the server in WSL2 first if not already up):
+    /home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+      --served-model-name qwen3-coder --max-model-len 262144 --max-num-seqs 16 \
+      --kv-cache-dtype fp8 --max-num-batched-tokens 4096 --reasoning-parser qwen3 \
+      --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch \
+      --enable-auto-tool-choice --tool-call-parser qwen3_coder
     python -m app.cli watcher --worker-mode local
 
   Auto mode (uses each manifest's implementation_mode):
@@ -143,6 +147,8 @@ If no siblings are In Progress, skip this block silently.
 - List what new files will be created (not just edited) — for each one, add to `risk_flags` in the manifest: `"<filename>.py is a new file — worker must read source type signatures before writing and run mypy on the file immediately after creation"`
 - List what new test files will be created — for each one, add to `risk_flags`: `"<test_file>.py is a new test file — worker must read a sibling test file first for fixture/mock patterns, then run pytest <file> -x immediately after creation"`
 - If any instance methods are being extracted from a class into module-level functions, add to `risk_flags`: `"methods extracted from <ClassName> — grep for patch.object(instance, '<method>') in tests/ and convert to patch('new.module.path.<method>') — patch.object silently does nothing once the method is no longer on the class"`
+- If `related_files_hint` has more than 5 files, add to `risk_flags`: `"related_files_hint has >5 files ({N}) — worker will read many files; enforce 2-read cap per file to prevent context bloat"`
+- If `context_snippets` is populated (non-null, non-empty), add to `risk_flags`: `"context_snippets populated ({N} snippets) — worker reads from manifest; enforce 2-read cap per file"`
 - If the ticket involves moving files into a new subpackage, add to `risk_flags`: `"package reorganization — move ALL source files into the subpackage first, update ALL imports in consumers, then write __init__.py LAST — do not run pytest until the move is complete or ModuleNotFoundError will appear on every intermediate check"` — and add a second risk_flag with the explicit old→new module path mapping table for every moved module (e.g. `"patch path migration: app.core.watcher_subprocess → app.core.watcher.watcher_subprocess, app.core.watcher_worktrees → app.core.watcher.watcher_worktrees, ..."`) so the worker can use replace_all=True bulk substitution per file rather than discovering stale paths from test failures
 - List what new tests are needed (file, test name, what it verifies)
 - Flag any security surface introduced: new I/O, user input handling, file operations, subprocess calls
@@ -235,6 +241,33 @@ If `related_files_hint` is empty, leave `context_snippets` as null (omit it from
 
 Write the populated `context_snippets` object into the manifest at `context_snippets` key
 (see step 4.6 for the full manifest structure).
+
+### 2.6. Expand test allowed_paths to capture sibling test files (WOR-353)
+
+Before writing the manifest, glob-expand every `tests/test_<stem>.py` entry in
+`allowed_paths` to `tests/test_<stem>*.py` so the worker has explicit permission
+to run sibling test files that import the same source module.
+
+**Why:** Sibling test files (e.g. `tests/test_watcher_finalize_metrics.py`,
+`tests/test_watcher_finalize_recovery.py`) import the same module the worker
+modifies, but pytest fails on them aren't visible until the watcher runs the
+full suite as part of `required_checks`. Without this expansion, the worker
+self-reports success while the watcher rejects — operator must rescue.
+
+**Mechanical rule:** for each entry in `allowed_paths` matching the pattern
+`tests/test_<stem>.py`, replace it with `tests/test_<stem>*.py`. Examples:
+
+| Architect wrote | Becomes |
+|---|---|
+| `tests/test_metrics.py` | `tests/test_metrics*.py` |
+| `tests/test_watcher_finalize.py` | `tests/test_watcher_finalize*.py` |
+| `tests/test_X.py` (single ticket) | `tests/test_X*.py` |
+
+Already-globbed entries (e.g. `tests/test_*.py`, `tests/foo/*.py`) are left
+unchanged. Non-test paths (e.g. `app/core/metrics.py`) are left unchanged.
+
+The architect does NOT need to enumerate sibling tests manually — this step
+handles it mechanically before the manifest is written.
 
 ### 4.6. After human approves the plan — generate the execution manifest
 

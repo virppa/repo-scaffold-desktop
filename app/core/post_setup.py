@@ -114,7 +114,18 @@ def fetch_skills(
 
 
 def run_git_init(output_path: Path) -> None:
-    """Run `git init` in output_path. Raises RuntimeError on failure."""
+    """Initialise a Git repository in *output_path*.
+
+    Runs ``git init`` via ``subprocess.run`` with ``shell=False``.
+
+    Raises:
+        RuntimeError: If ``git`` is not found on PATH or ``git init``
+            returns a non-zero exit code. The message includes the raw
+            stderr output for debugging.
+
+    Example:
+        >>> run_git_init(Path("/tmp/myrepo"))  # doctest: +SKIP
+    """
     try:
         subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
             ["git", "init"],
@@ -130,7 +141,19 @@ def run_git_init(output_path: Path) -> None:
 
 
 def run_precommit_install(output_path: Path) -> None:
-    """Run `pre-commit install` in output_path. Raises RuntimeError on failure."""
+    """Install the pre-commit hook in the Git repository at *output_path*.
+
+    Runs ``pre-commit install`` via ``subprocess.run`` with ``shell=False``.
+    The hook runs the repo-level pre-commit configuration on every ``git commit``.
+
+    Raises:
+        RuntimeError: If ``pre-commit`` is not found on PATH or the install
+            command returns a non-zero exit code. The message includes the
+            raw stderr output for debugging.
+
+    Example:
+        >>> run_precommit_install(Path("/tmp/myrepo"))  # doctest: +SKIP
+    """
     try:
         subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
             ["pre-commit", "install"],
@@ -150,10 +173,31 @@ def run_precommit_install(output_path: Path) -> None:
 def run_initial_push(
     output_path: Path, remote_url: str, prefs: UserPreferences
 ) -> None:
-    """Stage all files, create initial commit, set remote origin, and push to main.
+    """Complete the initial Git setup for a scaffolded repository.
 
-    Raises ``RuntimeError`` on any subprocess failure with a clear message
-    including stderr.
+    Executes the following steps in order:
+
+    1. **``git add .``** — stage all files.
+    2. **``git commit -m "Initial scaffold"``** — create the initial commit,
+       using ``prefs.author_name`` and ``prefs.author_email`` as the commit
+       identity when both are set.
+    3. **``git remote add origin <remote_url>``** — attach the remote.
+    4. **``git branch -M main``** — rename the default branch to ``main``.
+    5. **``git push -u origin main``** — push the initial commit.
+
+    Args:
+        output_path: Path to the scaffolded repository root.
+        remote_url: HTTPS or SSH URL of the remote repository.
+        prefs: User preferences containing optional author name and email.
+
+    Raises:
+        RuntimeError: On any subprocess failure. Each error message identifies
+            which step failed (``git add``, ``git commit``, ``git remote``,
+            ``git branch``, or ``git push``) and includes the raw stderr.
+
+    Example:
+        >>> run_initial_push(Path("/tmp/myrepo"), "https://github.com/u/r", prefs)
+        # doctest: +SKIP
     """
     try:
         subprocess.run(  # nosec B603 B607 — hardcoded command, no user input, no shell
@@ -225,14 +269,35 @@ def run_initial_push(
 
 def create_github_repo(
     repo_name: str,
-    prefs: UserPreferences,
     private: bool = True,
     description: str = "",
 ) -> str:
     """Create a GitHub repository via the REST API and return its clone URL.
 
-    Requires a GitHub token configured via :func:`app.core.credentials.get_token`.
-    Raises ``RuntimeError`` if no token is configured or the API returns an error.
+    **Endpoint:** ``POST https://api.github.com/user/repos``
+
+    **Auth model:** Bearer token obtained from :func:`app.core.credentials.get_token`
+    (reads from OS keyring via ``github-token`` user preference).
+
+    **Failure semantics:**
+
+    * ``RuntimeError`` with message ``"No GitHub token configured..."`` when no
+      token is available.
+    * ``RuntimeError`` with message ``"Repository '<name>' already exists — ..."``
+      on HTTP 422 (repository name conflict).
+    * ``RuntimeError`` with the API error message for all other 4xx/5xx responses.
+
+    Args:
+        repo_name: Desired repository name (must be unique for the authenticated user).
+        prefs: User preferences (currently unused; retained for API compatibility).
+        private: Whether the repository should be private. Defaults to ``True``.
+        description: Optional repository description.
+
+    Returns:
+        The HTML clone URL (e.g. ``https://github.com/owner/repo``).
+
+    Example:
+        >>> create_github_repo("my-repo", prefs)  # doctest: +SKIP
     """
     token = get_token()
     if token is None:
@@ -267,7 +332,7 @@ def create_github_repo(
         err_body = ""
         try:
             err_body = json.loads(exc.read()).get("message", str(exc))
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):  # noqa: BLE001
             err_body = str(exc)
         if exc.code == 422:
             raise RuntimeError(
@@ -277,6 +342,73 @@ def create_github_repo(
 
     clone_url: str = result["html_url"]
     return clone_url
+
+
+def delete_github_repo(repo_full_name: str) -> None:
+    """Best-effort delete of a GitHub repository.
+
+    **Endpoint:** ``DELETE https://api.github.com/repos/{owner}/{repo}``
+
+    **Auth model:** Bearer token obtained from :func:`app.core.credentials.get_token`.
+
+    **Failure semantics:** Logs a warning to stderr on failure — this is a
+    best-effort cleanup function and never raises.
+
+    Args:
+        repo_full_name: Repository owner and name in ``owner/repo`` format.
+
+    Example:
+        >>> delete_github_repo("testuser/myrepo")  # doctest: +SKIP
+    """
+    # Validate full_name format
+    if "/" not in repo_full_name or repo_full_name.count("/") != 1:
+        print(
+            f"Warning: cannot delete repo {repo_full_name!r} — "
+            f"invalid format (expected owner/repo)",
+            file=sys.stderr,
+        )
+        return
+
+    owner, repo = repo_full_name.split("/")
+
+    token = get_token()
+    if token is None:
+        print(
+            f"Warning: cannot delete repo {repo_full_name!r} — "
+            "no GitHub token configured",
+            file=sys.stderr,
+        )
+        return
+
+    url = f"https://api.github.com/repos/{owner}/{repo}"
+    req = urllib.request.Request(  # nosec B310
+        url,
+        method="DELETE",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        err_body = ""
+        try:
+            err_body = json.loads(exc.read()).get("message", str(exc))
+        except (OSError, ValueError):  # noqa: BLE001
+            err_body = str(exc)
+        print(
+            f"Warning: could not delete repo {repo_full_name!r} ({exc.code}): "
+            f"{err_body}",
+            file=sys.stderr,
+        )
+    except OSError as exc:
+        print(
+            f"Warning: could not delete repo {repo_full_name!r}: {exc}",
+            file=sys.stderr,
+        )
 
 
 # ── Topic maps ─────────────────────────────────────────────────────────────────
@@ -366,14 +498,14 @@ def _put(url: str, body: dict[str, object], headers: dict[str, str]) -> None:
                 err_body = ""
                 try:
                     err_body = json.loads(resp.read()).get("message", str(resp))
-                except Exception:  # noqa: BLE001
+                except (OSError, ValueError):  # noqa: BLE001
                     err_body = str(resp)
                 raise RuntimeError(f"GitHub API error ({resp.status}): {err_body}")
     except urllib.error.HTTPError as exc:
         err_body = ""
         try:
             err_body = json.loads(exc.read()).get("message", str(exc))
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):  # noqa: BLE001
             err_body = str(exc)
         raise RuntimeError(f"GitHub API error: {err_body}") from exc
 
@@ -393,14 +525,14 @@ def _patch(url: str, body: dict[str, object], headers: dict[str, str]) -> None:
                 err_body = ""
                 try:
                     err_body = json.loads(resp.read()).get("message", str(resp))
-                except Exception:  # noqa: BLE001
+                except (OSError, ValueError):  # noqa: BLE001
                     err_body = str(resp)
                 raise RuntimeError(f"GitHub API error ({resp.status}): {err_body}")
     except urllib.error.HTTPError as exc:
         err_body = ""
         try:
             err_body = json.loads(exc.read()).get("message", str(exc))
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):  # noqa: BLE001
             err_body = str(exc)
         raise RuntimeError(f"GitHub API error: {err_body}") from exc
 
@@ -437,7 +569,7 @@ def _set_branch_protection(owner: str, repo: str, headers: dict[str, str]) -> No
                 err_body = ""
                 try:
                     err_body = json.loads(resp.read()).get("message", str(resp))
-                except Exception:  # noqa: BLE001
+                except (OSError, ValueError):  # noqa: BLE001
                     err_body = str(resp)
                 print(
                     f"Warning: branch protection for main failed: {err_body}",
@@ -447,7 +579,7 @@ def _set_branch_protection(owner: str, repo: str, headers: dict[str, str]) -> No
         err_body = ""
         try:
             err_body = json.loads(exc.read()).get("message", str(exc))
-        except Exception:  # noqa: BLE001
+        except (OSError, ValueError):  # noqa: BLE001
             err_body = str(exc)
         print(
             f"Warning: branch protection for main failed: {err_body}",
