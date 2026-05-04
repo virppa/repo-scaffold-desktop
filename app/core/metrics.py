@@ -676,7 +676,7 @@ def compute_tags(
 
     Pure function — no I/O, no logging, no side effects.  Easy to unit-test.
 
-    Four anomaly-detection rules (from the 2026-05-03 retro) and four
+    Four anomaly-detection rules (from the 2026-05-03 retro) and five
     categorization rules (from existing result.json signals).
 
     Args:
@@ -696,6 +696,7 @@ def compute_tags(
     local_tokens = ticket_metrics_row.local_tokens
     local_wall_time = ticket_metrics_row.local_wall_time
     api_retry_count = ticket_metrics_row.api_retry_count
+    context_compactions = ticket_metrics_row.context_compactions
 
     # --- Anomaly detection rules (4) ---
     # Type-strict guards (isinstance vs `is not None`) so the function is
@@ -743,6 +744,11 @@ def compute_tags(
     # rework: the ticket required at least one retry.
     if isinstance(retry_count, int) and retry_count > 0:
         tags.append("rework")
+
+    # mid_session_compaction: the session performed at least one context
+    # compaction — the LLM context was truncated during the run.
+    if isinstance(context_compactions, int) and context_compactions > 0:
+        tags.append("mid_session_compaction")
 
     # backend_unstable: high count of Claude Code internal api_retry events.
     # Threshold 6 calibrated on 2026-05-04 backfill — Pearson r=0.665 vs
