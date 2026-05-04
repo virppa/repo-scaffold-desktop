@@ -413,7 +413,7 @@ Spike tickets are investigative — findings must be reviewed by a human before 
 
 **`/start-ticket` behaviour:** If the Spike label is present, the command sets state to `In Progress` and prints the interactive workflow below. It does **not** write a ReadyForLocal manifest.
 
-**`watcher` behaviour:** Any `ReadyForLocal` ticket that still carries the Spike label is skipped with a WARNING log. This is a safety net — `/start-ticket` should have caught it first.
+**`watcher` behaviour:** Any `ReadyForLocal` ticket that still carries the Spike label is skipped with a WARNING log. This is a safety net — `/start-ticket` should have caught it first. Detection: `app/core/watcher/watcher.py:503` — `any(label.lower() == "spike" for label in labels)`.
 
 **Interactive spike workflow:**
 ```bash
