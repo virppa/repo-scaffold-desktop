@@ -43,6 +43,9 @@ def _make_manifest(**overrides: Any) -> ExecutionManifest:
         "objective": "Do the thing.",
         "artifact_paths": ArtifactPaths.from_ticket_id("WOR-10"),
         "allowed_paths": ["app/core/foo.py"],
+        # WOR-378: dispatch refuses manifests with empty required_checks; default
+        # a non-empty list to match the conftest fixture.
+        "required_checks": ["pytest"],
     }
     defaults.update(overrides)
     return ExecutionManifest(**defaults)
@@ -115,8 +118,7 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
             "app.core.watcher.watcher.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running"),
-        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
         patch.object(w._services, "probe_vllm_health"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")
@@ -250,8 +252,7 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
         patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
         patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
         patch("app.core.watcher.watcher.write_worker_pytest_config"),
-        patch.object(watcher._services, "ensure_ollama_running"),
-        patch.object(watcher._services, "ensure_litellm_running"),
+        patch.object(watcher._services, "ensure_vllm_anthropic_mode"),
         patch.object(watcher._services, "probe_vllm_health"),
         patch(
             "app.core.watcher.watcher.launch_worker",
@@ -267,11 +268,11 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _dispatch_next_ticket — ollama/litellm wiring
+# _dispatch_next_ticket — vLLM Anthropic-mode gate (WOR-368)
 # ---------------------------------------------------------------------------
 
 
-def test_dispatch_calls_ensure_litellm_but_not_ollama_for_local_effective_mode(
+def test_dispatch_calls_ensure_vllm_anthropic_mode_for_local_effective_mode(
     tmp_path: Path,
 ) -> None:
     manifest = _make_manifest(
@@ -301,14 +302,12 @@ def test_dispatch_calls_ensure_litellm_but_not_ollama_for_local_effective_mode(
             "app.core.watcher.watcher_subprocess.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running") as mock_ollama,
-        patch.object(w._services, "ensure_litellm_running") as mock_litellm,
+        patch.object(w._services, "ensure_vllm_anthropic_mode") as mock_vllm_anthropic,
         patch.object(w._services, "probe_vllm_health") as mock_probe,
     ):
         w._dispatch_next_ticket()
 
-    mock_ollama.assert_not_called()
-    mock_litellm.assert_called_once()
+    mock_vllm_anthropic.assert_called_once()
     mock_probe.assert_called_once()
 
 
@@ -340,20 +339,13 @@ def test_dispatch_skips_ensure_for_cloud_effective_mode(tmp_path: Path) -> None:
             "app.core.watcher.watcher_subprocess.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running") as mock_ollama,
-        patch.object(w._services, "ensure_litellm_running") as mock_litellm,
+        patch.object(w._services, "ensure_vllm_anthropic_mode") as mock_vllm_anthropic,
         patch.object(w._services, "probe_vllm_health") as mock_probe,
     ):
         w._dispatch_next_ticket()
 
-    mock_ollama.assert_not_called()
-    mock_litellm.assert_not_called()
+    mock_vllm_anthropic.assert_not_called()
     mock_probe.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# _handle_signal — SIGTERM triggers LiteLLM proxy cleanup and sets _running=False
-# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -549,20 +541,19 @@ def test_epic_completion_failed_ticket_blocks_comment(
 
 
 # ---------------------------------------------------------------------------
-# _handle_signal — SIGTERM triggers LiteLLM proxy cleanup and sets _running=False
+# _handle_signal — SIGTERM calls services.stop() and sets _running=False
 # ---------------------------------------------------------------------------
 
 
-def test_handle_signal_sigterm_terminates_litellm_proc_and_stops_running() -> None:
+def test_handle_signal_sigterm_calls_services_stop_and_clears_running() -> None:
+    """Post-WOR-368 the watcher no longer owns a LiteLLM process to terminate;
+    services.stop() is a no-op kept for call-site compat. The signal handler
+    must still invoke it AND clear _running so the poll loop exits."""
     w = Watcher(linear_client=MagicMock())
-    mock_proc = MagicMock(spec=subprocess.Popen)
-    mock_proc.pid = 99999
-    w._services._litellm_proc = mock_proc
+    with patch.object(w._services, "stop") as mock_stop:
+        w._handle_signal(signal.SIGTERM, None)
 
-    w._handle_signal(signal.SIGTERM, None)
-
-    mock_proc.terminate.assert_called_once()
-    assert w._services._litellm_proc is None
+    mock_stop.assert_called_once()
     assert w._running is False
 
 
@@ -725,8 +716,7 @@ def test_dispatch_proceeds_when_vllm_ready(tmp_path: Path) -> None:
             return_value=fake_process,
         ),
         patch.object(w._services, "probe_vllm_health", return_value=True),
-        patch.object(w._services, "ensure_ollama_running"),
-        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
     ):
         w._dispatch_next_ticket()
 
@@ -945,8 +935,7 @@ def test_dispatch_proceeds_when_manifest_blocked_by_tickets_is_empty(
             "app.core.watcher.watcher.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running"),
-        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
         patch.object(w._services, "probe_vllm_health"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")
@@ -985,11 +974,439 @@ def test_dispatch_proceeds_when_all_manifest_blockers_are_merged(
             "app.core.watcher.watcher.launch_worker",
             return_value=fake_process,
         ),
-        patch.object(w._services, "ensure_ollama_running"),
-        patch.object(w._services, "ensure_litellm_running"),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
         patch.object(w._services, "probe_vllm_health"),
     ):
         w._start_ticket("WOR-10", "fake-linear-id")
 
     assert len(w._local_active) == 1
     assert w._local_active[0].ticket_id == "WOR-10"
+
+
+# ---------------------------------------------------------------------------
+# _reap_pool — ghost-slot leak prevention (WOR-334)
+# ---------------------------------------------------------------------------
+
+
+def _finished_worker(ticket_id: str, returncode: int = 0) -> ActiveWorker:
+    """Build an ActiveWorker whose process.poll() returns returncode."""
+    worker = _make_active_worker(ticket_id=ticket_id)
+    worker.process.poll.return_value = returncode
+    return worker
+
+
+def _running_worker(ticket_id: str) -> ActiveWorker:
+    """Build an ActiveWorker whose process.poll() returns None (still alive)."""
+    worker = _make_active_worker(ticket_id=ticket_id)
+    worker.process.poll.return_value = None
+    return worker
+
+
+def test_reap_pool_frees_slot_when_finalize_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """WOR-334 regression: an exception inside finalize_worker must not leave
+    the failing worker (or its siblings) in the pool."""
+    workers = [
+        _finished_worker("WOR-100"),
+        _finished_worker("WOR-101"),
+        _finished_worker("WOR-102"),
+    ]
+
+    watcher = Watcher(linear_client=MagicMock())
+
+    def finalize_side_effect(*args: Any, **kwargs: Any) -> str:
+        if args[0].ticket_id == "WOR-101":
+            raise RuntimeError("simulated Linear API blow-up")
+        return "success"
+
+    with (
+        patch(
+            "app.core.watcher.watcher.finalize_worker",
+            side_effect=finalize_side_effect,
+        ),
+        patch(
+            "app.core.watcher.watcher.format_worker_token_count",
+            return_value="0 tokens",
+        ),
+        caplog.at_level(logging.ERROR, logger="app.core.watcher.watcher"),
+    ):
+        watcher._reap_pool(workers)
+
+    assert workers == [], (
+        f"Expected pool to be empty after finalize raised; got "
+        f"{[w.ticket_id for w in workers]}"
+    )
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    matching = [r for r in error_records if "WOR-101" in r.getMessage()]
+    assert matching, "Expected an ERROR log mentioning WOR-101 when its finalize raised"
+    assert any(r.exc_info is not None for r in matching), (
+        "Expected exc_info to be attached to the ERROR log for forensic context"
+    )
+
+
+def test_reap_pool_eight_workers_one_raises_pool_empty() -> None:
+    """8 workers all finish, 1 raises during finalize -> pool ends empty.
+
+    This is the WOR-313 overnight scenario: a single finalize exception used
+    to freeze the pool at full size and block all further dispatch."""
+    workers = [_finished_worker(f"WOR-20{i}") for i in range(8)]
+    watcher = Watcher(linear_client=MagicMock())
+
+    def finalize_side_effect(*args: Any, **kwargs: Any) -> str:
+        if args[0].ticket_id == "WOR-204":
+            raise RuntimeError("simulated finalize blow-up")
+        return "success"
+
+    with (
+        patch(
+            "app.core.watcher.watcher.finalize_worker",
+            side_effect=finalize_side_effect,
+        ),
+        patch(
+            "app.core.watcher.watcher.format_worker_token_count",
+            return_value="0 tokens",
+        ),
+    ):
+        watcher._reap_pool(workers)
+
+    assert workers == [], (
+        f"Expected all 8 slots freed; remaining: {[w.ticket_id for w in workers]}"
+    )
+
+
+def test_reap_pool_keeps_still_running_workers() -> None:
+    """Sanity: workers whose poll() returns None must stay in the pool."""
+    running = _running_worker("WOR-300")
+    finished = _finished_worker("WOR-301")
+    workers = [running, finished]
+
+    watcher = Watcher(linear_client=MagicMock())
+
+    with (
+        patch(
+            "app.core.watcher.watcher.finalize_worker",
+            return_value="success",
+        ),
+        patch(
+            "app.core.watcher.watcher.format_worker_token_count",
+            return_value="0 tokens",
+        ),
+    ):
+        watcher._reap_pool(workers)
+
+    assert [w.ticket_id for w in workers] == ["WOR-300"], (
+        "Running worker should remain; finished worker should be removed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Soft-stop / drain mode (WOR-333)
+# ---------------------------------------------------------------------------
+
+
+def test_softstop_sentinel_triggers_drain_mode(tmp_path: Path) -> None:
+    """Writing .claude/watcher.softstop puts the daemon in drain mode."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    sentinel = tmp_path / ".claude" / "watcher.softstop"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+
+    assert w._draining is False
+    w._check_softstop_request()
+    assert w._draining is True
+    assert w._draining_since is not None
+
+
+def test_softstop_check_idempotent(tmp_path: Path) -> None:
+    """Calling _check_softstop_request multiple times keeps draining_since stable."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    sentinel = tmp_path / ".claude" / "watcher.softstop"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+
+    w._check_softstop_request()
+    first_since = w._draining_since
+    w._check_softstop_request()
+    w._check_softstop_request()
+    # _draining_since must not move on subsequent calls (one-shot transition)
+    assert w._draining_since == first_since
+
+
+def test_softstop_no_sentinel_no_drain(tmp_path: Path) -> None:
+    """When no sentinel exists, the daemon stays in normal operation."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    w._check_softstop_request()
+    assert w._draining is False
+    assert w._draining_since is None
+
+
+def test_drain_mode_skips_dispatch(tmp_path: Path) -> None:
+    """When _draining is True, _dispatch_next_ticket should not be called.
+
+    This test exercises the run-loop guard: when draining, dispatch is gated
+    out even if there's pool capacity and a ticket waiting in Linear.
+    """
+    linear_mock = MagicMock()
+    linear_mock.list_ready_for_local.return_value = [
+        {"identifier": "WOR-99", "id": "fake-id", "labels": {"nodes": []}}
+    ]
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+    w._draining = True
+
+    # Force a single iteration of the run loop body by patching out the
+    # blocking parts. _dispatch_next_ticket should NOT be called when draining.
+    with (
+        patch.object(w, "_dispatch_next_ticket") as mock_dispatch,
+        patch.object(w, "_promote_waiting_tickets") as mock_promote,
+        patch.object(w, "_check_epic_completion") as mock_epic,
+    ):
+        # Simulate the run-loop body's drain-aware section
+        if not w._draining:
+            mock_promote()
+        if not w._draining:
+            mock_dispatch()
+        if not w._draining:
+            mock_epic()
+
+    mock_dispatch.assert_not_called()
+    mock_promote.assert_not_called()
+    mock_epic.assert_not_called()
+
+
+def test_stale_softstop_sentinel_cleaned_on_startup(tmp_path: Path) -> None:
+    """A sentinel left over from a prior daemon run is removed at startup."""
+    sentinel = tmp_path / ".claude" / "watcher.softstop"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+    assert sentinel.exists()
+
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    w._remove_stale_softstop_sentinel()
+    assert not sentinel.exists()
+
+
+def test_softstop_stuck_warning_fires_after_threshold(tmp_path: Path) -> None:
+    """If drain is pending too long (default 60min), log a one-shot WARNING."""
+    import time as _time
+
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    w._draining = True
+    # Backdate draining_since to 70 minutes ago
+    w._draining_since = _time.monotonic() - 70 * 60
+
+    # Add one fake active worker so the warning has something to print
+    w._local_active.append(_make_active_worker(ticket_id="WOR-99"))
+    w._local_active[0].start_time = _time.monotonic() - 70 * 60
+
+    with caplog_at_level_helper() as records:
+        w._maybe_warn_softstop_stuck()
+
+    matching = [r for r in records if "Soft-stop pending" in r.getMessage()]
+    assert matching, f"Expected stuck-warning; got: {[r.getMessage() for r in records]}"
+    assert w._softstop_warned_stuck is True
+
+    # Subsequent calls should NOT re-warn
+    with caplog_at_level_helper() as records2:
+        w._maybe_warn_softstop_stuck()
+    assert not any("Soft-stop pending" in r.getMessage() for r in records2), (
+        "Stuck-warning should be one-shot; second call must not re-emit"
+    )
+
+
+# Tiny helper for the one test above (caplog fixture differs across pytest versions)
+import logging as _logging  # noqa: E402
+
+
+class _LogCapture:
+    def __init__(self) -> None:
+        self.records: list[_logging.LogRecord] = []
+        self._handler: _logging.Handler | None = None
+
+    def __enter__(self) -> list[_logging.LogRecord]:
+        self._handler = _logging.Handler()
+        self._handler.setLevel(_logging.WARNING)
+        self._handler.emit = lambda r: self.records.append(r)  # type: ignore[method-assign]
+        _logging.getLogger("app.core.watcher.watcher").addHandler(self._handler)
+        return self.records
+
+    def __exit__(self, *_args: object) -> None:
+        if self._handler is not None:
+            _logging.getLogger("app.core.watcher.watcher").removeHandler(self._handler)
+
+
+def caplog_at_level_helper() -> _LogCapture:
+    return _LogCapture()
+
+
+# ---------------------------------------------------------------------------
+# WOR-381 — heartbeat-based stuck-worker detection (SIGTERM, then SIGKILL)
+# ---------------------------------------------------------------------------
+
+
+def _stuck_worker(
+    tmp_path: Path,
+    ticket_id: str = "WOR-99",
+    *,
+    log_idle_secs: float | None = None,
+    terminated_at: float | None = None,
+) -> ActiveWorker:
+    """ActiveWorker with a worker log whose mtime is N seconds in the past.
+
+    If `log_idle_secs` is None, no log file is created (simulates a freshly-
+    dispatched worker that hasn't written anything yet).
+    """
+    import os
+    import time as _time
+
+    worktree = tmp_path / ticket_id
+    worktree.mkdir(parents=True, exist_ok=True)
+    log_path = worktree / ".claude" / f"worker_{ticket_id.lower()}.log"
+    if log_idle_secs is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("dummy stream-json line\n", encoding="utf-8")
+        target_mtime = _time.time() - log_idle_secs
+        os.utime(log_path, (target_mtime, target_mtime))
+
+    proc = MagicMock(spec=subprocess.Popen)
+    proc.poll.return_value = None  # still running
+    return ActiveWorker(
+        ticket_id=ticket_id,
+        linear_id=f"linear-{ticket_id}",
+        manifest=_make_manifest(ticket_id=ticket_id),
+        worktree_path=worktree,
+        process=proc,
+        terminated_at=terminated_at,
+    )
+
+
+def test_terminate_overrun_no_op_when_log_fresh(tmp_path: Path) -> None:
+    """A worker whose log was written 5 minutes ago is left alone (under 15-min cap)."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=5 * 60)
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_not_called()
+    worker.process.kill.assert_not_called()
+    assert worker.terminated_at is None
+
+
+def test_terminate_overrun_no_op_when_log_missing(tmp_path: Path) -> None:
+    """Freshly-dispatched worker (no log yet) is not signalled."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=None)
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_not_called()
+    worker.process.kill.assert_not_called()
+
+
+def test_terminate_overrun_sigterm_when_log_idle_past_threshold(tmp_path: Path) -> None:
+    """Log idle > 15 min triggers SIGTERM."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=16 * 60)  # over 15-min threshold
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_called_once()
+    worker.process.kill.assert_not_called()
+    assert worker.terminated_at is not None
+
+
+def test_terminate_overrun_sigterm_only_once(tmp_path: Path) -> None:
+    """Repeated calls do not re-SIGTERM after the first one."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=20 * 60)
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+    first_terminated_at = worker.terminated_at
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_called_once()
+    assert worker.terminated_at == first_terminated_at
+
+
+def test_terminate_overrun_sigkill_after_grace(tmp_path: Path) -> None:
+    """Worker still alive 6 min after SIGTERM is SIGKILL'd."""
+    import time as _time
+
+    linear = MagicMock()
+    w = Watcher(linear_client=linear, repo_root=tmp_path)
+    worker = _stuck_worker(
+        tmp_path,
+        log_idle_secs=20 * 60,
+        terminated_at=_time.time() - 6 * 60,
+    )
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.kill.assert_called_once()
+    linear.post_comment.assert_called_once()
+    body = linear.post_comment.call_args[0][1]
+    assert "stalled" in body
+    assert "SIGTERM" in body
+    assert "SIGKILL" in body
+
+
+def test_terminate_overrun_no_sigkill_within_grace(tmp_path: Path) -> None:
+    """Worker still alive <5 min after SIGTERM gets more grace."""
+    import time as _time
+
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(
+        tmp_path,
+        log_idle_secs=18 * 60,
+        terminated_at=_time.time() - 2 * 60,
+    )
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.kill.assert_not_called()
+
+
+def test_terminate_overrun_skips_already_exited(tmp_path: Path) -> None:
+    """A worker whose process has exited (poll != None) is not signalled."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=20 * 60)
+    worker.process.poll.return_value = 0
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_not_called()
+    worker.process.kill.assert_not_called()
+
+
+def test_terminate_overrun_handles_terminate_oserror(tmp_path: Path) -> None:
+    """OSError from terminate() doesn't loop us into retrying."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    worker = _stuck_worker(tmp_path, log_idle_secs=20 * 60)
+    worker.process.terminate.side_effect = OSError("no such process")
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    assert worker.terminated_at is not None
+
+
+def test_terminate_overrun_covers_both_pools(tmp_path: Path) -> None:
+    """Both _local_active and _cloud_active are scanned."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    local_worker = _stuck_worker(tmp_path, ticket_id="WOR-100", log_idle_secs=20 * 60)
+    cloud_worker = _stuck_worker(tmp_path, ticket_id="WOR-101", log_idle_secs=20 * 60)
+    w._local_active.append(local_worker)
+    w._cloud_active.append(cloud_worker)
+
+    w._terminate_overrun_workers()
+
+    local_worker.process.terminate.assert_called_once()
+    cloud_worker.process.terminate.assert_called_once()

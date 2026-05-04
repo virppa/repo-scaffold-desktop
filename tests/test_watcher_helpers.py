@@ -6,11 +6,13 @@ import json
 from pathlib import Path
 
 from app.core.watcher.watcher_helpers import (
-    _parse_ollama_model,
+    _parse_worker_api_retries,
+    _parse_worker_subagent_spawns,
     _parse_worker_usage,
     build_worker_cmd,
     build_worker_env,
     check_allowed_paths_overlap,
+    count_main_ahead_of_epic,
     resolve_effective_mode,
 )
 from tests.conftest import make_active_worker, make_manifest
@@ -60,7 +62,7 @@ def test_multiple_active_partial_overlap() -> None:
 
 def test_cloud_mode_strips_base_url() -> None:
     base = {
-        "ANTHROPIC_BASE_URL": "http://localhost:8082",
+        "ANTHROPIC_BASE_URL": "http://localhost:8000",
         "PATH": "/usr/bin",
         "HOME": "/root",
     }
@@ -70,19 +72,38 @@ def test_cloud_mode_strips_base_url() -> None:
 
 
 def test_cloud_mode_strips_model_var() -> None:
-    base = {"ANTHROPIC_MODEL": "qwen3-coder:30b", "PATH": "/usr/bin"}
+    base = {"ANTHROPIC_MODEL": "qwen3-coder", "PATH": "/usr/bin"}
     env = build_worker_env("cloud", base)
     assert "ANTHROPIC_MODEL" not in env
 
 
-def test_local_mode_injects_base_url() -> None:
+def test_local_mode_injects_vllm_base_url() -> None:
+    """WOR-368: local mode points ANTHROPIC_BASE_URL at vLLM directly (port 8000),
+    not the retired LiteLLM proxy on 8082."""
     base = {"PATH": "/usr/bin"}
     env = build_worker_env("local", base)
-    assert env["ANTHROPIC_BASE_URL"] == "http://localhost:8082"
+    assert env["ANTHROPIC_BASE_URL"] == "http://localhost:8000"
+
+
+def test_local_env_routes_by_tier() -> None:
+    """WOR-368: with no --model on the cmd, Claude Code picks a model by tier
+    via ANTHROPIC_DEFAULT_*_MODEL. All three must point at the vLLM-served name."""
+    env = build_worker_env("local", {"PATH": "/usr/bin"})
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "qwen3-coder"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "qwen3-coder"
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "qwen3-coder"
+
+
+def test_local_env_sets_dummy_auth_credentials() -> None:
+    """vLLM does not validate the API key, but Claude Code requires the env var
+    to be present. 'dummy' is the vLLM-doc-recommended placeholder."""
+    env = build_worker_env("local", {"PATH": "/usr/bin"})
+    assert env["ANTHROPIC_API_KEY"] == "dummy"  # pragma: allowlist secret
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "dummy"  # pragma: allowlist secret
 
 
 def test_default_mode_passes_env_unchanged() -> None:
-    base = {"ANTHROPIC_BASE_URL": "http://localhost:8082", "PATH": "/usr/bin"}
+    base = {"ANTHROPIC_BASE_URL": "http://localhost:8000", "PATH": "/usr/bin"}
     env = build_worker_env("default", base)
     assert env == base
 
@@ -104,11 +125,13 @@ def test_cloud_cmd_has_no_model_flag(tmp_path: Path) -> None:
     assert "/implement-ticket WOR-10" in " ".join(cmd)
 
 
-def test_local_cmd_includes_model_flag(tmp_path: Path) -> None:
+def test_local_cmd_omits_model_flag(tmp_path: Path) -> None:
+    """WOR-368: local mode no longer passes --model. vLLM only serves
+    'qwen3-coder', so a hard-coded 'claude-sonnet-4-6' would fail Claude
+    Code's /v1/models validation. Routing happens via
+    ANTHROPIC_DEFAULT_*_MODEL env vars (see test_local_env_routes_by_tier)."""
     cmd = build_worker_cmd("WOR-10", "local", tmp_path)
-    assert "--model" in cmd
-    idx = cmd.index("--model")
-    assert cmd[idx + 1] == "claude-sonnet-4-6"
+    assert "--model" not in cmd
 
 
 def test_cmd_includes_dangerously_skip_permissions(tmp_path: Path) -> None:
@@ -227,6 +250,13 @@ def _write_log(tmp_path: Path, lines: list[str]) -> Path:
 
 
 def test_parse_worker_usage_success(tmp_path: Path) -> None:
+    """Result event provides token snapshot; no compact_boundary → 0 (WOR-357).
+
+    The pre-WOR-357 implementation read context_compactions from the result
+    event's top-level field — that field is never populated by Claude Code.
+    The test now reflects the new behaviour: compactions counted only from
+    type=system, subtype=compact_boundary events.
+    """
     result_line = json.dumps(
         {
             "type": "result",
@@ -236,36 +266,39 @@ def test_parse_worker_usage_success(tmp_path: Path) -> None:
                 "output_tokens": 200,
                 "cache_read_input_tokens": 0,
             },
-            "context_compactions": 3,
+            "context_compactions": 3,  # ignored under WOR-357 semantics
         }
     )
     log = _write_log(tmp_path, ['{"type":"other","x":1}', result_line])
-    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
     assert input_tok == 1000
     assert output_tok == 200
-    assert compactions == 3
+    assert compactions == 0  # was 3 under the old (broken) semantics
 
 
 def test_parse_worker_usage_no_context_compactions(tmp_path: Path) -> None:
+    """Parseable log with no compact_boundary events returns 0 (WOR-357)."""
     result_line = json.dumps(
         {"type": "result", "usage": {"input_tokens": 500, "output_tokens": 50}}
     )
     log = _write_log(tmp_path, [result_line])
-    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
     assert input_tok == 500
     assert output_tok == 50
-    assert compactions is None
+    assert compactions == 0  # was None under the old semantics
 
 
 def test_parse_worker_usage_missing_log(tmp_path: Path) -> None:
+    """Missing log returns None for all three fields (unchanged)."""
     log = tmp_path / "no_such_file.log"
-    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
     assert input_tok is None
     assert output_tok is None
     assert compactions is None
 
 
 def test_parse_worker_usage_no_result_line(tmp_path: Path) -> None:
+    """Parseable log without usable usage data returns 0 compactions (WOR-357)."""
     log = _write_log(
         tmp_path,
         [
@@ -273,19 +306,218 @@ def test_parse_worker_usage_no_result_line(tmp_path: Path) -> None:
             json.dumps({"type": "assistant", "content": "hello"}),
         ],
     )
-    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
     assert input_tok is None
     assert output_tok is None
-    assert compactions is None
+    assert compactions == 0  # log was parseable; just no compactions
 
 
 def test_parse_worker_usage_malformed_json(tmp_path: Path) -> None:
+    """Fully unparseable log returns None for all three fields (unchanged)."""
     log = tmp_path / "worker.log"
     log.write_text("not json at all\n{broken\n", encoding="utf-8")
-    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
     assert input_tok is None
     assert output_tok is None
-    assert compactions is None
+    # No JSON parseable at all → 0 events seen, but the file IS open-able,
+    # so we get the parseable-but-empty path.
+    assert compactions == 0
+
+
+# ---------------------------------------------------------------------------
+# WOR-357 — compact_boundary system event counting
+# ---------------------------------------------------------------------------
+
+
+def test_parse_worker_usage_one_compact_boundary(tmp_path: Path) -> None:
+    """A single compact_boundary system event yields context_compactions=1."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "compact_boundary",
+                    "compact_metadata": {
+                        "trigger": "auto",
+                        "pre_tokens": 135486,
+                        "post_tokens": 3348,
+                        "duration_ms": 88463,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 100, "output_tokens": 50},
+                }
+            ),
+        ],
+    )
+    _, _, compactions, _ = _parse_worker_usage(log)
+    assert compactions == 1
+
+
+def test_parse_worker_usage_multiple_compact_boundaries(tmp_path: Path) -> None:
+    """Three compact_boundary events sum to context_compactions=3."""
+    boundary = json.dumps(
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "auto"},
+        }
+    )
+    log = _write_log(
+        tmp_path,
+        [
+            boundary,
+            json.dumps({"type": "assistant", "message": {"id": "a1"}}),
+            boundary,
+            json.dumps({"type": "assistant", "message": {"id": "a2"}}),
+            boundary,
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 100, "output_tokens": 10},
+                }
+            ),
+        ],
+    )
+    _, _, compactions, _ = _parse_worker_usage(log)
+    assert compactions == 3
+
+
+def test_parse_worker_usage_compact_duration_summed(tmp_path: Path) -> None:
+    """WOR-358: 4th tuple element sums compact_metadata.duration_ms."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "compact_boundary",
+                    "compact_metadata": {"duration_ms": 50000},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "compact_boundary",
+                    "compact_metadata": {"duration_ms": 38463},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 100, "output_tokens": 5},
+                }
+            ),
+        ],
+    )
+    _, _, compactions, compact_dur = _parse_worker_usage(log)
+    assert compactions == 2
+    assert compact_dur == 88463
+
+
+def test_parse_worker_usage_compact_duration_zero_when_no_compactions(
+    tmp_path: Path,
+) -> None:
+    """No compact_boundary events → compact_duration_ms is 0, not None."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    _, _, compactions, compact_dur = _parse_worker_usage(log)
+    assert compactions == 0
+    assert compact_dur == 0
+
+
+def test_parse_worker_usage_compact_duration_missing_metadata(tmp_path: Path) -> None:
+    """compact_boundary event without duration_ms → counts as compaction but adds 0."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps({"type": "system", "subtype": "compact_boundary"}),
+            json.dumps(
+                {
+                    "type": "system",
+                    "subtype": "compact_boundary",
+                    "compact_metadata": {"trigger": "auto"},  # no duration_ms key
+                }
+            ),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    _, _, compactions, compact_dur = _parse_worker_usage(log)
+    assert compactions == 2
+    assert compact_dur == 0
+
+
+def test_parse_worker_usage_other_system_subtypes_ignored(tmp_path: Path) -> None:
+    """system events with non-compact_boundary subtypes do not increment."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "system", "subtype": "task_started"}),
+            json.dumps({"type": "system", "subtype": "api_retry"}),
+            json.dumps({"type": "system", "subtype": "task_notification"}),
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 100, "output_tokens": 5},
+                }
+            ),
+        ],
+    )
+    _, _, compactions, _ = _parse_worker_usage(log)
+    assert compactions == 0
+
+
+def test_parse_worker_usage_compact_boundary_with_assistant_usage(
+    tmp_path: Path,
+) -> None:
+    """Cumulative assistant-token sum AND compaction count both reported."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "id": "a1",
+                        "usage": {"input_tokens": 1000, "output_tokens": 100},
+                    },
+                }
+            ),
+            json.dumps({"type": "system", "subtype": "compact_boundary"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "id": "a2",
+                        "usage": {"input_tokens": 500, "output_tokens": 50},
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 1500, "output_tokens": 150},
+                }
+            ),
+        ],
+    )
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
+    assert input_tok == 1500  # 1000 + 500 (sum across assistant events)
+    assert output_tok == 150  # 100 + 50
+    assert compactions == 1
 
 
 def test_parse_worker_usage_cumulative_output_tokens(tmp_path: Path) -> None:
@@ -340,9 +572,9 @@ def test_parse_worker_usage_cumulative_output_tokens(tmp_path: Path) -> None:
     )
     log = tmp_path / "worker.log"
     log.write_text("\n".join(assistant + [result_line]) + "\n", encoding="utf-8")
-    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
     assert output_tok == 600  # 100+200+300
-    assert compactions == 5
+    assert compactions == 0  # WOR-357: result.context_compactions field is ignored
 
 
 def test_parse_worker_usage_cumulative_input_tokens(tmp_path: Path) -> None:
@@ -397,7 +629,7 @@ def test_parse_worker_usage_cumulative_input_tokens(tmp_path: Path) -> None:
     )
     log = tmp_path / "worker.log"
     log.write_text("\n".join(assistant + [result_line]) + "\n", encoding="utf-8")
-    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
     assert input_tok == 35000  # 8000+12000+15000
 
 
@@ -411,10 +643,10 @@ def test_parse_worker_usage_mixed_valid_invalid_lines(tmp_path: Path) -> None:
     )
     log = tmp_path / "worker.log"
     log.write_text("garbage line\n" + result_line + "\n", encoding="utf-8")
-    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
     assert input_tok == 300
     assert output_tok == 100
-    assert compactions == 1
+    assert compactions == 0  # WOR-357: result.context_compactions field is ignored
 
 
 def test_parse_worker_usage_returns_first_result_line(tmp_path: Path) -> None:
@@ -425,52 +657,150 @@ def test_parse_worker_usage_returns_first_result_line(tmp_path: Path) -> None:
         {"type": "result", "usage": {"input_tokens": 999, "output_tokens": 999}}
     )
     log = _write_log(tmp_path, [first, second])
-    input_tok, output_tok, _ = _parse_worker_usage(log)
+    input_tok, output_tok, _, _ = _parse_worker_usage(log)
     # No assistant events — fallback uses the last result event's snapshot.
     assert input_tok == 999
     assert output_tok == 999
 
 
 def test_parse_worker_usage_empty_file(tmp_path: Path) -> None:
+    """Empty file is open-able and parseable → (None, None, 0)."""
     log = tmp_path / "empty.log"
     log.write_text("", encoding="utf-8")
-    input_tok, output_tok, compactions = _parse_worker_usage(log)
+    input_tok, output_tok, compactions, _ = _parse_worker_usage(log)
     assert input_tok is None
     assert output_tok is None
-    assert compactions is None
+    assert compactions == 0  # WOR-357: parseable path returns 0, not None
 
 
 # ---------------------------------------------------------------------------
-# _parse_ollama_model
+# WOR-360 — _parse_worker_api_retries
 # ---------------------------------------------------------------------------
 
 
-def test_parse_ollama_model_returns_bare_model_name(tmp_path: Path) -> None:
-    cfg = tmp_path / "litellm-local.yaml"
-    cfg.write_text(
-        "model_list:\n"
-        "  - model_name: claude-sonnet-4-6\n"
-        "    litellm_params:\n"
-        "      model: ollama_chat/qwen3-coder:30b\n"
-        "      api_base: http://localhost:11434\n"
+def test_parse_worker_api_retries_zero(tmp_path: Path) -> None:
+    """Log with no api_retry events returns 0."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
     )
-    assert _parse_ollama_model(cfg) == "qwen3-coder:30b"
+    assert _parse_worker_api_retries(log) == 0
 
 
-def test_parse_ollama_model_raises_when_no_ollama_entry(tmp_path: Path) -> None:
-    import pytest
+def test_parse_worker_api_retries_counts_5(tmp_path: Path) -> None:
+    """5 api_retry events returns 5."""
+    retry = json.dumps({"type": "system", "subtype": "api_retry"})
+    log = _write_log(
+        tmp_path,
+        [
+            retry,
+            retry,
+            retry,
+            retry,
+            retry,
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_worker_api_retries(log) == 5
 
-    cfg = tmp_path / "litellm-local.yaml"
-    cfg.write_text("model_list:\n  - model_name: gpt-4\n")
-    with pytest.raises(ValueError, match="No ollama_chat/"):
-        _parse_ollama_model(cfg)
+
+def test_parse_worker_api_retries_other_subtypes_ignored(tmp_path: Path) -> None:
+    """Other system subtypes (init, compact_boundary, task_started) ignored."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "system", "subtype": "compact_boundary"}),
+            json.dumps({"type": "system", "subtype": "task_started"}),
+            json.dumps({"type": "system", "subtype": "task_notification"}),
+            json.dumps({"type": "system", "subtype": "api_retry"}),
+        ],
+    )
+    assert _parse_worker_api_retries(log) == 1
 
 
-def test_parse_ollama_model_raises_when_file_missing(tmp_path: Path) -> None:
-    import pytest
+def test_parse_worker_api_retries_missing_log(tmp_path: Path) -> None:
+    """Missing log returns None (cannot read)."""
+    assert _parse_worker_api_retries(tmp_path / "no_such_file.log") is None
 
-    with pytest.raises(FileNotFoundError):
-        _parse_ollama_model(tmp_path / "nonexistent.yaml")
+
+# ---------------------------------------------------------------------------
+# WOR-364 — _parse_worker_subagent_spawns
+# ---------------------------------------------------------------------------
+
+
+def _task_use(name: str = "Task") -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "a1",
+                "content": [{"type": "tool_use", "name": name, "input": {}}],
+            },
+        }
+    )
+
+
+def test_parse_worker_subagent_spawns_zero(tmp_path: Path) -> None:
+    """Log with no Task tool_use returns 0."""
+    log = _write_log(
+        tmp_path,
+        [
+            _task_use("Read"),
+            _task_use("Edit"),
+            _task_use("Bash"),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_worker_subagent_spawns(log) == 0
+
+
+def test_parse_worker_subagent_spawns_counts_3(tmp_path: Path) -> None:
+    """3 Task tool_use events returns 3."""
+    log = _write_log(
+        tmp_path,
+        [
+            _task_use("Task"),
+            _task_use("Read"),
+            _task_use("Task"),
+            _task_use("Bash"),
+            _task_use("Task"),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_worker_subagent_spawns(log) == 3
+
+
+def test_parse_worker_subagent_spawns_other_tools_ignored(tmp_path: Path) -> None:
+    """Read/Edit/Bash/Grep/Write/TodoWrite are not counted."""
+    log = _write_log(
+        tmp_path,
+        [
+            _task_use("Read"),
+            _task_use("Edit"),
+            _task_use("Bash"),
+            _task_use("Grep"),
+            _task_use("Write"),
+            _task_use("TodoWrite"),
+        ],
+    )
+    assert _parse_worker_subagent_spawns(log) == 0
+
+
+def test_parse_worker_subagent_spawns_missing_log(tmp_path: Path) -> None:
+    """Missing log returns None."""
+    assert _parse_worker_subagent_spawns(tmp_path / "no_such_file.log") is None
 
 
 # ---------------------------------------------------------------------------
@@ -487,7 +817,7 @@ def test_parse_worker_usage_returns_separate_tokens(tmp_path: Path) -> None:
         }
     )
     log = _write_log(tmp_path, [result_line])
-    input_tok, output_tok, _ = _parse_worker_usage(log)
+    input_tok, output_tok, _, _ = _parse_worker_usage(log)
     assert input_tok == 12000
     assert output_tok == 800
 
@@ -498,7 +828,7 @@ def test_parse_worker_usage_missing_input_token_returns_none(
     """When input_tokens is absent, all tokens are None."""
     result_line = json.dumps({"type": "result", "usage": {"output_tokens": 500}})
     log = _write_log(tmp_path, [result_line])
-    input_tok, output_tok, _ = _parse_worker_usage(log)
+    input_tok, output_tok, _, _ = _parse_worker_usage(log)
     assert input_tok is None
     assert output_tok is None
 
@@ -509,6 +839,103 @@ def test_parse_worker_usage_missing_output_token_returns_none(
     """When output_tokens is absent, all tokens are None."""
     result_line = json.dumps({"type": "result", "usage": {"input_tokens": 3000}})
     log = _write_log(tmp_path, [result_line])
-    input_tok, output_tok, _ = _parse_worker_usage(log)
+    input_tok, output_tok, _, _ = _parse_worker_usage(log)
     assert input_tok is None
     assert output_tok is None
+
+
+# ---------------------------------------------------------------------------
+# count_main_ahead_of_epic — WOR-373 stale-epic detection
+# ---------------------------------------------------------------------------
+
+
+def _git(args: list[str], cwd: Path) -> None:
+    import subprocess  # nosec B404
+
+    subprocess.run(  # nosec B603 B607
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _setup_remote_and_main(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a bare 'origin' repo and a working clone with a main branch.
+
+    Returns (origin_path, clone_path). Caller can then create epic branches
+    and push them to origin to simulate the watcher's view of the repo.
+    """
+    origin = tmp_path / "origin.git"
+    _git(["init", "-q", "--bare", "-b", "main", str(origin)], cwd=tmp_path)
+
+    clone = tmp_path / "clone"
+    _git(["clone", "-q", str(origin), str(clone)], cwd=tmp_path)
+    _git(["config", "user.email", "test@example.com"], cwd=clone)
+    _git(["config", "user.name", "Test"], cwd=clone)
+    (clone / "README.md").write_text("seed\n", encoding="utf-8")
+    _git(["add", "README.md"], cwd=clone)
+    _git(["commit", "-q", "-m", "seed"], cwd=clone)
+    _git(["push", "-q", "origin", "main"], cwd=clone)
+    return origin, clone
+
+
+def test_count_main_ahead_of_epic_returns_zero_for_main_branch(
+    tmp_path: Path,
+) -> None:
+    """Sub-tickets targeting main directly are not subject to the check."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    assert count_main_ahead_of_epic("main", clone) == 0
+
+
+def test_count_main_ahead_of_epic_returns_zero_for_random_branch(
+    tmp_path: Path,
+) -> None:
+    """Branches that don't start with `epic/` are not checked."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    assert count_main_ahead_of_epic("feat/something", clone) == 0
+    assert count_main_ahead_of_epic("wor-100-some-ticket", clone) == 0
+
+
+def test_count_main_ahead_of_epic_returns_zero_when_in_sync(
+    tmp_path: Path,
+) -> None:
+    """An epic branch at the same commit as main has zero drift."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    _git(["checkout", "-b", "epic/wor-100-fresh"], cwd=clone)
+    _git(["push", "-q", "origin", "epic/wor-100-fresh"], cwd=clone)
+    assert count_main_ahead_of_epic("epic/wor-100-fresh", clone) == 0
+
+
+def test_count_main_ahead_of_epic_returns_drift_count(tmp_path: Path) -> None:
+    """An epic that's N commits behind main returns N."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    # Create epic from current main
+    _git(["checkout", "-b", "epic/wor-100-stale"], cwd=clone)
+    _git(["push", "-q", "origin", "epic/wor-100-stale"], cwd=clone)
+    # Add 5 commits to main only
+    _git(["checkout", "main"], cwd=clone)
+    for i in range(5):
+        f = clone / f"file_{i}.md"
+        f.write_text(f"content {i}\n", encoding="utf-8")
+        _git(["add", str(f)], cwd=clone)
+        _git(["commit", "-q", "-m", f"commit {i}"], cwd=clone)
+    _git(["push", "-q", "origin", "main"], cwd=clone)
+    # Epic is 5 commits behind main now
+    assert count_main_ahead_of_epic("epic/wor-100-stale", clone) == 5
+
+
+def test_count_main_ahead_of_epic_fails_open_outside_git(tmp_path: Path) -> None:
+    """When cwd is not a git repo, the helper returns 0 (does not crash)."""
+    not_a_repo = tmp_path / "not_a_repo"
+    not_a_repo.mkdir()
+    assert count_main_ahead_of_epic("epic/wor-100-stale", not_a_repo) == 0
+
+
+def test_count_main_ahead_of_epic_fails_open_when_branch_missing(
+    tmp_path: Path,
+) -> None:
+    """If the epic branch doesn't exist on origin, return 0 (do not block)."""
+    _, clone = _setup_remote_and_main(tmp_path)
+    assert count_main_ahead_of_epic("epic/wor-100-nonexistent", clone) == 0

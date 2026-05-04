@@ -1,48 +1,50 @@
-"""LiteLLM and Ollama process management for the watcher sub-system.
+"""vLLM health gating for the watcher sub-system.
 
-ServiceManager owns the shared _litellm_proc handle; two methods depend on it
-(_ensure_litellm_running stores it, _stop_litellm_proxy uses it) which makes a
-class boundary cleaner than threading a Popen handle through function signatures.
+Before WOR-368 this module managed two long-running daemon processes
+(LiteLLM proxy + Ollama). Post-migration vLLM serves the Anthropic
+Messages API natively (see docs/spikes/wor-344-vllm-native-anthropic-api.md),
+so the watcher no longer spawns or stops any subprocesses — it only
+gates dispatch on vLLM readiness. The class shape is preserved (rather
+than collapsing to module functions) because the dispatch path holds a
+reference to a ServiceManager instance and we don't want to ripple a
+refactor through that surface in this ticket.
 """
 
 from __future__ import annotations
 
 import http.client
+import json
 import logging
-import os
-import socket
 import subprocess  # nosec B404
 import sys
-import time
 from pathlib import Path
 
-from .watcher_helpers import _parse_ollama_model
-from .watcher_types import (
-    _LITELLM_CONFIG,
-    _LITELLM_PORT,
-    _OLLAMA_KEEPALIVE,
-    _OLLAMA_PORT,
-    _VLLM_PORT,
-)
+from .watcher_types import _VLLM_PORT, _VLLM_SERVED_MODEL
 
 logger = logging.getLogger(__name__)
 
 _VLLM_FP8_CMD = (
     "/home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4"
-    " --max-model-len 262144 --kv-cache-dtype fp8 --max-num-seqs 16"
-    " --max-num-batched-tokens 4096 --reasoning-parser qwen3"
-    " --enable-prefix-caching --language-model-only"
-    " --safetensors-load-strategy prefetch"
+    " --served-model-name qwen3-coder"
+    " --max-model-len 262144 --max-num-seqs 16"
+    " --kv-cache-dtype fp8 --max-num-batched-tokens 4096"
+    " --reasoning-parser qwen3 --enable-prefix-caching"
+    " --language-model-only --safetensors-load-strategy prefetch"
     " --enable-auto-tool-choice --tool-call-parser qwen3_coder"
 )
 
 
 class ServiceManager:
-    """Manages the LiteLLM proxy and Ollama processes for local-mode workers."""
+    """vLLM health gate for local-mode workers.
+
+    The class previously also owned LiteLLM and Ollama process handles;
+    those backends were retired in WOR-368 once vLLM 0.20.0 began serving
+    /v1/messages natively. ``stop()`` is a no-op kept for call-site
+    compatibility with the watcher's signal handler.
+    """
 
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
-        self._litellm_proc: subprocess.Popen[bytes] | None = None
         self._running = True
         self._vllm_terminal_opened = False
         self._vllm_warned = False
@@ -110,161 +112,82 @@ class ServiceManager:
         except OSError as exc:
             logger.warning("Could not open WSL2 terminal: %s", exc)
 
-    def ensure_ollama_running(self) -> None:
-        """Start Ollama with the configured model if not already on _OLLAMA_PORT."""
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            already_up = sock.connect_ex(("localhost", _OLLAMA_PORT)) == 0
+    def ensure_vllm_anthropic_mode(self) -> None:
+        """Verify vLLM is serving the Anthropic Messages API natively.
 
-        if already_up:
-            logger.info("Ollama already running on port %d", _OLLAMA_PORT)
-            return
+        Probes two endpoints:
+            1. GET  /v1/models   — confirms the served model name is registered
+            2. POST /v1/messages — confirms the Anthropic router accepts traffic
 
-        config_path = self._repo_root / _LITELLM_CONFIG
-        model = _parse_ollama_model(config_path)
-        logger.info(
-            "Starting Ollama (model=%s, keepalive=%s)…", model, _OLLAMA_KEEPALIVE
-        )
-        if sys.platform == "win32":
-            creation_flags = subprocess.CREATE_NEW_CONSOLE
-        else:
-            creation_flags = 0
-        subprocess.Popen(  # nosec B603 B607
-            ["ollama", "run", model, "--keepalive", _OLLAMA_KEEPALIVE],
-            creationflags=creation_flags,
-        )
-        self._wait_for_ollama_ready()
+        Raises RuntimeError with the launch command embedded if either probe
+        fails. Local-mode dispatch must call this before launching a worker;
+        otherwise the worker's first claude API call would hang or fail in a
+        less obvious way (the worker's stdout is tee'd to a log file but the
+        operator only sees opaque errors).
 
-    def _wait_for_ollama_ready(self, timeout: float = 120.0) -> None:
-        """Poll TCP then HTTP /api/tags until Ollama's API is ready."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and self._running:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(2)
-                if sock.connect_ex(("localhost", _OLLAMA_PORT)) != 0:
-                    time.sleep(0.5)
-                    continue
-            try:
-                conn = http.client.HTTPConnection("localhost", _OLLAMA_PORT, timeout=2)
-                conn.request("GET", "/api/tags")
-                if conn.getresponse().status == 200:
-                    return
-            except (OSError, http.client.HTTPException):
-                pass
-            time.sleep(0.5)
-        if not self._running:
-            raise RuntimeError("Watcher shutting down")
-        raise TimeoutError(f"Ollama not ready after {timeout}s.")
-
-    def _start_litellm_windows(self, cmd: list[str], env: dict[str, str]) -> None:
-        """Open a new Windows Terminal tab for the LiteLLM proxy.
-
-        wt.exe exits immediately after opening the tab, so we cannot hold a
-        process handle for it — _litellm_proc stays None and stop() cannot
-        terminate it programmatically.  Falls back to CREATE_NEW_CONSOLE if
-        wt.exe is not available.
+        This replaces ensure_litellm_running (deleted in WOR-368): vLLM 0.20.0
+        mounts /v1/messages unconditionally on the OpenAI server, so we no
+        longer spawn a translation proxy — we just verify the destination is
+        live and producing Anthropic-shaped responses.
         """
-        try:
-            # cmd.exe /k wraps litellm so the shell resolves .bat/.cmd PATH
-            # extensions; /k keeps the tab open after the process exits.
-            shell_cmd = subprocess.list2cmdline(cmd)
-            subprocess.Popen(  # nosec B603 B607
-                ["wt.exe", "-w", "0", "new-tab", "--", "cmd.exe", "/k", shell_cmd],
-                creationflags=(
-                    getattr(subprocess, "DETACHED_PROCESS", 0)
-                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                ),
-                env=env,
+        if not self._probe_models_endpoint():
+            raise RuntimeError(
+                f"vLLM not serving on port {_VLLM_PORT}. Start it in WSL2:\n\n"
+                f"  {_VLLM_FP8_CMD}\n"
             )
-            logger.info("Opened Windows Terminal tab for LiteLLM proxy")
-        except FileNotFoundError:
-            logger.warning("wt.exe not found — falling back to new console window")
-            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
-                cmd,
-                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
-                env=env,
+        if not self._probe_messages_endpoint():
+            raise RuntimeError(
+                f"vLLM /v1/messages on port {_VLLM_PORT} did not return a "
+                "valid Anthropic response. The server is up but the Anthropic "
+                "router is not responding correctly — check the vLLM version "
+                "(needs 0.20.0+) and that --enable-auto-tool-choice + "
+                "--tool-call-parser qwen3_coder are set."
             )
+        logger.debug("vLLM Anthropic mode verified (port %d)", _VLLM_PORT)
 
-    def _litellm_serving(self) -> bool:
-        """Return True if LiteLLM is accepting HTTP requests on _LITELLM_PORT."""
+    def _probe_models_endpoint(self) -> bool:
+        """Return True if GET /v1/models returns 200 and lists _VLLM_SERVED_MODEL."""
         try:
-            conn = http.client.HTTPConnection("localhost", _LITELLM_PORT, timeout=2)
-            conn.request("GET", "/health")
-            conn.getresponse()
-            return True
-        except (OSError, http.client.HTTPException):
+            conn = http.client.HTTPConnection("localhost", _VLLM_PORT, timeout=3)
+            conn.request("GET", "/v1/models")
+            resp = conn.getresponse()
+            if resp.status != 200:
+                return False
+            payload = json.loads(resp.read())
+        except (OSError, http.client.HTTPException, ValueError):
             return False
+        ids = [m.get("id") for m in payload.get("data", [])]
+        return _VLLM_SERVED_MODEL in ids
 
-    def ensure_litellm_running(self) -> None:
-        """Start the LiteLLM proxy if not already listening on _LITELLM_PORT."""
-        if self._litellm_serving():
-            logger.debug("LiteLLM proxy already running on port %d", _LITELLM_PORT)
-            return
-
-        config_path = self._repo_root / _LITELLM_CONFIG
-        if not config_path.exists():
-            raise FileNotFoundError(
-                f"LiteLLM config not found: {config_path}. "
-                "Copy litellm-local.yaml.example to litellm-local.yaml "
-                "and configure it."
+    def _probe_messages_endpoint(self) -> bool:
+        """Return True if POST /v1/messages returns a valid Anthropic message."""
+        body = json.dumps(
+            {
+                "model": _VLLM_SERVED_MODEL,
+                "max_tokens": 8,
+                "messages": [{"role": "user", "content": "ok"}],
+            }
+        ).encode("utf-8")
+        try:
+            conn = http.client.HTTPConnection("localhost", _VLLM_PORT, timeout=10)
+            conn.request(
+                "POST",
+                "/v1/messages",
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "anthropic-version": "2023-06-01",
+                    "x-api-key": "dummy",
+                },
             )
-
-        logger.info("Starting LiteLLM proxy (port %d)…", _LITELLM_PORT)
-        env = {
-            **os.environ,
-            "PYTHONUTF8": "1",
-            "LITELLM_USE_RESPONSES_API": "False",
-        }
-        litellm_cmd = [
-            "litellm",
-            "--config",
-            str(config_path),
-            "--port",
-            str(_LITELLM_PORT),
-            "--drop_params",
-        ]
-        if sys.platform == "win32":
-            self._start_litellm_windows(litellm_cmd, env)
-        else:
-            log_path = self._repo_root / ".claude" / "litellm.log"
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_file = open(log_path, "wb")  # noqa: SIM115
-            logger.info("LiteLLM log: %s", log_path)
-            self._litellm_proc = subprocess.Popen(  # nosec B603 B607
-                litellm_cmd,
-                stdout=log_file,
-                stderr=log_file,
-                env=env,
-            )
-        self._wait_for_litellm_ready()
-
-    def _wait_for_litellm_ready(self, timeout: float = 60.0) -> None:
-        """Poll HTTP until LiteLLM is serving or process dies."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._litellm_proc and self._litellm_proc.poll() is not None:
-                rc = self._litellm_proc.returncode
-                raise RuntimeError(
-                    f"LiteLLM proxy exited (rc={rc}). "
-                    f"Check .claude/litellm.log for details."
-                )
-            if self._litellm_serving():
-                return
-            time.sleep(0.5)
-        raise TimeoutError(
-            f"LiteLLM proxy not ready after {timeout}s. "
-            f"Check .claude/litellm.log for details."
-        )
+            resp = conn.getresponse()
+            if resp.status != 200:
+                return False
+            payload = json.loads(resp.read())
+        except (OSError, http.client.HTTPException, ValueError):
+            return False
+        return payload.get("type") == "message" and "content" in payload
 
     def stop(self) -> None:
-        """Terminate the LiteLLM proxy if it was started by this manager."""
+        """No-op kept for call-site compatibility (formerly terminated LiteLLM)."""
         self._running = False
-        if not self._litellm_proc:
-            return
-        logger.info("Stopping LiteLLM proxy (pid=%d)…", self._litellm_proc.pid)
-        self._litellm_proc.terminate()
-        try:
-            self._litellm_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            logger.info("LiteLLM proxy did not exit after 5s — sending kill")
-            self._litellm_proc.kill()
-        self._litellm_proc = None

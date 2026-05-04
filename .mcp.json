@@ -7,7 +7,7 @@
     "sonarqube": {
       "type": "stdio",
       "command": "cmd",
-      "args": ["/c", "npx", "-y", "sonarqube-mcp-server"],
+      "args": ["/c", "npx", "-y", "sonarqube-mcp-server@1.10.21"],
       "env": {
         "SONARQUBE_TOKEN": "${SONARCLOUD_TOKEN}",
         "SONARQUBE_URL": "https://sonarcloud.io",

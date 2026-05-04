@@ -595,3 +595,111 @@ def test_finalize_worker_passes_backup_root_to_commit_wip_state(
 
     _, kwargs = mock_commit.call_args
     assert kwargs.get("backup_root") == repo_root / ".claude" / "artifacts"
+
+
+# ---------------------------------------------------------------------------
+# WOR-347 — success path must preserve uncommitted WIP
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_success_path_runs_commit_wip_state(
+    tmp_path: Path,
+) -> None:
+    """WOR-347 regression: even on the success path (result.json=success, checks
+    pass, PR created), commit_wip_state must run BEFORE cleanup_worktree so
+    any uncommitted edits the worker forgot to commit get preserved.
+
+    Before WOR-347 the success path skipped commit_wip_state entirely and
+    cleanup destroyed any uncommitted work — that destroyed WOR-332's entire
+    implementation on 2026-05-03 (worker passed all 96 tests but never ran
+    git commit).
+    """
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    _write_result_json(repo_root, "WOR-10", "success")
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value=WipPreservationResult(
+                status="pushed", sha="deadbeef", backup_path=None, error=None
+            ),
+        ) as mock_commit,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree") as mock_cleanup,
+    ):
+        _call_finalize(worker, returncode=0, repo_root=repo_root)
+
+    # commit_wip_state MUST be called even though everything succeeded
+    mock_commit.assert_called_once()
+    args, kwargs = mock_commit.call_args
+    assert args == (worktree, "WOR-10", "wor-10-test-ticket")
+    assert "backup_root" in kwargs
+
+    # Cleanup still runs because commit_wip_state returned "pushed"
+    mock_cleanup.assert_called_once()
+
+
+def test_finalize_worker_success_path_skips_cleanup_when_wip_preservation_fails(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """WOR-347 defense-in-depth: if commit_wip_state fails on the success path
+    (e.g. push refused, backup write failed), the worktree must NOT be cleaned
+    up — uncommitted work would be lost otherwise. Same gate as the failure
+    path (WOR-288).
+    """
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    _write_result_json(repo_root, "WOR-10", "success")
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value=WipPreservationResult(
+                status="failed",
+                sha=None,
+                backup_path=None,
+                error="git push rejected: branch protection",
+            ),
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree") as mock_cleanup,
+        caplog.at_level(logging.ERROR, logger="app.core.watcher.watcher_finalize"),
+    ):
+        _call_finalize(worker, returncode=0, repo_root=repo_root)
+
+    # Cleanup MUST be skipped — would destroy uncommitted work
+    mock_cleanup.assert_not_called()
+    # Operator-visible ERROR log was emitted
+    assert any(
+        "WIP preservation failed for WOR-10" in r.message for r in caplog.records
+    )

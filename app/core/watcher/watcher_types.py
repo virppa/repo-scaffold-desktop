@@ -11,20 +11,23 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast, get_args
 
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import ImplementationMode
 
 _CLAUDE_DIR = ".claude"
+_ARTIFACTS_DIR = "artifacts"
 _PID_FILE = Path(_CLAUDE_DIR) / "watcher.pid"
-_LITELLM_PORT = 8082
-_LITELLM_CONFIG = "litellm-local.yaml"
-_LOCAL_MODEL = "claude-sonnet-4-6"
-_LITELLM_BASE_URL = f"http://localhost:{_LITELLM_PORT}"
-_OLLAMA_PORT = 11434
+_IN_PROGRESS_STATE = "In Progress"
 _VLLM_PORT = 8000
-_OLLAMA_KEEPALIVE = "120m"
+_VLLM_BASE_URL = f"http://localhost:{_VLLM_PORT}"
+_VLLM_SERVED_MODEL = "qwen3-coder"
+# Metrics label kept for backward compatibility with rows written before WOR-368;
+# Claude Code routes by tier via ANTHROPIC_DEFAULT_*_MODEL, so the on-the-wire
+# request reaches vLLM as "qwen3-coder" but Claude Code's accounting still says
+# this. A "served_model_name" column would be the cleaner long-term fix.
+_LOCAL_MODEL = "claude-sonnet-4-6"
 _WORKTREE_BASE = Path("worktrees")
 
 _ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(
@@ -64,6 +67,25 @@ class ActiveWorker:
     start_time: float = field(default_factory=time.monotonic)
     backed_up_plans: list[Path] = field(default_factory=list)
     retry_count: int = 0
+    # WOR-363: count of OTHER active workers at the moment this one launched.
+    # Captured by dispatch.start_ticket BEFORE adding self to the active pool.
+    dispatch_concurrency: int = 0
+    # WOR-381: wall-clock timestamp (time.time()) at which the watcher sent
+    # SIGTERM after the worker's log file went stale. Used to track the
+    # SIGKILL grace period. None means the worker has not been signalled.
+    # Wall-clock (not monotonic) so it shares a frame of reference with the
+    # log file's st_mtime.
+    terminated_at: float | None = None
+    # WOR-370: vLLM /metrics snapshot taken at dispatch time when the
+    # worker was the only active session (dispatch_concurrency == 0).
+    # None means no snapshot (either concurrency > 0 at dispatch, or the
+    # /metrics endpoint was unreachable).
+    vllm_metrics_before: dict[str, float] | None = None
+    # WOR-370: True iff the worker was solo at dispatch AND no other worker
+    # was dispatched during this session. Flipped to False whenever a peer
+    # is dispatched. At reap, only workers with remained_solo=True get
+    # attributable vLLM /metrics deltas; the rest get a sentinel artifact.
+    remained_solo: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +118,6 @@ def is_watcher_running(pid_file: Path = _PID_FILE) -> bool:
 
 
 def _to_metrics_mode(mode: str) -> ImplementationMode:
-    if mode in ("local", "cloud", "hybrid"):
-        return mode  # type: ignore[return-value]
+    if mode in get_args(ImplementationMode):
+        return cast(ImplementationMode, mode)
     return "cloud"

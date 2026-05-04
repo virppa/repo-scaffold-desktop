@@ -11,7 +11,7 @@ from app.cli import main
 
 
 def test_metrics_browse_launches_datasette(tmp_path: Path) -> None:
-    db = tmp_path / "metrics.db"
+    db = tmp_path / "app.db"
     db.touch()
 
     with (
@@ -28,7 +28,7 @@ def test_metrics_browse_launches_datasette(tmp_path: Path) -> None:
 def test_metrics_browse_missing_db_exits(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    db = tmp_path / "metrics.db"  # does not exist
+    db = tmp_path / "app.db"  # does not exist
 
     with patch("app.cli.MetricsStore.get_db_path", return_value=db):
         rc = main(["metrics", "browse"])
@@ -40,7 +40,7 @@ def test_metrics_browse_missing_db_exits(
 def test_metrics_browse_datasette_not_installed(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    db = tmp_path / "metrics.db"
+    db = tmp_path / "app.db"
     db.touch()
 
     with (

@@ -266,7 +266,7 @@ def test_finalize_worker_cloud_metrics_populated_for_cloud_run(
     assert m.local_output_tokens is None
     assert m.local_tokens is None
     assert m.local_model is None
-    assert m.local_output_tokens_per_second is None
+    assert m.output_tokens_per_wall_second is None
 
 
 def test_finalize_worker_cloud_model_from_env(
@@ -406,7 +406,7 @@ def test_finalize_worker_local_run_keeps_local_fields(
     assert m.local_input_tokens == 15000
     assert m.local_output_tokens == 600
     assert m.local_tokens == 15600
-    assert m.local_output_tokens_per_second == pytest.approx(60.0)
+    assert m.output_tokens_per_wall_second == pytest.approx(60.0)
     # Cloud fields must be None for local runs
     assert m.cloud_model is None
     assert m.cloud_tokens is None
@@ -561,3 +561,123 @@ def test_estimate_cloud_cost_none_tokens_returns_zero() -> None:
 
     assert _estimate_cloud_cost(None, 1000, "claude-opus-4-7") == 0.0
     assert _estimate_cloud_cost(1000, None, "claude-opus-4-7") == 0.0
+
+
+# ---------------------------------------------------------------------------
+# WOR-354 — three-dot diff against merge-base, invariant under base drift
+# ---------------------------------------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> str:
+    """Run a git command in repo and return stdout (utf-8, stripped)."""
+    return subprocess.run(  # nosec B603 B607
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def _setup_repo_with_drift(
+    tmp_path: Path,
+    *,
+    worker_loc: int,
+    drift_loc: int,
+) -> Path:
+    """Build a real git repo simulating a worker branch off an epic branch
+    that subsequently drifted by ``drift_loc`` insertions on the base.
+
+    Layout:
+      main (initial)
+        └── epic (base_branch)
+              ├── worker_HEAD (adds worker_loc lines in worker.py)
+              └── (epic advances by drift_loc lines in sibling.py)
+
+    The returned worktree directory is checked out at worker_HEAD.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "README.md").write_text("init\n")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-q", "-m", "init")
+
+    _git(repo, "checkout", "-q", "-b", "epic")
+    (repo / "epic_seed.py").write_text("# epic seed\n")
+    _git(repo, "add", "epic_seed.py")
+    _git(repo, "commit", "-q", "-m", "epic base")
+
+    _git(repo, "checkout", "-q", "-b", "worker")
+    if worker_loc > 0:
+        worker_body = "\n".join("x" for _ in range(worker_loc)) + "\n"
+        (repo / "worker.py").write_text(worker_body)
+        _git(repo, "add", "worker.py")
+        _git(repo, "commit", "-q", "-m", "worker change")
+
+    _git(repo, "checkout", "-q", "epic")
+    sibling_body = "\n".join("y" for _ in range(drift_loc)) + "\n"
+    (repo / "sibling.py").write_text(sibling_body)
+    _git(repo, "add", "sibling.py")
+    _git(repo, "commit", "-q", "-m", "sibling merged into epic during worker run")
+
+    _git(repo, "checkout", "-q", "worker")
+    return repo
+
+
+def _finalize_with_real_diff(repo: Path, ticket_id: str = "WOR-354") -> object:
+    """Run finalize_worker against a real git repo with all other steps mocked."""
+    manifest = make_manifest(
+        ticket_id=ticket_id,
+        worker_branch="worker",
+        base_branch="epic",
+    )
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id=ticket_id,
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=repo,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch(
+            "app.core.watcher.watcher_finalize.fetch_sonar_findings",
+            return_value=[],
+        ),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+    return metrics_mock.record.call_args[0][0]
+
+
+def test_lines_changed_excludes_base_drift(tmp_path: Path) -> None:
+    """Three-dot diff: worker contributes 5 LOC; base advances 100 LOC during
+    the run; lines_changed must reflect only the worker's 5 LOC."""
+    repo = _setup_repo_with_drift(tmp_path, worker_loc=5, drift_loc=100)
+
+    m = _finalize_with_real_diff(repo)
+
+    # Three-dot semantics: only the worker's commits relative to the merge-base.
+    assert m.lines_changed == 5
+    assert m.files_changed == 1
+
+
+def test_lines_changed_zero_when_worker_no_op_under_drift(tmp_path: Path) -> None:
+    """Worker makes zero commits but base advances 100 LOC: lines_changed=0
+    (regression for the WOR-318/319/320/321 byte-identical-footprint pattern)."""
+    repo = _setup_repo_with_drift(tmp_path, worker_loc=0, drift_loc=100)
+
+    m = _finalize_with_real_diff(repo)
+
+    assert m.lines_changed == 0
+    assert m.files_changed == 0

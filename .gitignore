@@ -45,6 +45,8 @@ Thumbs.db
 # Environment variables
 .env
 .env.*
+# Stale local LiteLLM config (the proxy was retired in WOR-368; kept gitignored
+# defensively so anyone with a leftover copy doesn't accidentally commit it).
 litellm-local.yaml
 # Claude Code local settings
 .claude/settings.local.json
@@ -52,19 +54,28 @@ litellm-local.yaml
 # Claude Code local worker artifacts (ephemeral, machine-generated)
 .claude/artifacts/
 
-# Local LiteLLM config
-litellm-local.yaml
-
 # Claude Code watcher logs
 .claude/*.log
 .claude/*.pid
+.claude/*.lock
+
+# Claude Code hook state (per-session, machine-generated)
+.claude/.read_counts.json
+
+# Forensic log dumps under retros/ (raw worker logs + manifests captured during
+# post-mortem analysis). The retro markdown itself is committed; raw evidence
+# lives in private gists or Linear attachments instead.
+docs/retros/*_logs/
 
 # Benchmark fixtures (generated locally, not committed)
 scripts/bench/fixtures/
 
 # Benchmark results DB (local data, not committed)
 bench_results.db
+bench.db
+
+# Unified metrics + bench DB (local data, not committed)
+app.db
 
 # Benchmark config backups
 config/*.toml.bak
-bench.db
