@@ -21,7 +21,11 @@ jobs:
           cache-dependency-path: 'requirements-dev.txt'
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        # WOR-69 added pytest-qt to requirements-dev.txt, which loads its
+        # plugin at pytest collection time and requires PySide6/PyQt5/PyQt6
+        # to be installed. PySide6 lives in requirements-ui.txt, so install
+        # both here.
+        run: pip install -r requirements-dev.txt -r requirements-ui.txt
 
       - name: Lint
         run: ruff check .
@@ -86,7 +90,11 @@ jobs:
           cache-dependency-path: 'requirements-dev.txt'
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        # WOR-69 added pytest-qt to requirements-dev.txt, which loads its
+        # plugin at pytest collection time and requires PySide6/PyQt5/PyQt6
+        # to be installed. PySide6 lives in requirements-ui.txt, so install
+        # both here.
+        run: pip install -r requirements-dev.txt -r requirements-ui.txt
 
       - name: Watcher smoke test (5s)
         run: |
