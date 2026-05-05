@@ -108,6 +108,27 @@ def test_default_mode_passes_env_unchanged() -> None:
     assert env == base
 
 
+def test_local_mode_sets_watcher_worker_flag() -> None:
+    """WOR-391: local-mode worker subprocesses get WATCHER_WORKER=1 in env so
+    env-divergent tests (e.g. test_contribute_skills_workflow) can self-skip."""
+    env = build_worker_env("local", {"PATH": "/usr/bin"})
+    assert env["WATCHER_WORKER"] == "1"
+
+
+def test_cloud_mode_sets_watcher_worker_flag() -> None:
+    """WOR-391: cloud-mode worker subprocesses also get WATCHER_WORKER=1."""
+    env = build_worker_env("cloud", {"PATH": "/usr/bin"})
+    assert env["WATCHER_WORKER"] == "1"
+
+
+def test_default_mode_does_not_set_watcher_worker_flag() -> None:
+    """Default mode is a fallback for non-watcher contexts (tests, edge cases);
+    WATCHER_WORKER must NOT be set there to avoid breaking the WOR-391 skip
+    contract for callers that build env manually for non-worker uses."""
+    env = build_worker_env("default", {"PATH": "/usr/bin"})
+    assert "WATCHER_WORKER" not in env
+
+
 def test_cloud_mode_does_not_inject_base_url_if_absent() -> None:
     base = {"PATH": "/usr/bin"}
     env = build_worker_env("cloud", base)
