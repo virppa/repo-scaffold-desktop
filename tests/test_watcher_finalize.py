@@ -673,6 +673,7 @@ def test_finalize_worker_no_flags_proceeds_normally(tmp_path: Path) -> None:
             worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
         )
 
+    linear_mock.set_state.assert_called_once_with("fake-linear-id", "MergedToEpic")
     m = metrics_mock.record.call_args[0][0]
     assert m.outcome == "success"
     assert m.escalated_to_cloud is False
@@ -703,6 +704,7 @@ def test_finalize_worker_missing_result_json_proceeds_normally(tmp_path: Path) -
             worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
         )
 
+    linear_mock.set_state.assert_called_once_with("fake-linear-id", "MergedToEpic")
     m = metrics_mock.record.call_args[0][0]
     assert m.outcome == "success"
     assert m.escalated_to_cloud is False
@@ -1492,3 +1494,76 @@ def test_finalize_worker_no_set_tags_when_compute_tags_empty(
         )
 
     metrics_mock.set_tags.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# WOR-343 — branch-aware state setter on PR success path
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_main_target_sets_in_review(tmp_path: Path) -> None:
+    """When base_branch == 'main', finalize_worker sets state to 'In Review'."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        base_branch="main",
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(
+            worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
+        )
+
+    linear_mock.set_state.assert_called_once_with("fake-linear-id", "In Review")
+
+
+def test_finalize_epic_target_sets_merged_to_epic(tmp_path: Path) -> None:
+    """When base_branch != 'main', finalize_worker sets state to 'MergedToEpic'."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        base_branch="epic/wor-10-test",
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(
+            worker, linear=linear_mock, metrics=metrics_mock, repo_root=tmp_path
+        )
+
+    linear_mock.set_state.assert_called_once_with("fake-linear-id", "MergedToEpic")

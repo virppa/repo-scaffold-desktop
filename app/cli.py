@@ -45,7 +45,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_set = cfg_sub.add_parser("set", help="Set a preference value.")
     cfg_set.add_argument(
         "key",
-        choices=set(sorted(_KEY_TO_FIELD)) | {"github-token"},
+        choices=set(_KEY_TO_FIELD) | {"github-token"},
         help="Preference key (use hyphens, e.g. author-name).",
     )
     cfg_set.add_argument("value", nargs="?", default=None, help="Value to store.")
@@ -53,7 +53,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_del = cfg_sub.add_parser("delete", help="Delete a credential.")
     cfg_del.add_argument(
         "key",
-        choices=set(sorted(_KEY_TO_FIELD)) | {"github-token"},
+        choices=set(_KEY_TO_FIELD) | {"github-token"},
         help="Credential key to delete.",
     )
 
@@ -275,13 +275,12 @@ def _run_watcher(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_watcher_softstop(args: argparse.Namespace) -> int:
+def _run_watcher_softstop(_args: argparse.Namespace) -> int:
     """Write the soft-stop sentinel so the daemon enters drain mode (WOR-333).
 
     Daemon polls .claude/watcher.softstop each cycle: if present, it stops
     accepting new dispatches, finishes in-flight workers, then exits cleanly.
     """
-    del args  # no flags
     claude_dir = Path.cwd() / ".claude"
     pid_file = claude_dir / "watcher.pid"
     sentinel = claude_dir / "watcher.softstop"

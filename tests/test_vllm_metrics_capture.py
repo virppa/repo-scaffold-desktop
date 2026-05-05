@@ -223,6 +223,7 @@ def test_dispatch_captures_vllm_snapshot_when_solo(tmp_path: Path) -> None:
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     assert len(local_active) == 1
@@ -290,6 +291,7 @@ def test_dispatch_invalidates_solo_peer_when_second_worker_launches(
             linear_id="fake-linear-2",
             ticket_id="WOR-2",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     # Pre-existing worker has lost its solo flag
@@ -343,6 +345,7 @@ def test_dispatch_skips_snapshot_when_metrics_endpoint_unreachable(
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     worker = local_active[0]
