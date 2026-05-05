@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 
 from app.core.bench_store import BenchStore
 from scripts.bench.fixtures import generate_fixtures
-from scripts.bench.runner import run
+from scripts.bench.runner import run, run_workload
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
@@ -146,6 +146,30 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="Export sweep results to CSV",
     )
+    parser.add_argument(
+        "--workload",
+        default=None,
+        metavar="NAME",
+        help="Run a multi-turn workload session (e.g. watcher-pattern)",
+    )
+    parser.add_argument(
+        "--workload-config",
+        default=None,
+        metavar="PATH",
+        help="Path to workload config TOML",
+    )
+    parser.add_argument(
+        "--workload-backend",
+        default=None,
+        metavar="BACKEND_ID",
+        help="Backend id for the workload (overrides config)",
+    )
+    parser.add_argument(
+        "--workload-model",
+        default=None,
+        metavar="MODEL_ID",
+        help="Model id for the workload (overrides config)",
+    )
     return parser
 
 
@@ -157,6 +181,16 @@ def main() -> int:
 
     if args.generate_fixtures:
         generate_fixtures()
+        return 0
+
+    if args.workload:
+        run_workload(
+            args.workload,
+            args.workload_config or "config/bench-watcher-pattern.toml",
+            backend=args.workload_backend,
+            model=args.workload_model,
+            db_path=None,
+        )
         return 0
 
     if args.browse:
