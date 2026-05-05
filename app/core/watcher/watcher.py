@@ -59,6 +59,9 @@ from .watcher_worktrees import (
 
 logger = logging.getLogger(__name__)
 
+# SonarCloud S1192 — shared manifest glob pattern for loading worker manifests
+_MANIFEST_GLOB = "*/manifest.json"
+
 # WOR-381: heartbeat-based stuck-worker detection. The metric is "time since
 # the worker's stream-json log file was last written" — a stuck worker
 # (network hang, deadlocked vLLM, infinite tool-result wait) does not emit
@@ -236,7 +239,7 @@ class Watcher:
         artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
         waiting = 0
         if artifacts_root.exists():
-            for mp in artifacts_root.glob("*/manifest.json"):
+            for mp in artifacts_root.glob(_MANIFEST_GLOB):
                 try:
                     m = ExecutionManifest.from_json(mp)
                 except (OSError, ValueError):
@@ -341,7 +344,7 @@ class Watcher:
     def _promote_waiting_tickets(self) -> None:
         """Promote WaitingForDeps manifests to ReadyForLocal when all blockers complete.
 
-        Scans .claude/artifacts/*/manifest.json each poll cycle. For each manifest
+        Scans artifacts/ for manifests via _MANIFEST_GLOB each poll cycle.
         with status=='WaitingForDeps', checks whether all blocked_by_tickets have
         reached a completed state in Linear. If so, writes the manifest back to disk
         with status='ReadyForLocal' and advances the Linear ticket. If any blocker
@@ -351,7 +354,7 @@ class Watcher:
         if not artifacts_root.exists():
             return
 
-        for manifest_path in sorted(artifacts_root.glob("*/manifest.json")):
+        for manifest_path in sorted(artifacts_root.glob(_MANIFEST_GLOB)):
             try:
                 manifest = ExecutionManifest.from_json(manifest_path)
             except Exception as exc:
@@ -830,7 +833,7 @@ class Watcher:
         artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
         if not artifacts_root.exists():
             return False
-        for manifest_path in artifacts_root.glob("*/manifest.json"):
+        for manifest_path in artifacts_root.glob(_MANIFEST_GLOB):
             try:
                 manifest = ExecutionManifest.from_json(manifest_path)
                 if manifest.status == "WaitingForDeps":
