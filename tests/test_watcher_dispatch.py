@@ -73,6 +73,7 @@ def test_start_ticket_local_happy_path_appends_to_local_active(tmp_path: Path) -
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     assert len(local_active) == 1
@@ -113,6 +114,7 @@ def test_start_ticket_cloud_happy_path_appends_to_cloud_active(tmp_path: Path) -
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     assert len(cloud_active) == 1
@@ -148,6 +150,7 @@ def test_start_ticket_defers_when_vllm_not_ready(
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     mock_create.assert_not_called()
@@ -183,6 +186,7 @@ def test_start_ticket_defers_when_cloud_pool_full(
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     mock_create.assert_not_called()
@@ -223,6 +227,7 @@ def test_start_ticket_refuses_local_manifest_with_empty_allowed_paths(
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     mock_create.assert_not_called()
@@ -265,6 +270,7 @@ def test_start_ticket_refuses_manifest_with_empty_required_checks(
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     mock_create.assert_not_called()
@@ -319,6 +325,7 @@ def test_start_ticket_refuses_when_epic_too_far_behind_main(
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     mock_create.assert_not_called()
@@ -375,6 +382,7 @@ def test_start_ticket_proceeds_when_epic_within_threshold(
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     assert len(local_active) == 1
@@ -423,13 +431,68 @@ def test_start_ticket_does_not_refuse_main_target(
             linear_id="fake-linear-id",
             ticket_id="WOR-10",
             _escalation_policy=MagicMock(),
+            _dedup_state={},
         )
 
     assert len(local_active) == 1
     linear.post_comment.assert_not_called()
 
 
-# NOTE: a fifth test for suppress_dedup behaviour is intentionally omitted —
-# dispatch.py's `_dedup_state or {}` falls through to a fresh empty dict on
-# each call, defeating cross-call memoization. That's a real pre-existing
-# bug worth filing separately; it is not in scope for this coverage push.
+# ---------------------------------------------------------------------------
+# WOR-297 — dedup state survives across consecutive calls
+# ---------------------------------------------------------------------------
+
+# The fix: _dedup_state was previously Optional (default None), so callers
+# passing None or not passing it at all got a fresh empty dict on every
+# call, defeating cross-call dedup memoization. Now it's required dict[str,
+# str], so the caller passes the same mutable dict across calls and the
+# suppress_dedup state persists.
+
+
+def test_start_ticket_vllm_not_ready_dedup_logs_warning_once(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Two consecutive vLLM-not-ready deferrals log the warning only once."""
+    manifest = make_manifest(implementation_mode="local")
+    linear = MagicMock()
+    services = _services(vllm_healthy=False)
+    local_active: list = []
+    cloud_active: list = []
+    dedup_state: dict[str, str] = {}
+
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"):
+        # First call — not yet in dedup state → logs warning.
+        start_ticket(
+            manifest=manifest,
+            linear=linear,
+            services=services,
+            worker_verbose=False,
+            _local_active=local_active,
+            _cloud_active=cloud_active,
+            max_cloud_workers=3,
+            _repo_root=tmp_path,
+            _processed_tickets=[],
+            linear_id="fake-linear-id",
+            ticket_id="WOR-10",
+            _escalation_policy=MagicMock(),
+            _dedup_state=dedup_state,
+        )
+        # Second call — same condition already tracked → suppressed.
+        start_ticket(
+            manifest=manifest,
+            linear=linear,
+            services=services,
+            worker_verbose=False,
+            _local_active=local_active,
+            _cloud_active=cloud_active,
+            max_cloud_workers=3,
+            _repo_root=tmp_path,
+            _processed_tickets=[],
+            linear_id="fake-linear-id",
+            ticket_id="WOR-10",
+            _escalation_policy=MagicMock(),
+            _dedup_state=dedup_state,
+        )
+
+    vllm_warnings = [r for r in caplog.records if "vLLM not ready" in r.message]
+    assert len(vllm_warnings) == 1  # second call is suppressed
