@@ -217,6 +217,38 @@ The `echo $?` line is the gate, not the visible output. If `exit != 0`,
 inspect `/tmp/pytest-out.txt` directly with Read or grep — never trust a
 truncated tail to tell you the test summary.
 
+**A failing test is never "pre-existing" without verification (WOR-389).**
+If pytest fails, the temptation is to dismiss the failure as "unrelated to
+my ticket" and write `result.json: status=success` with a footnote. That
+is forbidden. Workflow when pytest fails:
+
+1. **Investigate.** Is it caused by your change? Most often yes — a
+   sibling test imports a module you edited and its fixtures don't
+   anticipate your change. The failure name is a strong signal.
+2. **If yes, fix it.** Do not write success. The fix is part of the
+   ticket scope by definition (your change broke a test).
+3. **Only if you genuinely believe the failure is pre-existing**
+   (failure existed on the `base_branch` tip BEFORE your first commit),
+   verify with:
+
+   ```bash
+   git stash
+   pytest <failing_test_path>::<failing_test_name>
+   git stash pop
+   ```
+
+   If the test still fails on the stashed (pre-your-change) tree,
+   the failure is genuinely pre-existing. Document it explicitly in
+   the `notes` field of `result.json` and you may write
+   `status=success`. The watcher will see the same failure on its
+   `required_checks` run; it tags `success_outcome_state_mismatch`,
+   which the operator reviews.
+4. **Never** write `status=success` with a footnote like "one
+   pre-existing failure unrelated to this ticket" without performing
+   step 3. Workers that did this on WOR-135 wave-1 and WOR-331 lost
+   real diffs because the watcher's pytest correctly invalidated the
+   self-reported success.
+
 If any required check fails:
 - Record the failure in the result artifact (step 5)
 - If `failure_policy.on_check_failure` is `"abort"`: stop here, write a failed result
