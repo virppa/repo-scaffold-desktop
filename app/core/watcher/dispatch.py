@@ -53,7 +53,7 @@ def start_ticket(
     linear_id: str,
     ticket_id: str,
     _escalation_policy: object,
-    _dedup_state: dict[str, str] | None = None,
+    _dedup_state: dict[str, str],
 ) -> None:
     """Execute the full ticket-start flow extracted from Watcher._start_ticket."""
     # Prerequisite checks (open_blockers + overlap) are handled by
@@ -139,9 +139,7 @@ def start_ticket(
     if effective_mode == "local":
         if not services.probe_vllm_health():
             reason_msg = "Deferring %s — vLLM not ready yet" % (ticket_id,)
-            if suppress_dedup(
-                ticket_id, "vllm_not_ready", reason_msg, _dedup_state or {}
-            ):
+            if suppress_dedup(ticket_id, "vllm_not_ready", reason_msg, _dedup_state):
                 logger.warning("%s", reason_msg)
             return
         services.ensure_vllm_anthropic_mode()
