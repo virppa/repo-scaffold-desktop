@@ -1,0 +1,7 @@
+[
+  ".gitignore",
+  "README.md",
+  "app/__init__.py",
+  "pyproject.toml",
+  "tests/__init__.py"
+]

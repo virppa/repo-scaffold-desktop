@@ -549,3 +549,25 @@ def test_playwright_deps_absent_when_disabled(output_dir):
     generate(config, output_dir)
     content = (output_dir / "pyproject.toml").read_text(encoding="utf-8")
     assert "playwright" not in content
+
+
+# ── Snapshot tests ──────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "preset,repo_name",
+    [
+        ("python_basic", "my-project"),
+        ("python_desktop", "my-desktop-app"),
+        ("full_agentic", "my-agentic-project"),
+    ],
+)
+def test_preset_file_trees(snapshot, repo_name, preset, tmp_path):
+    """Snapshot each preset's generated file tree to catch regressions."""
+    config = RepoConfig(repo_name=repo_name, preset=preset)
+    generated = generate(config, tmp_path)
+    # Snapshot just the file-list (relative paths) as JSON for a stable comparison
+    snapshot.assert_match(
+        json.dumps(sorted(generated), indent=2, sort_keys=True),
+        f"{preset}_files",
+    )

@@ -1,0 +1,10 @@
+[
+  ".claude/settings.json",
+  ".gitignore",
+  ".mcp.json",
+  "CLAUDE.md",
+  "README.md",
+  "app/__init__.py",
+  "pyproject.toml",
+  "tests/__init__.py"
+]

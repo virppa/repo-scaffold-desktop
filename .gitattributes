@@ -1,0 +1,2 @@
+# Force LF line endings for test snapshot files (Python-generated, LF-only)
+tests/snapshots/** text eol=lf

@@ -6,8 +6,30 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher.watcher_types import ActiveWorker
+
+
+# Session-scoped QApplication fixture (pytest-qt)
+@pytest.fixture(scope="session")
+def qapp():
+    """Create a single QApplication instance for the test session.
+
+    Guards against missing Qt so the fixture skips gracefully when
+    pytest-qt is not installed in the dev environment.
+    """
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        pytest.skip("PySide6 not installed — Qt fixture unavailable")
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    yield app
+    app.quit()
 
 
 def make_manifest(**overrides: object) -> ExecutionManifest:
