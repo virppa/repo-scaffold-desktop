@@ -344,7 +344,7 @@ class Watcher:
     def _promote_waiting_tickets(self) -> None:
         """Promote WaitingForDeps manifests to ReadyForLocal when all blockers complete.
 
-        Scans .claude/artifacts/*/manifest.json each poll cycle. For each manifest
+        Scans artifacts/ for manifests via _MANIFEST_GLOB each poll cycle.
         with status=='WaitingForDeps', checks whether all blocked_by_tickets have
         reached a completed state in Linear. If so, writes the manifest back to disk
         with status='ReadyForLocal' and advances the Linear ticket. If any blocker
