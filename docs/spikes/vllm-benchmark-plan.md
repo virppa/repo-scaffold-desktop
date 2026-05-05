@@ -594,3 +594,25 @@ vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
 The `--max-num-seqs 16` change alone gives 37–67% improvement over the WOR-118 baseline.
 At c=8, aggregate decode reaches ~1000 tok/s — eight simultaneous workers at ~125 tok/s each
 from a single RTX 5090, on any context size from 16K to 262K.
+
+## Watch Pattern Workload (WOR-362)
+
+A multi-turn workload that mirrors a real Claude Code worker session: tool results
+accumulate over ~60 turns, one compaction summarizes the accumulated context, then
+~40 post-compact turns continue with reduced context.
+
+Three phases: **pre-compact** (tool results grow ~200->800 chars), **compact** (one
+summary turn), **post-compact** (new tool results from ~300 chars). Configurable
+via `config/bench-watcher-pattern.toml` -- default 100 turns, compaction at turn 61.
+
+Usage:
+
+```bash
+python scripts/bench/run_bench.py --workload watcher-pattern \
+    --config config/bench-watcher-pattern.toml \
+    --backend local_vllm --model qwen3-coder
+```
+
+Captures per-phase timing and reads vLLM `/metrics` before and after compaction to
+compute prefix cache hit rate deltas -- the compaction step should improve subsequent
+cache hit rates by removing stale prefix tokens from the context window.

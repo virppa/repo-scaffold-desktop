@@ -495,3 +495,59 @@ def run(
     if output_csv:
         reporter.export_csv(rows, Path(output_csv))
         print(f"CSV exported: {output_csv}")
+
+
+def run_workload(
+    name: str,
+    config_path: str,
+    *,
+    backend: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Execute a multi-turn workload session.
+
+    Parameters
+    ----------
+    name : str
+        Workload name (e.g. ``"watcher-pattern"``).
+    config_path : str
+        Path to the workload config TOML file.
+    backend : str or None
+        Override backend base_url from the config.
+    model : str or None
+        Override model id from the config.
+    """
+    from scripts.bench.workloads import (
+        WatcherPatternWorkload,
+        run_workload_session,
+    )
+
+    _WORKLOAD_MAP: dict[str, type[WatcherPatternWorkload]] = {
+        "watcher-pattern": WatcherPatternWorkload,
+    }
+
+    cls = _WORKLOAD_MAP.get(name)
+    if cls is None:
+        print(
+            f"ERROR: Unknown workload {name!r}. "
+            f"Available: {', '.join(sorted(_WORKLOAD_MAP))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    workload = cls()
+    session_config = workload.load_config(config_path)
+
+    # Use CLI overrides if provided, otherwise use config defaults
+    base_url = backend or "http://localhost:8000"
+    model_id = model or "qwen3-coder"
+
+    run_workload_session(
+        workload,
+        session_config,
+        base_url=base_url,
+        model=model_id,
+        report=True,
+    )
+
+    print("\nWorkload session complete.")
