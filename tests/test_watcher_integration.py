@@ -166,9 +166,10 @@ def test_finalize_worker_happy_path_all_enriched_fields(
     # 6) pr_url set — confirmed by create_pr being called (checked above)
     # The pr_url is not returned by finalize_worker, but create_pr was called
     # which only happens in the success path of attempt_pr.
-    # We verify the PR URL flows through by checking linear mock was NOT called
-    # with set_state (success path does not change state).
-    linear_mock.set_state.assert_not_called()
+    # We verify the PR URL flows through by checking linear mock was called
+    # exactly once with the WOR-343 branch-aware MergedToEpic transition
+    # (non-main base_branch → "MergedToEpic"; the manifest's base is the epic).
+    linear_mock.set_state.assert_called_once_with("fake-linear-id", "MergedToEpic")
 
 
 def test_finalize_worker_pr_url_via_attempt_pr_direct(
