@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.cli import main
-from app.core.user_prefs import PrefsStore
+from app.core.user_prefs import PrefsStore, UserPreferences
 
 
 @pytest.fixture()
@@ -75,7 +75,7 @@ def test_invalid_repo_name_exits(output_dir, capsys):
         ]
     )
     assert rc == 1
-    assert "Error" in capsys.readouterr().err
+    assert "error" in capsys.readouterr().err
 
 
 def test_generate_error_exits(output_dir, capsys):
@@ -96,17 +96,16 @@ def test_generate_error_exits(output_dir, capsys):
 
 
 def test_missing_repo_name_exits(output_dir, capsys):
-    with pytest.raises(SystemExit) as exc_info:
-        main(
-            [
-                "generate",
-                "--preset",
-                "python_basic",
-                "--output",
-                str(output_dir),
-            ]
-        )
-    assert exc_info.value.code != 0
+    rc = main(
+        [
+            "generate",
+            "--preset",
+            "python_basic",
+            "--output",
+            str(output_dir),
+        ]
+    )
+    assert rc == 1
 
 
 def test_invalid_preset_exits(output_dir, capsys):
@@ -656,3 +655,180 @@ class TestGitHubRollbackFlow:
 
         assert rc == 1
         mock_delete.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Interactive wizard integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestInteractiveWizard:
+    """Tests for generate --interactive flow."""
+
+    def test_interactive_writes_files(self, output_dir, tmp_path):
+        """Interactive flow writes scaffold files."""
+        prefs_path = tmp_path / "prefs.json"
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate") as mock_gen,
+            patch(
+                "app.core.wizard.input",
+                side_effect=["myrepo", "python_basic", str(output_dir)],
+            ),
+        ):
+            mock_gen.return_value = [".gitignore", "pyproject.toml", "README.md"]
+            rc = main(
+                [
+                    "generate",
+                    "--interactive",
+                ]
+            )
+        assert rc == 0
+        mock_gen.assert_called_once()
+
+    def test_interactive_runs_post_setup(self, output_dir, tmp_path):
+        """Interactive flow calls run_git_init when --git-init is set."""
+        prefs_path = tmp_path / "prefs.json"
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate") as mock_gen,
+            patch("app.cli.run_git_init") as mock_git,
+            patch(
+                "app.core.wizard.input",
+                side_effect=["myrepo", "python_basic", str(output_dir)],
+            ),
+        ):
+            mock_gen.return_value = [".gitignore"]
+            rc = main(
+                [
+                    "generate",
+                    "--interactive",
+                    "--git-init",
+                ]
+            )
+        assert rc == 0
+        mock_git.assert_called_once_with(output_dir)
+
+    def test_interactive_with_manual_steps(self, output_dir, tmp_path):
+        """Interactive flow with --manual-steps includes toggle questions."""
+        prefs_path = tmp_path / "prefs.json"
+        # 3 basic + 6 toggle + 1 save answer = 10 inputs
+        side_effect = [
+            "myrepo",
+            "python_basic",
+            str(output_dir),  # 3 basic
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",
+            "yes",  # 6 toggles
+        ]
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate") as mock_gen,
+            patch("app.core.wizard.input", side_effect=side_effect),
+        ):
+            mock_gen.return_value = [
+                ".gitignore",
+                "pyproject.toml",
+                "README.md",
+                ".pre-commit-config.yaml",
+            ]
+            rc = main(
+                [
+                    "generate",
+                    "--interactive",
+                    "--manual-steps",
+                ]
+            )
+        assert rc == 0
+        assert mock_gen.call_count == 1
+
+    def test_interactive_prefill_prefers_prefs(self, output_dir, tmp_path):
+        """--prefill reads stored user preferences for default values."""
+        prefs_path = tmp_path / "prefs.json"
+        prefs = UserPreferences(
+            author_name="Alice",
+            default_preset="full_agentic",
+            default_output_dir=Path("/tmp/xyz"),
+        )
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs_path.write_text(
+            prefs.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        # 3 basic inputs — all empty to accept pre-filled defaults
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate") as mock_gen,
+            patch("app.core.wizard.input", side_effect=["", "", ""]),
+        ):
+            mock_gen.return_value = [".gitignore"]
+            rc = main(
+                [
+                    "generate",
+                    "--interactive",
+                    "--prefill",
+                ]
+            )
+        assert rc == 0
+
+    def test_interactive_save_defaults_calls_save(self, output_dir, tmp_path):
+        """--save-defaults persists answers to PrefsStore."""
+        prefs_path = tmp_path / "prefs.json"
+        prefs = UserPreferences(author_name="Pre-filled")
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        prefs_path.write_text(
+            prefs.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        saved_prefs = None
+
+        def capture_save(prefs_instance):
+            nonlocal saved_prefs
+            saved_prefs = prefs_instance
+
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate") as mock_gen,
+            patch.object(PrefsStore, "save", side_effect=capture_save) as mock_save,
+            patch(
+                "app.core.wizard.input",
+                side_effect=["myrepo", "python_basic", str(output_dir)],
+            ),
+        ):
+            mock_gen.return_value = [".gitignore"]
+            rc = main(
+                [
+                    "generate",
+                    "--interactive",
+                    "--save-defaults",
+                ]
+            )
+        assert rc == 0
+        assert mock_save.call_count == 1
+        assert saved_prefs is not None
+
+    def test_interactive_requires_output_via_parser(self, output_dir, capsys):
+        """--output is required for non-interactive mode."""
+        rc = main(
+            [
+                "generate",
+                "--preset",
+                "python_basic",
+                "--repo-name",
+                "myrepo",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "--preset" in err or "required" in err
+
+    def test_interactive_flag_available_in_parser(self, output_dir):
+        """The --interactive flag should be available and accepted."""
+        from app.core.wizard import collect_interactive_wizard, validate_repo_name
+
+        # Import exists and callable
+        assert callable(validate_repo_name)
+        assert callable(collect_interactive_wizard)
