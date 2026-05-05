@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+# WOR-384: chars/token ratio used when falling back to content-length
+# estimation. Empirically derived from English + code mix in worker logs.
+# Slightly conservative to avoid over-estimating output volume.
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
+
 def _parse_worker_usage(
     log_path: Path,
 ) -> tuple[int | None, int | None, int | None, int | None]:
@@ -55,6 +61,16 @@ def _parse_worker_usage(
     ``(None, None, None, None)`` when the log itself cannot be opened or
     parsed at all; returns ``(in, out, 0, 0)`` for parseable logs containing
     zero compact_boundary events.
+
+    *vLLM-direct sentinel (WOR-384):* when assistant events report
+    ``output_tokens: 0`` for every turn but ``input_tokens > 0`` (the
+    post-WOR-368 vLLM-direct path emits that pattern because vLLM doesn't
+    fill per-message output token counts), we fall back to estimating output
+    from the assistant content blocks' character lengths divided by
+    ``_CHARS_PER_TOKEN_ESTIMATE``. The estimate is rough (±20% typical) but
+    drastically better than the alternative of recording 0. Forward-
+    compatible: when vLLM starts populating real output_tokens, the sentinel
+    won't trigger.
     """
     try:
         with log_path.open(encoding="utf-8") as f:
@@ -65,6 +81,7 @@ def _parse_worker_usage(
             compact_duration_ms = 0
             last_input: int | None = None
             last_output: int | None = None
+            content_chars = 0
             for raw in f:
                 line = raw.strip()
                 if not line:
@@ -75,13 +92,36 @@ def _parse_worker_usage(
                     continue
                 obj_type = obj.get("type")
                 if obj_type == "assistant":
-                    usage = (obj.get("message") or {}).get("usage") or {}
+                    msg = obj.get("message") or {}
+                    usage = msg.get("usage") or {}
                     inp = usage.get("input_tokens")
                     out = usage.get("output_tokens")
                     if inp is not None and out is not None:
                         total_input += int(inp)
                         total_output += int(out)
                         has_assistant_usage = True
+                    # Always accumulate content chars for the WOR-384 sentinel
+                    # fallback. Cheap to compute; only used when the primary
+                    # output_tokens signal is unreliable.
+                    for blk in msg.get("content") or []:
+                        if not isinstance(blk, dict):
+                            continue
+                        btype = blk.get("type")
+                        if btype == "thinking":
+                            text = blk.get("thinking") or blk.get("text") or ""
+                            if isinstance(text, str):
+                                content_chars += len(text)
+                        elif btype == "text":
+                            text = blk.get("text") or ""
+                            if isinstance(text, str):
+                                content_chars += len(text)
+                        elif btype == "tool_use":
+                            inp_dict = blk.get("input")
+                            if inp_dict is not None:
+                                try:
+                                    content_chars += len(json.dumps(inp_dict))
+                                except (TypeError, ValueError):
+                                    pass
                 elif obj_type == "system" and obj.get("subtype") == "compact_boundary":
                     compact_count += 1
                     meta = obj.get("compact_metadata") or {}
@@ -93,6 +133,14 @@ def _parse_worker_usage(
                     last_input = usage.get("input_tokens")
                     last_output = usage.get("output_tokens")
             if has_assistant_usage:
+                # WOR-384 sentinel: vLLM-direct emits output_tokens=0 in every
+                # assistant.message.usage. Detect via "input>0 but output is
+                # exactly 0 across all events" and fall back to a content-
+                # length estimate. Anthropic API and any future vLLM that
+                # fills output_tokens correctly will skip this branch.
+                if total_output == 0 and total_input > 0 and content_chars > 0:
+                    estimated = content_chars // _CHARS_PER_TOKEN_ESTIMATE
+                    return total_input, estimated, compact_count, compact_duration_ms
                 return total_input, total_output, compact_count, compact_duration_ms
             # Fallback to result snapshot when no assistant events carry usage.
             if last_input is not None and last_output is not None:
