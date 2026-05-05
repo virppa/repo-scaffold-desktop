@@ -18,7 +18,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.manifest import ArtifactPaths, ExecutionManifest
-from app.core.watcher.watcher import Watcher
+from app.core.watcher.watcher import (
+    _WORKER_HEARTBEAT_TIMEOUT_SECONDS,
+    Watcher,
+)
 from app.core.watcher.watcher_types import ActiveWorker
 
 # ---------------------------------------------------------------------------
@@ -247,9 +250,28 @@ def _stuck_worker(
 
 
 def test_terminate_overrun_no_op_when_log_fresh(tmp_path: Path) -> None:
-    """A worker whose log was written 5 minutes ago is left alone (under 15-min cap)."""
+    """Log written 5 min ago is left alone (under heartbeat threshold)."""
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
     worker = _stuck_worker(tmp_path, log_idle_secs=5 * 60)
+    w._local_active.append(worker)
+
+    w._terminate_overrun_workers()
+
+    worker.process.terminate.assert_not_called()
+    worker.process.kill.assert_not_called()
+    assert worker.terminated_at is None
+
+
+def test_terminate_overrun_no_op_below_threshold_with_long_decode(
+    tmp_path: Path,
+) -> None:
+    """WOR-388 regression: a worker silent for 30 min (long extended-thinking decode)
+    is NOT killed under the post-WOR-388 90-min threshold. Pre-WOR-388 (15-min cap)
+    this would have triggered SIGTERM and lost the legitimate work — exactly the
+    failure mode that destroyed WOR-369 + WOR-362 on the WOR-383 batch."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    # 30 min idle: well past the old 15-min threshold, well under the new 90-min one.
+    worker = _stuck_worker(tmp_path, log_idle_secs=30 * 60)
     w._local_active.append(worker)
 
     w._terminate_overrun_workers()
@@ -274,7 +296,9 @@ def test_terminate_overrun_no_op_when_log_missing(tmp_path: Path) -> None:
 def test_terminate_overrun_sigterm_when_log_idle_past_threshold(tmp_path: Path) -> None:
     """Log idle > 15 min triggers SIGTERM."""
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
-    worker = _stuck_worker(tmp_path, log_idle_secs=16 * 60)  # over 15-min threshold
+    worker = _stuck_worker(
+        tmp_path, log_idle_secs=_WORKER_HEARTBEAT_TIMEOUT_SECONDS + 60
+    )
     w._local_active.append(worker)
 
     w._terminate_overrun_workers()
@@ -287,7 +311,9 @@ def test_terminate_overrun_sigterm_when_log_idle_past_threshold(tmp_path: Path) 
 def test_terminate_overrun_sigterm_only_once(tmp_path: Path) -> None:
     """Repeated calls do not re-SIGTERM after the first one."""
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
-    worker = _stuck_worker(tmp_path, log_idle_secs=20 * 60)
+    worker = _stuck_worker(
+        tmp_path, log_idle_secs=_WORKER_HEARTBEAT_TIMEOUT_SECONDS + 60
+    )
     w._local_active.append(worker)
 
     w._terminate_overrun_workers()
@@ -304,7 +330,7 @@ def test_terminate_overrun_sigkill_after_grace(tmp_path: Path) -> None:
     w = Watcher(linear_client=linear, repo_root=tmp_path)
     worker = _stuck_worker(
         tmp_path,
-        log_idle_secs=20 * 60,
+        log_idle_secs=_WORKER_HEARTBEAT_TIMEOUT_SECONDS + 60,
         terminated_at=_time.time() - 6 * 60,
     )
     w._local_active.append(worker)
@@ -324,7 +350,7 @@ def test_terminate_overrun_no_sigkill_within_grace(tmp_path: Path) -> None:
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
     worker = _stuck_worker(
         tmp_path,
-        log_idle_secs=18 * 60,
+        log_idle_secs=_WORKER_HEARTBEAT_TIMEOUT_SECONDS + 60,
         terminated_at=_time.time() - 2 * 60,
     )
     w._local_active.append(worker)
@@ -337,7 +363,9 @@ def test_terminate_overrun_no_sigkill_within_grace(tmp_path: Path) -> None:
 def test_terminate_overrun_skips_already_exited(tmp_path: Path) -> None:
     """A worker whose process has exited (poll != None) is not signalled."""
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
-    worker = _stuck_worker(tmp_path, log_idle_secs=20 * 60)
+    worker = _stuck_worker(
+        tmp_path, log_idle_secs=_WORKER_HEARTBEAT_TIMEOUT_SECONDS + 60
+    )
     worker.process.poll.return_value = 0
     w._local_active.append(worker)
 
@@ -350,7 +378,9 @@ def test_terminate_overrun_skips_already_exited(tmp_path: Path) -> None:
 def test_terminate_overrun_handles_terminate_oserror(tmp_path: Path) -> None:
     """OSError from terminate() doesn't loop us into retrying."""
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
-    worker = _stuck_worker(tmp_path, log_idle_secs=20 * 60)
+    worker = _stuck_worker(
+        tmp_path, log_idle_secs=_WORKER_HEARTBEAT_TIMEOUT_SECONDS + 60
+    )
     worker.process.terminate.side_effect = OSError("no such process")
     w._local_active.append(worker)
 
@@ -362,8 +392,16 @@ def test_terminate_overrun_handles_terminate_oserror(tmp_path: Path) -> None:
 def test_terminate_overrun_covers_both_pools(tmp_path: Path) -> None:
     """Both _local_active and _cloud_active are scanned."""
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
-    local_worker = _stuck_worker(tmp_path, ticket_id="WOR-100", log_idle_secs=20 * 60)
-    cloud_worker = _stuck_worker(tmp_path, ticket_id="WOR-101", log_idle_secs=20 * 60)
+    local_worker = _stuck_worker(
+        tmp_path,
+        ticket_id="WOR-100",
+        log_idle_secs=_WORKER_HEARTBEAT_TIMEOUT_SECONDS + 60,
+    )
+    cloud_worker = _stuck_worker(
+        tmp_path,
+        ticket_id="WOR-101",
+        log_idle_secs=_WORKER_HEARTBEAT_TIMEOUT_SECONDS + 60,
+    )
     w._local_active.append(local_worker)
     w._cloud_active.append(cloud_worker)
 

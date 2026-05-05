@@ -59,19 +59,33 @@ from .watcher_worktrees import (
 
 logger = logging.getLogger(__name__)
 
-# SonarCloud S1192 — shared manifest glob pattern for loading worker manifests
-_MANIFEST_GLOB = "*/manifest.json"
-
-# WOR-381: heartbeat-based stuck-worker detection. The metric is "time since
-# the worker's stream-json log file was last written" — a stuck worker
-# (network hang, deadlocked vLLM, infinite tool-result wait) does not emit
-# new lines, while a slow-but-progressing worker keeps writing. Wall-time
-# bounds proved unworkable: app.db's 33-session distribution shows median
-# 43.7 min and p99 171 min for legitimate runs, so any wall-time threshold
-# either fires on real work or misses real hangs. 15 minutes of log silence
-# is a strong signal that the model is stuck — even multi-step tool calls
-# (pytest, mypy, large diffs) emit progress within minutes.
-_WORKER_HEARTBEAT_TIMEOUT_SECONDS = 15 * 60
+# WOR-381 + WOR-388: heartbeat-based stuck-worker detection. The metric is
+# "time since the worker's stream-json log file was last written" — a stuck
+# worker (network hang, deadlocked vLLM, infinite tool-result wait) does not
+# emit new lines, while a slow-but-progressing worker keeps writing.
+# Wall-time bounds proved unworkable: app.db's 33-session distribution shows
+# median 43.7 min and p99 171 min for legitimate runs, so any wall-time
+# threshold either fires on real work or misses real hangs.
+#
+# WOR-388 post-mortem (2026-05-05): the original 15-min threshold killed
+# WOR-369 (23m wall, 1.3M input) and WOR-362 (26m wall, 2.7M input)
+# mid-decode after their last log event. Both were legitimately reasoning —
+# log tails ended mid-Read tool-result with no `"type":"result"` event, and
+# both artifacts ended up tagged `no_diff_against_base` because the kill
+# preceded the worker's edit phase. Single-decode silences of 15-30 min are
+# plausible for effort=high refactor sessions on qwen3-coder when extended-
+# thinking blocks run long. Threshold raised to 90 min — well above any
+# legitimate single-event-gap we have forensic evidence for (the WOR-322
+# 76-min total run had no individual gap exceeding ~10 min). 90 min still
+# catches genuinely-stuck workers within a single overnight cycle. Override
+# at launch with WATCHER_WORKER_HEARTBEAT_TIMEOUT_SECONDS=N for tuning.
+_DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90 * 60
+_WORKER_HEARTBEAT_TIMEOUT_SECONDS = int(
+    os.environ.get(
+        "WATCHER_WORKER_HEARTBEAT_TIMEOUT_SECONDS",
+        _DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
+    )
+)
 _WORKER_KILL_GRACE_SECONDS = 5 * 60
 
 
@@ -239,7 +253,7 @@ class Watcher:
         artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
         waiting = 0
         if artifacts_root.exists():
-            for mp in artifacts_root.glob(_MANIFEST_GLOB):
+            for mp in artifacts_root.glob("*/manifest.json"):
                 try:
                     m = ExecutionManifest.from_json(mp)
                 except (OSError, ValueError):
@@ -344,7 +358,7 @@ class Watcher:
     def _promote_waiting_tickets(self) -> None:
         """Promote WaitingForDeps manifests to ReadyForLocal when all blockers complete.
 
-        Scans artifacts/ for manifests via _MANIFEST_GLOB each poll cycle.
+        Scans .claude/artifacts/*/manifest.json each poll cycle. For each manifest
         with status=='WaitingForDeps', checks whether all blocked_by_tickets have
         reached a completed state in Linear. If so, writes the manifest back to disk
         with status='ReadyForLocal' and advances the Linear ticket. If any blocker
@@ -354,7 +368,7 @@ class Watcher:
         if not artifacts_root.exists():
             return
 
-        for manifest_path in sorted(artifacts_root.glob(_MANIFEST_GLOB)):
+        for manifest_path in sorted(artifacts_root.glob("*/manifest.json")):
             try:
                 manifest = ExecutionManifest.from_json(manifest_path)
             except Exception as exc:
@@ -833,7 +847,7 @@ class Watcher:
         artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
         if not artifacts_root.exists():
             return False
-        for manifest_path in artifacts_root.glob(_MANIFEST_GLOB):
+        for manifest_path in artifacts_root.glob("*/manifest.json"):
             try:
                 manifest = ExecutionManifest.from_json(manifest_path)
                 if manifest.status == "WaitingForDeps":

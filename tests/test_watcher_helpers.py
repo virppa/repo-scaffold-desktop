@@ -845,6 +845,134 @@ def test_parse_worker_usage_missing_output_token_returns_none(
 
 
 # ---------------------------------------------------------------------------
+# WOR-384: vLLM-direct sentinel — assistant.usage.output_tokens always 0,
+# fall back to content-block character estimate (~4 chars/token).
+# ---------------------------------------------------------------------------
+
+
+def _vllm_direct_assistant(input_tokens: int, content: list[dict]) -> str:
+    """Build an assistant event matching the post-WOR-368 vLLM-direct shape:
+    usage.output_tokens always 0 even with non-empty content."""
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "chatcmpl-x",
+                "model": "qwen3-coder",
+                "content": content,
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": 0,
+                },
+            },
+        }
+    )
+
+
+def test_parse_worker_usage_vllm_direct_falls_back_to_content_estimate(
+    tmp_path: Path,
+) -> None:
+    """vLLM-direct emits output_tokens=0; parser must estimate from content chars.
+
+    Pre-WOR-384 every wave-1 ticket recorded local_output_tokens=0 even though
+    the workers shipped real PRs with thousands of generated tokens.
+    """
+    # 4000 chars of thinking + 400 chars of text = 4400 chars → ~1100 tokens
+    thinking_text = "deep thinking " * 250  # 250 * 16 = ~4000 chars
+    text_text = "result text " * 30  # ~360 chars
+    log = _write_log(
+        tmp_path,
+        [
+            _vllm_direct_assistant(
+                50_000,
+                [
+                    {"type": "thinking", "thinking": thinking_text},
+                    {"type": "text", "text": text_text},
+                ],
+            ),
+        ],
+    )
+    input_tok, output_tok, _, _ = _parse_worker_usage(log)
+    assert input_tok == 50_000
+    assert output_tok is not None
+    # Estimate is content_chars // 4. Allow a generous range to keep the test
+    # resilient to small chars/token-ratio tuning later.
+    assert 800 <= output_tok <= 1500, f"got {output_tok}"
+
+
+def test_parse_worker_usage_vllm_direct_includes_tool_use_input(
+    tmp_path: Path,
+) -> None:
+    """Tool-use blocks contribute their JSON-serialized input to the estimate."""
+    log = _write_log(
+        tmp_path,
+        [
+            _vllm_direct_assistant(
+                10_000,
+                [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "Bash",
+                        "input": {"command": "x" * 200},
+                    },
+                ],
+            ),
+        ],
+    )
+    input_tok, output_tok, _, _ = _parse_worker_usage(log)
+    assert input_tok == 10_000
+    assert output_tok is not None and output_tok > 0
+
+
+def test_parse_worker_usage_real_anthropic_shape_unaffected(
+    tmp_path: Path,
+) -> None:
+    """When output_tokens is reported truthfully, parser sums them as before.
+
+    Ensures the WOR-384 sentinel doesn't fire on Anthropic API or any future
+    vLLM that fills output_tokens.
+    """
+    line1 = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "msg_1",
+                "content": [{"type": "text", "text": "hello"}],
+                "usage": {"input_tokens": 100, "output_tokens": 25},
+            },
+        }
+    )
+    line2 = json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "msg_2",
+                "content": [{"type": "text", "text": "world"}],
+                "usage": {"input_tokens": 110, "output_tokens": 30},
+            },
+        }
+    )
+    log = _write_log(tmp_path, [line1, line2])
+    input_tok, output_tok, _, _ = _parse_worker_usage(log)
+    assert input_tok == 210
+    assert output_tok == 55  # not estimated — actual sum
+
+
+def test_parse_worker_usage_vllm_direct_no_content_no_estimate(
+    tmp_path: Path,
+) -> None:
+    """If output_tokens=0 AND content is empty, no estimate; result is 0."""
+    log = _write_log(
+        tmp_path,
+        [_vllm_direct_assistant(50_000, [])],
+    )
+    input_tok, output_tok, _, _ = _parse_worker_usage(log)
+    assert input_tok == 50_000
+    assert output_tok == 0  # no content to estimate from
+
+
+# ---------------------------------------------------------------------------
 # count_main_ahead_of_epic — WOR-373 stale-epic detection
 # ---------------------------------------------------------------------------
 
