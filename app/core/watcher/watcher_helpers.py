@@ -327,6 +327,12 @@ def build_worker_env(
     if mode == "cloud":
         for var in _ENV_VARS_TO_STRIP_FOR_CLOUD:
             env.pop(var, None)
+        # WOR-391: signal to downstream tests that they're running inside the
+        # watcher's worker subprocess. Tests that interact with bash, system
+        # PATH-resolved binaries, or other env-divergent code paths can use
+        # this flag to skip themselves and avoid env-dependent flakiness.
+        # Set in cloud + local branches; default branch is a no-op fallback.
+        env["WATCHER_WORKER"] = "1"
     elif mode == "local":
         env["ANTHROPIC_BASE_URL"] = _VLLM_BASE_URL
         env.setdefault("ANTHROPIC_API_KEY", "dummy")
@@ -334,6 +340,8 @@ def build_worker_env(
         env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = _VLLM_SERVED_MODEL
         env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = _VLLM_SERVED_MODEL
         env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = _VLLM_SERVED_MODEL
+        # WOR-391: see cloud branch above for rationale.
+        env["WATCHER_WORKER"] = "1"
         # Compact at ~180K tokens: 240K window × 75% PCT trigger.
         # vLLM FP8 throughput is flat 16K→262K (WOR-234/WOR-118), so there is no
         # throughput cliff to avoid — 240K gives generous context while leaving 80K
