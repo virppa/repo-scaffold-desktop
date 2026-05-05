@@ -25,6 +25,11 @@ from app.core.post_setup import (
 )
 from app.core.presets import _PRESETS, get_preset
 from app.core.user_prefs import PrefsStore, UserPreferences
+from app.core.wizard import (
+    WizardStep,
+    collect_interactive_wizard,
+    validate_repo_name,
+)
 
 _PREFS_KEYS = set(UserPreferences.model_fields)
 _KEY_TO_FIELD = {k.replace("_", "-"): k for k in _PREFS_KEYS}
@@ -45,7 +50,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_set = cfg_sub.add_parser("set", help="Set a preference value.")
     cfg_set.add_argument(
         "key",
-        choices=set(sorted(_KEY_TO_FIELD)) | {"github-token"},
+        choices=set(_KEY_TO_FIELD) | {"github-token"},
         help="Preference key (use hyphens, e.g. author-name).",
     )
     cfg_set.add_argument("value", nargs="?", default=None, help="Value to store.")
@@ -53,21 +58,21 @@ def _build_parser() -> argparse.ArgumentParser:
     cfg_del = cfg_sub.add_parser("delete", help="Delete a credential.")
     cfg_del.add_argument(
         "key",
-        choices=set(sorted(_KEY_TO_FIELD)) | {"github-token"},
+        choices=set(_KEY_TO_FIELD) | {"github-token"},
         help="Credential key to delete.",
     )
 
     gen = sub.add_parser("generate", help="Generate scaffold files.")
     gen.add_argument(
         "--preset",
-        required=True,
+        required=False,
         choices=list(_PRESETS),
         help="Preset to use.",
     )
-    gen.add_argument("--repo-name", required=True, help="Repository name.")
+    gen.add_argument("--repo-name", required=False, help="Repository name.")
     gen.add_argument(
         "--output",
-        required=True,
+        required=False,
         type=Path,
         help="Output directory.",
     )
@@ -129,6 +134,29 @@ def _build_parser() -> argparse.ArgumentParser:
         "--remote-url",
         default=None,
         help="Remote URL to push to (used with --git-push).",
+    )
+    gen.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Run an interactive wizard instead of using flags.",
+    )
+    gen.add_argument(
+        "--manual-steps",
+        action="store_true",
+        default=False,
+        help="Ask about each feature toggle in the wizard.",
+    )
+    gen.add_argument(
+        "--save-defaults",
+        action="store_true",
+        default=False,
+        help="Save wizard answers as default preferences after generation.",
+    )
+    gen.add_argument(
+        "--prefill",
+        action="store_true",
+        default=False,
+        help="Pre-fill wizard prompts from stored preferences.",
     )
     github_group = gen.add_mutually_exclusive_group()
     github_group.add_argument(
@@ -275,13 +303,12 @@ def _run_watcher(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_watcher_softstop(args: argparse.Namespace) -> int:
+def _run_watcher_softstop(_args: argparse.Namespace) -> int:
     """Write the soft-stop sentinel so the daemon enters drain mode (WOR-333).
 
     Daemon polls .claude/watcher.softstop each cycle: if present, it stops
     accepting new dispatches, finishes in-flight workers, then exits cleanly.
     """
-    del args  # no flags
     claude_dir = Path.cwd() / ".claude"
     pid_file = claude_dir / "watcher.pid"
     sentinel = claude_dir / "watcher.softstop"
@@ -424,6 +451,128 @@ def _build_config(args: argparse.Namespace) -> RepoConfig:
     )
 
 
+def _run_interactive(args: argparse.Namespace) -> int:
+    """Run the interactive wizard for generate --interactive."""
+    from app.core.wizard import validate_bool
+
+    steps = [
+        WizardStep(
+            key="repo_name",
+            prompt="Repository name",
+            validator=validate_repo_name,
+            default="author_name",
+        ),
+        WizardStep(
+            key="preset",
+            prompt="Preset (python_basic | python_desktop | full_agentic)",
+            default="default_preset",
+        ),
+        WizardStep(
+            key="output",
+            prompt="Output directory",
+            default="default_output_dir",
+        ),
+    ]
+
+    if args.manual_steps:
+        steps.extend(
+            [
+                WizardStep(
+                    key="include_precommit",
+                    prompt="Include pre-commit config? [yes/no]",
+                    validator=validate_bool,
+                ),
+                WizardStep(
+                    key="include_ci",
+                    prompt="Include CI workflow? [yes/no]",
+                    validator=validate_bool,
+                ),
+                WizardStep(
+                    key="include_pr_template",
+                    prompt="Include PR template? [yes/no]",
+                    validator=validate_bool,
+                ),
+                WizardStep(
+                    key="include_issue_templates",
+                    prompt="Include issue templates? [yes/no]",
+                    validator=validate_bool,
+                ),
+                WizardStep(
+                    key="include_codeowners",
+                    prompt="Include CODEOWNERS? [yes/no]",
+                    validator=validate_bool,
+                ),
+                WizardStep(
+                    key="include_claude_files",
+                    prompt="Include Claude Code files? [yes/no]",
+                    validator=validate_bool,
+                ),
+            ]
+        )
+
+    # Load preferences if prefill is enabled
+    prefs: UserPreferences | None = None
+    if args.prefill or args.save_defaults:
+        prefs = PrefsStore.load()
+
+    # Collect wizard input
+    results = collect_interactive_wizard(steps, inputs=None, prefs=prefs)
+
+    try:
+        config = RepoConfig(
+            repo_name=results["repo_name"],
+            preset=results["preset"],
+            include_precommit=results.get("include_precommit", False),
+            include_ci=results.get("include_ci", False),
+            include_pr_template=results.get("include_pr_template", False),
+            include_issue_templates=results.get("include_issue_templates", False),
+            include_codeowners=results.get("include_codeowners", False),
+            include_claude_files=results.get("include_claude_files", False),
+            include_linear_mcp=get_preset(results["preset"]).context_defaults.get(
+                "include_linear_mcp", False
+            ),
+            git_init=args.git_init,
+            install_precommit=args.install_precommit,
+        )
+    except ValidationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    # Save defaults if requested
+    if args.save_defaults and prefs is not None:
+        updated = prefs.model_copy(
+            update={
+                "author_name": results.get("author_name", prefs.author_name),
+                "github_username": results.get(
+                    "github_username", prefs.github_username
+                ),
+            }
+        )
+        PrefsStore.save(updated)
+        print("Saved defaults.", file=sys.stderr)
+
+    # Execute the non-interactive generate flow
+    try:
+        _render_and_report(config, Path(str(results["output"])))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        _fetch_skills_for_preset(Path(str(results["output"])), config)
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        _run_post_setup(config, Path(str(results["output"])))
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    return 0
+
+
 def _render_and_report(config: RepoConfig, output: Path) -> list[str]:
     written = generate(config, output)
     for path in written:
@@ -478,6 +627,17 @@ def _run_initial_push(output: Path, push_url: str) -> None:
 
 
 def _run_generate(args: argparse.Namespace) -> int:
+    if args.interactive:
+        return _run_interactive(args)
+
+    if not args.preset or not args.repo_name or not args.output:
+        print(
+            "error: the following arguments are required: "
+            "--preset, --repo-name, --output",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         config = _build_config(args)
     except ValidationError as exc:

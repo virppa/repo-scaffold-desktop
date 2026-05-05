@@ -10,3 +10,7 @@ scripts/bench/lifecycle/ollama_manager.py
 # Spike scripts hit localhost-only endpoints (vLLM :8000, LiteLLM :8082).
 # No user input flows in. Same precedent as scripts/bench/drivers/.
 scripts/spikes/
+
+# base_url is a TOML config value validated to http/https at construction;
+# not user-controlled. Same precedent as scripts/bench/drivers/.
+scripts/bench/workloads.py

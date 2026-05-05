@@ -1,0 +1,59 @@
+# Benchmark configuration for the `watcher-pattern` workload.
+#
+# Simulates a real worker session: 100 turns with growing tool_result
+# accumulation, one compaction at turn ~60, ~500-token assistant outputs.
+#
+# Usage:
+#   python scripts/bench/run_bench.py --workload watcher-pattern \
+#       --config config/bench-watcher-pattern.toml \
+#       --backend local_vllm --model qwen3-coder
+#
+
+[session]
+# Total turns in the session (pre-compact + compact + post-compact).
+n_turns = 100
+# Turn index where compaction occurs (0-based). 60 = turn 61 in 1-based.
+compaction_turn = 60
+# Max characters in tool_result text per turn (before compaction).
+# Increases linearly from ~200 to this value over the pre-compact phase.
+max_tool_result_size = 800
+
+[[phases]]
+# Pre-compact phase: tool_results accumulate linearly.
+name = "pre-compact"
+n_turns = 60
+message_template = "Turn {turn}: process {task} and report results."
+task_template = "analyze file_{idx} for issues and suggest fixes"
+tool_result_size_base = 200
+tool_result_size_growth = 7  # chars per turn
+
+[[phases]]
+# Compact phase: single turn that summarizes accumulated context.
+name = "compact"
+n_turns = 1
+message_template = "Compact all accumulated tool results into a summary. Retain: task patterns, key findings, error codes. Discard: raw file paths, specific line numbers, minor details."
+task_template = "summarize accumulated findings"
+tool_result_size = 500
+# The tool_result for the compact turn contains the summary text.
+tool_result_is_summary = true
+
+[[phases]]
+# Post-compact phase: new tool_results grow from a reduced baseline.
+name = "post-compact"
+n_turns = 39
+message_template = "Turn {turn}: continue analysis on remaining files. Use compacted context: {n_tasks} tasks analyzed, {n_findings} findings so far."
+task_template = "verify fix for file_{idx} and check for regressions"
+tool_result_size_base = 300
+tool_result_size_growth = 5
+
+# ── Backend / model ────────────────────────────────────────────────────────
+# Override via CLI: --backend <id> --model <id>
+# Default points to the vLLM endpoint used by the existing bench harness.
+
+[backend]
+id = "local_vllm"
+base_url = "http://localhost:8000"
+
+[model]
+id = "qwen3-coder"
+backend_id = "local_vllm"

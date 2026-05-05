@@ -10,6 +10,12 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
 
+    # WOR-390: PySide6 wraps native Qt and needs system shared libs (libEGL,
+    # libxcb-*) at import time. Headless ubuntu-latest doesn't ship them.
+    # Setting offscreen tells Qt not to look for an X server.
+    env:
+      QT_QPA_PLATFORM: offscreen
+
     steps:
       - uses: actions/checkout@v6
 
@@ -20,8 +26,36 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'requirements-dev.txt'
 
+      - name: Install system Qt dependencies (WOR-390)
+        # PySide6 (loaded by pytest-qt at collection time) dynamically links
+        # against libEGL.so.1 and the libxcb-* family. Install the minimal
+        # headless Qt6 runtime; the offscreen platform set in `env` above
+        # avoids needing an actual X server.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libegl1 \
+            libxkbcommon0 \
+            libxkbcommon-x11-0 \
+            libdbus-1-3 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-sync1 \
+            libxcb-xfixes0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1 \
+            libxcb-cursor0
+
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        # WOR-69 added pytest-qt to requirements-dev.txt, which loads its
+        # plugin at pytest collection time and requires PySide6/PyQt5/PyQt6
+        # to be installed. PySide6 lives in requirements-ui.txt, so install
+        # both here.
+        run: pip install -r requirements-dev.txt -r requirements-ui.txt
 
       - name: Lint
         run: ruff check .
@@ -86,7 +120,11 @@ jobs:
           cache-dependency-path: 'requirements-dev.txt'
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        # WOR-69 added pytest-qt to requirements-dev.txt, which loads its
+        # plugin at pytest collection time and requires PySide6/PyQt5/PyQt6
+        # to be installed. PySide6 lives in requirements-ui.txt, so install
+        # both here.
+        run: pip install -r requirements-dev.txt -r requirements-ui.txt
 
       - name: Watcher smoke test (5s)
         run: |

@@ -13,6 +13,8 @@ from app.core.user_prefs import UserPreferences
 
 _GITHUB_SOURCE_RE = re.compile(r"^github:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
 _SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_.\-/]+$")
+# SonarCloud S1192 — shared GitHub API Accept header value
+_GITHUB_API_ACCEPT = "application/vnd.github+json"
 
 
 def _parse_repo_full_name(clone_url: str) -> str:
@@ -60,7 +62,7 @@ def fetch_skills(
     )
     try:
         req = urllib.request.Request(  # nosec B310 — URL constructed from validated owner/repo/version
-            api_url, headers={"Accept": "application/vnd.github+json"}
+            api_url, headers={"Accept": _GITHUB_API_ACCEPT}
         )
         with urllib.request.urlopen(req, timeout=10) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
             tree = json.loads(resp.read())
@@ -320,7 +322,7 @@ def create_github_repo(
         method="POST",
         headers={
             "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
+            "Accept": _GITHUB_API_ACCEPT,
             "Content-Type": "application/json",
         },
     )
@@ -386,7 +388,7 @@ def delete_github_repo(repo_full_name: str) -> None:
         method="DELETE",
         headers={
             "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
+            "Accept": _GITHUB_API_ACCEPT,
         },
     )
 
