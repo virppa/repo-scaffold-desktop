@@ -192,6 +192,31 @@ done | sort -u
 Pass that list (plus your scoped tests) to pytest during iteration. The
 final unscoped `pytest` from `required_checks` is still mandatory.
 
+**Never pipe pytest output through `tail`/`head` for self-validation (WOR-392).**
+The pipe swallows pytest's exit code — `pytest 2>&1 | tail -20` returns
+`tail`'s exit code (always 0), so even if pytest fails the surrounding
+shell sees a successful command. Worse, `tail -20` may not include the
+FAILED summary lines depending on output volume + warnings, so the worker
+sees only passing dots and concludes "all green" — then writes
+`result.json: status=success`, the watcher's unscoped pytest fails on the
+real failures, and the worker's diff is lost.
+
+Either run pytest unpiped:
+
+```bash
+pytest -q
+```
+
+Or redirect to a file and check the exit code separately:
+
+```bash
+pytest -q > /tmp/pytest-out.txt 2>&1; echo "exit=$?"; tail -50 /tmp/pytest-out.txt
+```
+
+The `echo $?` line is the gate, not the visible output. If `exit != 0`,
+inspect `/tmp/pytest-out.txt` directly with Read or grep — never trust a
+truncated tail to tell you the test summary.
+
 If any required check fails:
 - Record the failure in the result artifact (step 5)
 - If `failure_policy.on_check_failure` is `"abort"`: stop here, write a failed result
