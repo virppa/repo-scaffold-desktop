@@ -335,6 +335,8 @@ Test core logic only. Priority: config validation, preset selection, file genera
 
 Rules for local worker sessions (watcher-spawned `claude` processes). Each tool call is a ~40s round-trip — minimising call count directly reduces wall time.
 
+**Emit independent tool calls in parallel (WOR-387).** When multiple tool calls don't depend on each other's results, emit ALL the `tool_use` blocks in ONE assistant message. The runtime executes them in parallel and returns all `tool_result` blocks in one user turn. A serial 4-Read sequence pays the turn-boundary cost (prefill + decode warmup, 10-30s on long context) 4 times; one parallel 4-Read pays it once. Only serialize when a later call's input genuinely depends on an earlier result (e.g. "Read the file we just located via Glob"). The investigation phase before the first edit is the highest-leverage place to apply this — replace 5-15 single-Read turns with 1-3 multi-Read turns.
+
 **No standalone `cd` commands.** Every `cd` is a wasted round-trip. Use absolute paths or chain with the actual command:
 ```bash
 # bad  — two round-trips
