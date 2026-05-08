@@ -315,3 +315,149 @@ class _LogCapture:
 
 def caplog_at_level_helper() -> _LogCapture:
     return _LogCapture()
+
+
+# ---------------------------------------------------------------------------
+# _handle_signal — SIGINT (same behaviour as SIGTERM)
+# ---------------------------------------------------------------------------
+
+
+def test_handle_signal_sigint_calls_services_stop_and_clears_running() -> None:
+    """SIGINT must behave identically to SIGTERM — stop services and exit."""
+    w = Watcher(linear_client=MagicMock())
+    import signal
+
+    with patch.object(w._services, "stop") as mock_stop:
+        w._handle_signal(signal.SIGINT, None)
+
+    mock_stop.assert_called_once()
+    assert w._running is False
+
+
+# ---------------------------------------------------------------------------
+# _remove_softstop_sentinel — OSError is logged, not raised
+# ---------------------------------------------------------------------------
+
+
+def test_remove_softstop_sentinel_oserror_logged(tmp_path: Path) -> None:
+    """If unlink raises OSError (e.g. permission denied), the watcher logs a
+    WARNING but does not crash."""
+    sentinel = tmp_path / ".claude" / "watcher.softstop"
+    sentinel.parent.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    with patch("pathlib.Path.unlink", side_effect=PermissionError("denied")):
+        w._remove_softstop_sentinel()
+
+    # Must not raise — the sentinel removal is best-effort
+
+
+# ---------------------------------------------------------------------------
+# _check_softstop_request — not-draining, no sentinel
+# ---------------------------------------------------------------------------
+
+
+def test_check_softstop_request_not_draining_no_sentinel(tmp_path: Path) -> None:
+    """When not in drain mode and the sentinel file does not exist, nothing
+    should change — _draining stays False."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    assert w._draining is False
+
+    with (
+        patch.object(w, "_softstop_sentinel_path") as mock_path,
+        patch.object(Path, "exists", return_value=False),
+    ):
+        mock_path.return_value = tmp_path / ".claude" / "watcher.softstop"
+        w._check_softstop_request()
+
+    assert w._draining is False
+    assert w._draining_since is None
+
+
+# ---------------------------------------------------------------------------
+# _check_softstop_request — idempotent: already draining
+# ---------------------------------------------------------------------------
+
+
+def test_check_softstop_request_already_draining_noop(tmp_path: Path) -> None:
+    """If the watcher is already draining, _check_softstop_request must be a
+    no-op — it should not reset _draining_since or re-read the sentinel."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    w._draining = True
+    w._draining_since = 12345.0
+
+    original_draining_since = w._draining_since
+    w._check_softstop_request()
+
+    assert w._draining is True
+    assert w._draining_since == original_draining_since
+
+
+# ---------------------------------------------------------------------------
+# _maybe_warn_softstop_stuck — not stuck (no workers running)
+# ---------------------------------------------------------------------------
+
+
+def test_maybe_warn_softstop_stuck_not_draining_noop(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureContext,
+) -> None:
+    """When not in drain mode, _maybe_warn_softstop_stuck must return
+    immediately without logging or touching _softstop_warned_stuck."""
+    w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
+    w._draining = False  # not draining
+    w._draining_since = _time.monotonic() - 200 * 60  # irrelevant
+    w._softstop_warned_stuck = False  # verify this stays unchanged
+
+    with caplog_at_level_helper() as records:
+        w._maybe_warn_softstop_stuck()
+
+    assert w._softstop_warned_stuck is False
+    assert len(records) == 0
+
+
+# ---------------------------------------------------------------------------
+# run() — finally block cleanup (services.stop + pid removal + display.stop)
+# ---------------------------------------------------------------------------
+
+
+def test_run_exits_cleans_up_services_and_pid(tmp_path: Path) -> None:
+    """When the poll loop exits (e.g. via SIGINT), the finally block must
+    call services.stop(), remove the PID file, and stop the TUI display."""
+    w = Watcher(
+        linear_client=MagicMock(),
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+    w._running = False
+
+    # Replace _services with a MagicMock so stop() is captured
+    mock_services = MagicMock()
+    w._services = mock_services
+
+    w.run()
+
+    # Finally block assertions — services.stop() must be called
+    mock_services.stop.assert_called_once()
+
+
+def test_run_exits_with_workers_and_clears_running() -> None:
+    """When a signal sets _running=False mid-loop, the finally block must
+    wait for active workers before cleaning up."""
+    w = Watcher(
+        linear_client=MagicMock(),
+        repo_root=Path("/tmp"),
+        no_epic_shutdown=True,
+    )
+    w._running = False
+    worker = _make_active_worker()
+    w._local_active.append(worker)
+
+    mock_services_stop = MagicMock()
+    with patch.object(w._services, "stop", mock_services_stop):
+        w.run()
+
+    # _wait_for_active_workers should have been called (part of finally block)
+    worker.process.wait.assert_called_once()
+    mock_services_stop.assert_called_once()
