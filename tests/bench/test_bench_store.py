@@ -371,6 +371,42 @@ class TestNewColumns:
         assert result.cache_state == "prefix_warm"
 
 
+class TestPreserveThinkingColumn:
+    """Tests for preserve_thinking column added in WOR-405."""
+
+    def test_preserve_thinking_defaults_to_none(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run(run_id="r1"))
+        result = store.get_by_run_id("r1")[0]
+        assert result.preserve_thinking is None
+
+    def test_preserve_thinking_true_round_trips(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run(run_id="r1", preserve_thinking=True))
+        result = store.get_by_run_id("r1")[0]
+        assert result.preserve_thinking is True
+
+    def test_preserve_thinking_false_round_trips(self, tmp_path: Path) -> None:
+        store = _store(tmp_path)
+        store.record(_run(run_id="r1", preserve_thinking=False))
+        result = store.get_by_run_id("r1")[0]
+        assert result.preserve_thinking is False
+
+    def test_migrate_idempotent_preserves_column(self, tmp_path: Path) -> None:
+        """WOR-405: column exists after init; second init is idempotent."""
+        import sqlite3
+
+        db = tmp_path / "app.db"
+        BenchStore(db_path=db)
+        BenchStore(db_path=db)  # second init must not raise
+        conn = sqlite3.connect(db)
+        cols = {
+            row[1] for row in conn.execute("PRAGMA table_info(bench_run)").fetchall()
+        }
+        conn.close()
+        assert "preserve_thinking" in cols
+
+
 class TestModelMetadataColumns:
     """Tests for model_quant and model_family added in WOR-207."""
 

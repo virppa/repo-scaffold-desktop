@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS bench_run (
     error_message           TEXT,
     finish_reason           TEXT,
     enable_thinking         INTEGER,
+    preserve_thinking       INTEGER,
     recorded_at             TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (run_id, case_id, repeat_index)
 )
@@ -102,7 +103,7 @@ INSERT INTO bench_run (
     model_param_count,
     quality_task_success, quality_pytest_passed,
     quality_ruff_passed, quality_mypy_passed,
-    outcome, error_message, finish_reason, enable_thinking
+    outcome, error_message, finish_reason, enable_thinking, preserve_thinking
 ) VALUES (
     :run_id, :case_id, :repeat_index,
     :tier, :context_size, :concurrency, :backend_id, :model_id,
@@ -120,7 +121,7 @@ INSERT INTO bench_run (
     :model_param_count,
     :quality_task_success, :quality_pytest_passed,
     :quality_ruff_passed, :quality_mypy_passed,
-    :outcome, :error_message, :finish_reason, :enable_thinking
+    :outcome, :error_message, :finish_reason, :enable_thinking, :preserve_thinking
 )
 """
 
@@ -134,6 +135,7 @@ _BOOL_COLUMNS = frozenset(
         "quality_ruff_passed",
         "quality_mypy_passed",
         "enable_thinking",
+        "preserve_thinking",
     }
 )
 
@@ -228,6 +230,7 @@ class BenchRun(BaseModel):
 
     # inference settings
     enable_thinking: bool | None = None
+    preserve_thinking: bool | None = None
 
 
 def hash_settings(settings: dict[str, Any]) -> str:
@@ -296,6 +299,8 @@ class BenchStore:
             conn.execute("ALTER TABLE bench_run ADD COLUMN finish_reason TEXT")
         if "enable_thinking" not in existing:
             conn.execute("ALTER TABLE bench_run ADD COLUMN enable_thinking INTEGER")
+        if "preserve_thinking" not in existing:
+            conn.execute("ALTER TABLE bench_run ADD COLUMN preserve_thinking INTEGER")
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:

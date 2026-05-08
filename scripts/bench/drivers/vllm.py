@@ -30,10 +30,14 @@ class VllmDriver:
     """Implements BackendDriver for vLLM's /v1/chat/completions SSE endpoint."""
 
     def __init__(
-        self, base_url: str = "http://localhost:8000", enable_thinking: bool = True
+        self,
+        base_url: str = "http://localhost:8000",
+        enable_thinking: bool = True,
+        preserve_thinking: bool = False,
     ) -> None:
         self._base_url = _validated_base_url(base_url)
         self._enable_thinking = enable_thinking
+        self._preserve_thinking = preserve_thinking
 
     def is_available(self) -> bool:
         try:
@@ -59,7 +63,10 @@ class VllmDriver:
             "stream_options": {"include_usage": True},
             "max_tokens": max_tokens,
             "temperature": temperature,
-            "chat_template_kwargs": {"enable_thinking": self._enable_thinking},
+            "chat_template_kwargs": {
+                "enable_thinking": self._enable_thinking,
+                "preserve_thinking": self._preserve_thinking,
+            },
         }
         if seed is not None:
             body["seed"] = seed
