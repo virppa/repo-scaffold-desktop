@@ -592,8 +592,8 @@ def capture_vllm_metrics(timeout: float = 5.0) -> dict[str, float] | None:
         return None
 
     targets = set(_VLLM_COUNTERS)
-    aggregated: dict[str, float] = {name: 0.0 for name in targets}
-    seen: dict[str, bool] = {name: False for name in targets}
+    aggregated: dict[str, float] = dict.fromkeys(targets, 0.0)
+    seen: dict[str, bool] = dict.fromkeys(targets, False)
 
     for raw in body.splitlines():
         line = raw.strip()
