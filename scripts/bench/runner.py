@@ -70,10 +70,17 @@ def _make_prompt(tier: str, repeat_index: int, context_size: int) -> BenchPrompt
 
 
 def _make_driver(
-    backend_id: str, base_url: str, enable_thinking: bool = True
+    backend_id: str,
+    base_url: str,
+    enable_thinking: bool = True,
+    preserve_thinking: bool = False,
 ) -> OllamaDriver | VllmDriver:
     if "vllm" in backend_id.lower():
-        return VllmDriver(base_url=base_url, enable_thinking=enable_thinking)
+        return VllmDriver(
+            base_url=base_url,
+            enable_thinking=enable_thinking,
+            preserve_thinking=preserve_thinking,
+        )
     return OllamaDriver(base_url=base_url)
 
 
@@ -274,7 +281,10 @@ def run(
             continue
 
         driver = _make_driver(
-            case.backend_id, backend_cfg.base_url, backend_cfg.enable_thinking
+            case.backend_id,
+            backend_cfg.base_url,
+            backend_cfg.enable_thinking,
+            backend_cfg.preserve_thinking,
         )
 
         info_key = (case.backend_id, case.model_id)
@@ -452,6 +462,11 @@ def run(
             finish_reason=result.finish_reason,
             enable_thinking=(
                 backend_cfg.enable_thinking
+                if "vllm" in case.backend_id.lower()
+                else None
+            ),
+            preserve_thinking=(
+                backend_cfg.preserve_thinking
                 if "vllm" in case.backend_id.lower()
                 else None
             ),

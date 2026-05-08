@@ -541,6 +541,31 @@ def test_vllm_generate_payload_contains_max_tokens_and_temperature():
     assert "seed" not in payload
 
 
+def test_vllm_generate_payload_includes_preserve_thinking_default_false():
+    """WOR-405: every request body must declare preserve_thinking; default is False."""
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = io.BytesIO(_VLLM_BODY)
+        VllmDriver().generate(
+            "m", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+        payload = _captured_payload(mock_open)
+
+    assert payload["chat_template_kwargs"]["preserve_thinking"] is False
+    assert payload["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_vllm_generate_payload_propagates_preserve_thinking_when_enabled():
+    """WOR-405: preserve_thinking=True must reach the request body verbatim."""
+    with patch("urllib.request.urlopen") as mock_open:
+        mock_open.return_value = io.BytesIO(_VLLM_BODY)
+        VllmDriver(preserve_thinking=True).generate(
+            "m", [{"role": "user", "content": "hi"}], 4096, 256, 0.7, None
+        )
+        payload = _captured_payload(mock_open)
+
+    assert payload["chat_template_kwargs"]["preserve_thinking"] is True
+
+
 def test_vllm_generate_payload_includes_seed_when_set():
     with patch("urllib.request.urlopen") as mock_open:
         mock_open.return_value = io.BytesIO(_VLLM_BODY)

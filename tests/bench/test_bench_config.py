@@ -204,6 +204,40 @@ name = "speed"
     assert cfg.models[0].quant == "Q4_K_M"
 
 
+def test_backend_preserve_thinking_defaults_to_false(tmp_path: Path) -> None:
+    """WOR-405: backend without preserve_thinking gets False (vendor default)."""
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, _STANDARD_TOML))
+    for backend in cfg.backends:
+        assert backend.preserve_thinking is False
+
+
+def test_backend_preserve_thinking_parsed_from_toml(tmp_path: Path) -> None:
+    """WOR-405: preserve_thinking=true in TOML reaches the BackendConfig."""
+    toml = """
+[matrix]
+context_sizes = [1024]
+boundary_context_sizes = [8192]
+concurrency_levels = [1]
+repeats = 1
+
+[[backends]]
+id = "vllm-preserve"
+enabled = true
+base_url = "http://localhost:8000/"
+preserve_thinking = true
+
+[[models]]
+id = "qwen3-coder"
+backend_id = "vllm-preserve"
+
+[[tiers]]
+name = "speed"
+"""
+    cfg = BenchConfig.from_toml(_write_toml(tmp_path, toml))
+    assert len(cfg.backends) == 1
+    assert cfg.backends[0].preserve_thinking is True
+
+
 def test_model_quant_field_is_optional(tmp_path: Path) -> None:
     toml = """
 [matrix]

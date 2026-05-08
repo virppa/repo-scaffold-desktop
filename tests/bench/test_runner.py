@@ -61,6 +61,18 @@ def test_make_driver_returns_vllm_for_vllm_backend() -> None:
     assert isinstance(_make_driver("vllm-local", "http://localhost:8000"), VllmDriver)
 
 
+def test_make_driver_propagates_preserve_thinking() -> None:
+    """WOR-405: preserve_thinking flag must reach the constructed VllmDriver."""
+    driver = _make_driver(
+        "vllm-local",
+        "http://localhost:8000",
+        enable_thinking=True,
+        preserve_thinking=True,
+    )
+    assert isinstance(driver, VllmDriver)
+    assert driver._preserve_thinking is True
+
+
 def test_make_driver_vllm_match_is_case_insensitive() -> None:
     assert isinstance(_make_driver("VLLM", "http://localhost:8000"), VllmDriver)
 
