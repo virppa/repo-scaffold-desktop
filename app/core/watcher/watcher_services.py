@@ -31,7 +31,17 @@ _VLLM_FP8_CMD = (
     " --reasoning-parser qwen3 --enable-prefix-caching"
     " --language-model-only --safetensors-load-strategy prefetch"
     " --enable-auto-tool-choice --tool-call-parser qwen3_coder"
-    " --default-chat-template-kwargs '{\"preserve_thinking\": true}'"
+    # NOTE: --default-chat-template-kwargs '{"preserve_thinking": true}' is
+    # intentionally OMITTED from this auto-start command. The watcher passes
+    # _VLLM_FP8_CMD as a string argument through Python subprocess →
+    # wt.exe → wsl → bash, and JSON literals containing both single and
+    # double quotes get mangled by each successive shell's quoting rules.
+    # The canonical operator commands in CLAUDE.md / README.md /
+    # .claude/commands/start-{ticket,epic}.md DO include the flag — that's
+    # the path you should normally take. The watcher's auto-start tab is a
+    # best-effort fallback for when vLLM is not already running; it'll start
+    # vLLM without preserve_thinking, and you can restart manually with the
+    # full command if you need that flag.
 )
 
 
