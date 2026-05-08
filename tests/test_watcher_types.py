@@ -52,3 +52,41 @@ def test_write_and_remove_pid_file(
 
     watcher._remove_pid_file()
     assert not pid_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# WOR-408: WATCHER_VLLM_BASE_URL env override
+# ---------------------------------------------------------------------------
+
+
+def test_vllm_base_url_defaults_to_localhost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When WATCHER_VLLM_BASE_URL is unset, _VLLM_BASE_URL falls back to
+    localhost:8000 — the normal WSL2 port-forwarding case."""
+    import importlib
+
+    monkeypatch.delenv("WATCHER_VLLM_BASE_URL", raising=False)
+    import app.core.watcher.watcher_types as wt
+
+    importlib.reload(wt)
+    assert wt._VLLM_BASE_URL == "http://localhost:8000"
+
+
+def test_vllm_base_url_honors_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WATCHER_VLLM_BASE_URL fully overrides _VLLM_BASE_URL — used when WSL2
+    localhost forwarding is broken and only the WSL guest IP is reachable
+    from Windows."""
+    import importlib
+
+    monkeypatch.setenv("WATCHER_VLLM_BASE_URL", "http://172.23.139.95:8000")
+    import app.core.watcher.watcher_types as wt
+
+    importlib.reload(wt)
+    assert wt._VLLM_BASE_URL == "http://172.23.139.95:8000"
+
+    # Reset to default so other tests aren't affected
+    monkeypatch.delenv("WATCHER_VLLM_BASE_URL", raising=False)
+    importlib.reload(wt)
