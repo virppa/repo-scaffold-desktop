@@ -90,3 +90,37 @@ def test_vllm_base_url_honors_env_override(
     # Reset to default so other tests aren't affected
     monkeypatch.delenv("WATCHER_VLLM_BASE_URL", raising=False)
     importlib.reload(wt)
+
+
+def test_vllm_host_derives_from_base_url_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """_VLLM_HOST defaults to "localhost" when no env override is set."""
+    import importlib
+
+    monkeypatch.delenv("WATCHER_VLLM_BASE_URL", raising=False)
+    import app.core.watcher.watcher_types as wt
+
+    importlib.reload(wt)
+    assert wt._VLLM_HOST == "localhost"
+
+
+def test_vllm_host_derives_from_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When WATCHER_VLLM_BASE_URL is set, _VLLM_HOST is parsed from it.
+    ServiceManager probes use _VLLM_HOST directly (http.client.HTTPConnection
+    requires host + port separately, not a URL). Without this propagation, the
+    probes would still hit localhost and fail when WSL2 forwarding is broken,
+    triggering the spurious "open new vLLM terminal" code path.
+    """
+    import importlib
+
+    monkeypatch.setenv("WATCHER_VLLM_BASE_URL", "http://172.23.139.95:8000")
+    import app.core.watcher.watcher_types as wt
+
+    importlib.reload(wt)
+    assert wt._VLLM_HOST == "172.23.139.95"
+
+    monkeypatch.delenv("WATCHER_VLLM_BASE_URL", raising=False)
+    importlib.reload(wt)

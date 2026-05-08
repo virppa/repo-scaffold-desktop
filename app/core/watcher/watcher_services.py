@@ -19,7 +19,7 @@ import subprocess  # nosec B404
 import sys
 from pathlib import Path
 
-from .watcher_types import _VLLM_PORT, _VLLM_SERVED_MODEL
+from .watcher_types import _VLLM_HOST, _VLLM_PORT, _VLLM_SERVED_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ _VLLM_FP8_CMD = (
     " --reasoning-parser qwen3 --enable-prefix-caching"
     " --language-model-only --safetensors-load-strategy prefetch"
     " --enable-auto-tool-choice --tool-call-parser qwen3_coder"
+    " --default-chat-template-kwargs '{\"preserve_thinking\": true}'"
 )
 
 
@@ -61,7 +62,7 @@ class ServiceManager:
         On Windows opens a new WSL2 terminal tab on the first failure only.
         """
         try:
-            conn = http.client.HTTPConnection("localhost", _VLLM_PORT, timeout=3)
+            conn = http.client.HTTPConnection(_VLLM_HOST, _VLLM_PORT, timeout=3)
             conn.request("GET", "/v1/models")
             resp = conn.getresponse()
             if resp.status == 200:
@@ -148,7 +149,7 @@ class ServiceManager:
     def _probe_models_endpoint(self) -> bool:
         """Return True if GET /v1/models returns 200 and lists _VLLM_SERVED_MODEL."""
         try:
-            conn = http.client.HTTPConnection("localhost", _VLLM_PORT, timeout=3)
+            conn = http.client.HTTPConnection(_VLLM_HOST, _VLLM_PORT, timeout=3)
             conn.request("GET", "/v1/models")
             resp = conn.getresponse()
             if resp.status != 200:
@@ -169,7 +170,7 @@ class ServiceManager:
             }
         ).encode("utf-8")
         try:
-            conn = http.client.HTTPConnection("localhost", _VLLM_PORT, timeout=10)
+            conn = http.client.HTTPConnection(_VLLM_HOST, _VLLM_PORT, timeout=10)
             conn.request(
                 "POST",
                 "/v1/messages",
