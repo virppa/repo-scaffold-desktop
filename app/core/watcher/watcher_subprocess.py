@@ -173,6 +173,13 @@ def run_checks(
     failure_artifact = artifact_dir / _LAST_FAILURE_FILENAME
 
     failed_checks: list[dict[str, int | str]] = []
+    check_env = os.environ.copy()
+    # WOR-398: WOR-391's skipif on tests/test_contribute_skills_workflow.py only
+    # fires when WATCHER_WORKER=1. The worker subprocess gets that flag from
+    # build_worker_env, but the watcher's post-worker required_checks step runs
+    # in a fresh subprocess that inherits the daemon's env, where the flag is
+    # absent — so the skip misses and pytest fails on contribute-skills tests.
+    check_env["WATCHER_WORKER"] = "1"
     for check_cmd in manifest.required_checks:
         logger.info("Running check: %s", check_cmd)
         start = datetime.now(timezone.utc).timestamp()
@@ -181,6 +188,7 @@ def run_checks(
             cwd=str(worktree_path),
             capture_output=True,
             text=True,
+            env=check_env,
         )
         duration = datetime.now(timezone.utc).timestamp() - start
         if metrics is not None and ticket_id:
