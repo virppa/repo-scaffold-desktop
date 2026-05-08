@@ -28,6 +28,13 @@ _VLLM_PORT = 8000
 _VLLM_BASE_URL = os.environ.get(
     "WATCHER_VLLM_BASE_URL", f"http://localhost:{_VLLM_PORT}"
 )
+# Host derived from _VLLM_BASE_URL for direct http.client.HTTPConnection use
+# (ServiceManager probes). Falls back to "localhost" if the URL is malformed.
+_VLLM_HOST = (
+    _VLLM_BASE_URL.split("://", 1)[1].partition(":")[0]
+    if "://" in _VLLM_BASE_URL
+    else "localhost"
+) or "localhost"
 _VLLM_SERVED_MODEL = "qwen3-coder"
 # Metrics label kept for backward compatibility with rows written before WOR-368;
 # Claude Code routes by tier via ANTHROPIC_DEFAULT_*_MODEL, so the on-the-wire
