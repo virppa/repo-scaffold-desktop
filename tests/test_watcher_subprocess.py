@@ -571,6 +571,33 @@ def test_run_checks_returns_true_when_all_pass(tmp_path: Path) -> None:
         assert failures == []
 
 
+def test_run_checks_propagates_watcher_worker_env(tmp_path: Path) -> None:
+    """WOR-398: every check subprocess must see WATCHER_WORKER=1 so that
+    WOR-391's skipif on tests/test_contribute_skills_workflow.py fires during
+    the watcher's post-worker required_checks step."""
+    manifest = _make_manifest(required_checks=["ruff check .", "pytest"])
+    captured_envs: list[dict[str, str] | None] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        env_arg = kwargs.get("env")
+        captured_envs.append(env_arg)  # type: ignore[arg-type]
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
+        run_checks(manifest, tmp_path)
+
+    assert len(captured_envs) == 2
+    for env in captured_envs:
+        assert env is not None, "run_checks must pass an env dict to subprocess.run"
+        assert env.get("WATCHER_WORKER") == "1"
+
+
 def test_run_checks_returns_false_on_check_failure(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
