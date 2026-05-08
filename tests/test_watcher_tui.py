@@ -10,6 +10,7 @@ and _render_line sub-widgets directly.
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from rich.console import Console
@@ -473,3 +474,63 @@ def test_build_layout_has_correct_structure() -> None:
     assert layout["top"] is not None
     assert layout["middle"] is not None
     assert layout["bottom"] is not None
+
+
+# ---------------------------------------------------------------------------
+# _build_tui_state — empty workers list
+# ---------------------------------------------------------------------------
+
+
+def test_build_tui_state_empty_workers(tmp_path: Path) -> None:
+    """When no workers are active, _build_tui_state returns a TUIState with
+    an empty workers list but still includes cost rollups."""
+    from app.core.watcher.watcher import Watcher
+
+    w = Watcher(
+        linear_client=MagicMock(),
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+
+    state = w._build_tui_state()
+
+    assert isinstance(state, TUIState)
+    assert len(state.workers) == 0
+    assert "today" in state.cost_rollups
+    assert "week" in state.cost_rollups
+    assert "all" in state.cost_rollups
+    assert state.tracked_prs == []
+
+
+# ---------------------------------------------------------------------------
+# _build_tui_state — single local worker
+# ---------------------------------------------------------------------------
+
+
+def test_build_tui_state_single_local_worker(tmp_path: Path) -> None:
+    """When one local worker is active, _build_tui_state includes it with
+    mode='local' and elapsed time calculated from start_time."""
+    from app.core.watcher.watcher import Watcher
+
+    w = Watcher(
+        linear_client=MagicMock(),
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+
+    worker = MagicMock()
+    worker.ticket_id = "WOR-TEST"
+    import time as _time
+
+    worker.start_time = _time.monotonic() - 60  # 60s ago
+    w._local_active.append(worker)
+
+    state = w._build_tui_state()
+
+    assert len(state.workers) == 1
+    ws = state.workers[0]
+    assert isinstance(ws, WorkerState)
+    assert ws.ticket_id == "WOR-TEST"
+    assert ws.mode == "local"
+    assert ws.status == "running"
+    assert abs(ws.elapsed_s - 60) < 3  # ±3s for test timing
