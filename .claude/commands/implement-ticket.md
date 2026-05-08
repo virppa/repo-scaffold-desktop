@@ -93,6 +93,28 @@ Implement the work described in `objective` and `acceptance_criteria`. Obey thes
 
 **Emit independent tool calls in parallel (WOR-387).** When you need to run multiple tools that don't depend on each other's results — reading multiple unrelated files, grepping multiple unrelated patterns, listing multiple directories, running independent shell probes — emit ALL the `tool_use` blocks in ONE assistant message. The runtime executes them in parallel and returns all tool_results together in one turn. Each turn boundary costs a full prefill + decode warmup (10-30s wall time on long context), so a serial 4-Read sequence pays that cost 4 times for no model benefit. Only serialize when a later call's input genuinely depends on an earlier call's output (e.g. "Read the file we just located via Glob"). The classic anti-pattern this targets: an investigation phase that emits 5-15 single-Read turns to scan the codebase before the first edit — that phase should be 1-3 multi-Read turns instead.
 
+**Worked example (WOR-399).** The manifest's `allowed_paths` is `["app/core/watcher/watcher_helpers.py", "tests/test_watcher_helpers.py"]` and you also want to see how the upstream `manifest.py` defines its model. That's three independent Reads — none depends on the others' output.
+
+❌ **Wrong** — three assistant turns, three single-Read messages, three turn boundaries (≈30-90s of pure overhead):
+```
+turn 1: assistant: "I'll read the helper first."
+        tool_use: Read app/core/watcher/watcher_helpers.py
+turn 2: assistant: "Now the test file."
+        tool_use: Read tests/test_watcher_helpers.py
+turn 3: assistant: "Now the manifest model."
+        tool_use: Read app/core/manifest.py
+```
+
+✅ **Right** — one assistant message, three `tool_use` blocks together, one turn boundary:
+```
+turn 1: assistant: "Reading the helper, its test, and the manifest model in parallel."
+        tool_use: Read app/core/watcher/watcher_helpers.py
+        tool_use: Read tests/test_watcher_helpers.py
+        tool_use: Read app/core/manifest.py
+```
+
+Same behavior applies to: Glob + Grep + Read together at the start of an investigation; multiple greps for sibling patterns (e.g. `patch("`, `from app.core.X import`); running `git status` + `git diff` + `git log` together; reading every file in `allowed_paths` before the first Edit. If the next call's input does NOT come from a previous call's output, it belongs in the same message.
+
 **New Python files** — read the type signatures of source functions *before* writing a new `.py` file so annotations are correct on the first attempt. The mypy hook will report errors immediately after Write — fix them before moving on.
 
 **New test files** — before writing a new `tests/test_*.py` file, read at least one existing sibling test file to understand the fixture patterns, mock conventions, and how real objects (not MagicMock) are constructed for this codebase. The pytest hook runs the file automatically after each edit — watch its output rather than triggering manual pytest runs.
