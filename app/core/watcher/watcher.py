@@ -88,6 +88,9 @@ _WORKER_HEARTBEAT_TIMEOUT_SECONDS = int(
 )
 _WORKER_KILL_GRACE_SECONDS = 5 * 60
 
+# S1192: extracted from literal used in 3 glob() calls (lines ~256, ~371, ~850)
+_MANIFEST_GLOB = "*/manifest.json"
+
 
 class _ProcessedTicket(NamedTuple):
     ticket_id: str
@@ -253,7 +256,7 @@ class Watcher:
         artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
         waiting = 0
         if artifacts_root.exists():
-            for mp in artifacts_root.glob("*/manifest.json"):
+            for mp in artifacts_root.glob(_MANIFEST_GLOB):
                 try:
                     m = ExecutionManifest.from_json(mp)
                 except (OSError, ValueError):
@@ -368,7 +371,7 @@ class Watcher:
         if not artifacts_root.exists():
             return
 
-        for manifest_path in sorted(artifacts_root.glob("*/manifest.json")):
+        for manifest_path in sorted(artifacts_root.glob(_MANIFEST_GLOB)):
             try:
                 manifest = ExecutionManifest.from_json(manifest_path)
             except Exception as exc:
@@ -777,7 +780,7 @@ class Watcher:
             )
             try:
                 last_write = log_path.stat().st_mtime
-            except (OSError, FileNotFoundError):
+            except OSError:
                 # Log not yet written — let the worker warm up. Process
                 # reap on later cycles handles the case where it never does.
                 continue
@@ -847,7 +850,7 @@ class Watcher:
         artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
         if not artifacts_root.exists():
             return False
-        for manifest_path in artifacts_root.glob("*/manifest.json"):
+        for manifest_path in artifacts_root.glob(_MANIFEST_GLOB):
             try:
                 manifest = ExecutionManifest.from_json(manifest_path)
                 if manifest.status == "WaitingForDeps":

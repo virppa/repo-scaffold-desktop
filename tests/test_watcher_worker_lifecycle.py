@@ -409,3 +409,97 @@ def test_terminate_overrun_covers_both_pools(tmp_path: Path) -> None:
 
     local_worker.process.terminate.assert_called_once()
     cloud_worker.process.terminate.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _wait_for_active_workers — no active workers (fast path)
+# ---------------------------------------------------------------------------
+
+
+def test_wait_for_active_workers_no_active_workers() -> None:
+    """When there are no active workers, _wait_for_active_workers must return
+    immediately without calling process.wait()."""
+    w = Watcher(linear_client=MagicMock(), repo_root=Path("/tmp"))
+
+    w._local_active.clear()
+    w._cloud_active.clear()
+
+    w._wait_for_active_workers()
+
+    # No crash, no calls — just returns early
+
+
+# ---------------------------------------------------------------------------
+# _wait_for_active_workers — normal exit (workers finish within timeout)
+# ---------------------------------------------------------------------------
+
+
+def test_wait_for_active_workers_normal_exit() -> None:
+    """Workers that exit normally within the 600s timeout should be waited
+    on and reaped cleanly."""
+    w = Watcher(linear_client=MagicMock(), repo_root=Path("/tmp"))
+
+    local_worker = _make_active_worker(ticket_id="WOR-LOCAL")
+    cloud_worker = _make_active_worker(ticket_id="WOR-CLOUD")
+    w._local_active.append(local_worker)
+    w._cloud_active.append(cloud_worker)
+
+    w._wait_for_active_workers()
+
+    # Both workers' process.wait() must have been called
+    local_worker.process.wait.assert_called_once_with(timeout=600)
+    cloud_worker.process.wait.assert_called_once_with(timeout=600)
+
+
+# ---------------------------------------------------------------------------
+# _emit_heartbeat — empty active list is no-op
+# ---------------------------------------------------------------------------
+
+
+def test_emit_heartbeat_no_active_workers() -> None:
+    """When there are no active workers, _emit_heartbeat must not log."""
+    w = Watcher(linear_client=MagicMock(), repo_root=Path("/tmp"))
+    w._local_active.clear()
+    w._cloud_active.clear()
+
+    w._emit_heartbeat()
+
+
+# ---------------------------------------------------------------------------
+# _emit_heartbeat — single local worker emits elapsed time
+# ---------------------------------------------------------------------------
+
+
+def test_emit_heartbeat_local_worker_emits_after_30s() -> None:
+    """A worker that has been running for >30s should emit an elapsed-time
+    log message. The first emission starts at the first 30-second boundary."""
+    w = Watcher(linear_client=MagicMock(), repo_root=Path("/tmp"))
+    worker = _make_active_worker(ticket_id="WOR-HEART")
+    # Backdate start_time so elapsed > 30s
+    worker.start_time = _time.monotonic() - 45
+    w._local_active.append(worker)
+
+    w._emit_heartbeat()
+
+    # Should have populated the heartbeat dict
+    assert "WOR-HEART" in w._heartbeat
+
+
+# ---------------------------------------------------------------------------
+# _emit_heartbeat — tick not incremented stays silent
+# ---------------------------------------------------------------------------
+
+
+def test_emit_heartbeat_tick_boundary_no_duplicate() -> None:
+    """When the worker's elapsed time hasn't crossed a new 30-second
+    boundary since the last heartbeat, the method must be a no-op."""
+    w = Watcher(linear_client=MagicMock(), repo_root=Path("/tmp"))
+    worker = _make_active_worker(ticket_id="WOR-BND")
+    worker.start_time = _time.monotonic() - 70  # 70s elapsed
+    w._local_active.append(worker)
+    w._heartbeat["WOR-BND"] = (70, 2)  # already ticked at 30s boundary
+
+    w._emit_heartbeat()
+
+    # Heartbeat should still be at tick 2 (no crossing to 3 at 70s)
+    assert w._heartbeat["WOR-BND"][1] == 2
