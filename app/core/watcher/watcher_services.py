@@ -31,6 +31,7 @@ _VLLM_FP8_CMD = (
     " --reasoning-parser qwen3 --enable-prefix-caching"
     " --language-model-only --safetensors-load-strategy prefetch"
     " --enable-auto-tool-choice --tool-call-parser qwen3_coder"
+    " --default-chat-template-kwargs '{\"preserve_thinking\": true}'"
 )
 
 

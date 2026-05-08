@@ -286,7 +286,8 @@ vLLM 0.20.0 serves the Anthropic Messages API natively (`/v1/messages`), so Clau
   --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \
   --reasoning-parser qwen3 --enable-prefix-caching \
   --language-model-only --safetensors-load-strategy prefetch \
-  --enable-auto-tool-choice --tool-call-parser qwen3_coder
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --default-chat-template-kwargs '{"preserve_thinking": true}'
 
 # 2. Launch Claude Code in a new terminal (Windows / cmd.exe)
 set ANTHROPIC_BASE_URL=http://localhost:8000
