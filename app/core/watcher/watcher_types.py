@@ -21,7 +21,13 @@ _ARTIFACTS_DIR = "artifacts"
 _PID_FILE = Path(_CLAUDE_DIR) / "watcher.pid"
 _IN_PROGRESS_STATE = "In Progress"
 _VLLM_PORT = 8000
-_VLLM_BASE_URL = f"http://localhost:{_VLLM_PORT}"
+# WOR-408: env-configurable vLLM endpoint. Defaults to localhost:8000 (the
+# normal WSL2 → Windows port-forwarding case). Override with
+# WATCHER_VLLM_BASE_URL when localhost forwarding is broken (e.g. mirrored
+# networking glitches resolve only the WSL guest IP from Windows).
+_VLLM_BASE_URL = os.environ.get(
+    "WATCHER_VLLM_BASE_URL", f"http://localhost:{_VLLM_PORT}"
+)
 _VLLM_SERVED_MODEL = "qwen3-coder"
 # Metrics label kept for backward compatibility with rows written before WOR-368;
 # Claude Code routes by tier via ANTHROPIC_DEFAULT_*_MODEL, so the on-the-wire
