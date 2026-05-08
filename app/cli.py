@@ -357,7 +357,7 @@ def _run_metrics(args: argparse.Namespace) -> int:
     return 1
 
 
-def _config_get(args: argparse.Namespace) -> int:
+def _config_get(_args: argparse.Namespace) -> int:
     prefs = PrefsStore.load()
     for field, value in prefs.model_dump().items():
         key = field.replace("_", "-")
