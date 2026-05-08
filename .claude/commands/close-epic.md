@@ -28,7 +28,13 @@ Classify as:
 - **CI pending** — checks still running (`state == "IN_PROGRESS"`), none failing
 - **CI passing but not merged** — all checks pass; auto-merge may not have triggered, flag for investigation
 
-**Step 1c — Block if anything is unmerged:**
+**Step 1c — Handle unmerged children by their Linear state:**
+
+Check the Linear state for each child with an open PR or no PR at all. Treat:
+- **Done / MergedToEpic** — count as merged, proceed (should already be handled in 1b).
+- **Cancelled / Duplicate** — skip silently; treat as intentionally dropped.
+- **Blocked** — prompt the human with the recommended "treat as won't-ship" action.
+- **Anything else** — stop and list the blocking items.
 
 If there are open PRs or children with no PR at all, stop:
 ```
@@ -42,6 +48,9 @@ CI passing, not merged (investigate auto-merge):
   WOR-Z: #<P> "<title>"
 No PR found:
   WOR-W — no PR was opened against <epic-branch>
+
+For open PRs: bring them to merge or close them. For Cancelled/Duplicate children, skip silently (no prompt). For Blocked children, prompt with the "treat as won't-ship" action.
+For "No PR found": implement or close the child ticket. For Blocked children, prompt with the "treat as won't-ship" action. For non-Blocked children, stop and list as blocking.
 
 Fix these before running /close-epic again.
 ```
