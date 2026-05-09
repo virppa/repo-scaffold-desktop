@@ -412,39 +412,34 @@ def test_terminate_overrun_covers_both_pools(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _wait_for_active_workers — no active workers (fast path)
+# wait_for_active_workers — no active workers (fast path)
 # ---------------------------------------------------------------------------
 
 
 def test_wait_for_active_workers_no_active_workers() -> None:
-    """When there are no active workers, _wait_for_active_workers must return
+    """When there are no active workers, wait_for_active_workers must return
     immediately without calling process.wait()."""
-    w = Watcher(linear_client=MagicMock(), repo_root=Path("/tmp"))
+    from app.core.watcher.watcher_signals import wait_for_active_workers
 
-    w._local_active.clear()
-    w._cloud_active.clear()
-
-    w._wait_for_active_workers()
+    wait_for_active_workers([], [])
 
     # No crash, no calls — just returns early
 
 
 # ---------------------------------------------------------------------------
-# _wait_for_active_workers — normal exit (workers finish within timeout)
+# wait_for_active_workers — normal exit (workers finish within timeout)
 # ---------------------------------------------------------------------------
 
 
 def test_wait_for_active_workers_normal_exit() -> None:
     """Workers that exit normally within the 600s timeout should be waited
     on and reaped cleanly."""
-    w = Watcher(linear_client=MagicMock(), repo_root=Path("/tmp"))
+    from app.core.watcher.watcher_signals import wait_for_active_workers
 
     local_worker = _make_active_worker(ticket_id="WOR-LOCAL")
     cloud_worker = _make_active_worker(ticket_id="WOR-CLOUD")
-    w._local_active.append(local_worker)
-    w._cloud_active.append(cloud_worker)
 
-    w._wait_for_active_workers()
+    wait_for_active_workers([local_worker], [cloud_worker])
 
     # Both workers' process.wait() must have been called
     local_worker.process.wait.assert_called_once_with(timeout=600)

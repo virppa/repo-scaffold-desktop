@@ -8,11 +8,11 @@ Usage (via CLI):
     python -m app.cli watcher [--worker-mode cloud|local]
 
 Worker modes:
-    cloud   — spawn claude with clean env (no ANTHROPIC_BASE_URL); routes to
+    cloud   â€” spawn claude with clean env (no ANTHROPIC_BASE_URL); routes to
               Anthropic API unmodified.
-    local   — spawn claude --model claude-sonnet-4-6 via LiteLLM proxy on
+    local   â€” spawn claude --model claude-sonnet-4-6 via LiteLLM proxy on
               localhost:8082; auto-starts proxy if not already running.
-    default — respect manifest.implementation_mode per ticket.
+    default â€” respect manifest.implementation_mode per ticket.
 """
 
 from __future__ import annotations
@@ -41,34 +41,15 @@ from .watcher_helpers import (
 )
 from .watcher_services import ServiceManager
 from .watcher_signals import (
-    _handle_signal_impl,
-)
-from .watcher_signals import (
-    cleanup_orphaned_worktrees as _cleanup_orphaned_worktrees,
-)
-from .watcher_signals import (
-    make_signal_handler as _make_signal_handler,
-)
-from .watcher_signals import (
-    maybe_warn_softstop_stuck as _maybe_warn_softstop_stuck,
-)
-from .watcher_signals import (
-    remove_pid_file as _remove_pid_file,
-)
-from .watcher_signals import (
-    remove_softstop_sentinel as _remove_softstop_sentinel,
-)
-from .watcher_signals import (
-    remove_stale_softstop_sentinel as _remove_stale_softstop_sentinel,
-)
-from .watcher_signals import (
-    softstop_sentinel_path as _softstop_sentinel_path,
-)
-from .watcher_signals import (
-    wait_for_active_workers as _wait_for_active_workers,
-)
-from .watcher_signals import (
-    write_pid_file as _write_pid_file,
+    cleanup_orphaned_worktrees,
+    make_signal_handler,
+    maybe_warn_softstop_stuck,
+    remove_pid_file,
+    remove_softstop_sentinel,
+    remove_stale_softstop_sentinel,
+    softstop_sentinel_path,
+    wait_for_active_workers,
+    write_pid_file,
 )
 from .watcher_subprocess import launch_worker
 from .watcher_tui import TrackedPR, TUIState, WatcherDisplay, WorkerState
@@ -89,7 +70,7 @@ from .watcher_worktrees import (
 logger = logging.getLogger(__name__)
 
 # WOR-381 + WOR-388: heartbeat-based stuck-worker detection. The metric is
-# "time since the worker's stream-json log file was last written" — a stuck
+# "time since the worker's stream-json log file was last written" â€” a stuck
 # worker (network hang, deadlocked vLLM, infinite tool-result wait) does not
 # emit new lines, while a slow-but-progressing worker keeps writing.
 # Wall-time bounds proved unworkable: app.db's 33-session distribution shows
@@ -98,12 +79,12 @@ logger = logging.getLogger(__name__)
 #
 # WOR-388 post-mortem (2026-05-05): the original 15-min threshold killed
 # WOR-369 (23m wall, 1.3M input) and WOR-362 (26m wall, 2.7M input)
-# mid-decode after their last log event. Both were legitimately reasoning —
+# mid-decode after their last log event. Both were legitimately reasoning â€”
 # log tails ended mid-Read tool-result with no `"type":"result"` event, and
 # both artifacts ended up tagged `no_diff_against_base` because the kill
 # preceded the worker's edit phase. Single-decode silences of 15-30 min are
 # plausible for effort=high refactor sessions on qwen3-coder when extended-
-# thinking blocks run long. Threshold raised to 90 min — well above any
+# thinking blocks run long. Threshold raised to 90 min â€” well above any
 # legitimate single-event-gap we have forensic evidence for (the WOR-322
 # 76-min total run had no individual gap exceeding ~10 min). 90 min still
 # catches genuinely-stuck workers within a single overnight cycle. Override
@@ -193,10 +174,13 @@ class Watcher:
 
     def run(self) -> None:
         """Start the poll loop. Blocks until SIGINT/SIGTERM."""
-        self._write_pid_file()
-        self._register_signals()
-        self._cleanup_orphaned_worktrees()
-        self._remove_stale_softstop_sentinel()
+        write_pid_file(self._repo_root)
+        handler = make_signal_handler(self._services, self)
+        signal.signal(signal.SIGINT, handler)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, handler)
+        cleanup_orphaned_worktrees(self._repo_root, cleanup_worktree)
+        remove_stale_softstop_sentinel(self._repo_root)
 
         if self._tui_mode:
             self._display = WatcherDisplay()
@@ -204,45 +188,6 @@ class Watcher:
         if self._mode in ("local", "default"):
             self._services.probe_vllm_health()
 
-        self._log_startup_info()
-
-        try:
-            while self._running:
-                self._check_softstop_request()
-                self._terminate_overrun_workers()
-                self._reap_finished_workers()
-                if self._display is not None:
-                    self._display.update_state(self._build_tui_state())
-                if not self._draining:
-                    self._promote_waiting_tickets()
-                local_has_capacity = len(self._local_active) < self._max_local_workers
-                cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
-                if not self._draining and (local_has_capacity or cloud_has_capacity):
-                    self._dispatch_next_ticket()
-                if not self._draining:
-                    self._check_epic_completion()
-                if self._draining and not (self._local_active or self._cloud_active):
-                    logger.info(
-                        "Drain complete — all workers finished. Exiting cleanly."
-                    )
-                    self._remove_softstop_sentinel()
-                    self._running = False
-                if not self._running:
-                    break
-                time.sleep(self._POLL_INTERVAL)
-                self._emit_idle_line()
-                self._emit_heartbeat()
-                self._maybe_warn_softstop_stuck()
-        finally:
-            self._wait_for_active_workers()
-            self._services.stop()
-            self._remove_pid_file()
-            if self._display is not None:
-                self._display.stop()
-            logger.info("Watcher stopped cleanly")
-
-    def _log_startup_info(self) -> None:
-        """Log startup pool sizes, omitting irrelevant entries per mode."""
         if self._mode == "cloud":
             logger.info(
                 "Watcher started (mode=%s, max_cloud_workers=%d)",
@@ -263,6 +208,57 @@ class Watcher:
                 self._max_cloud_workers,
             )
 
+        try:
+            while self._running:
+                if not self._draining:
+                    sentinel = softstop_sentinel_path(self._repo_root)
+                    if sentinel.exists():
+                        self._draining = True
+                        self._draining_since = time.monotonic()
+                        active = len(self._local_active) + len(self._cloud_active)
+                        logger.warning(
+                            "Soft-stop requested. Draining: %d worker(s). "
+                            "Daemon exits when all finish.",
+                            active,
+                        )
+                self._terminate_overrun_workers()
+                self._reap_pool(self._local_active)
+                self._reap_pool(self._cloud_active)
+                if self._display is not None:
+                    self._display.update_state(self._build_tui_state())
+                if not self._draining:
+                    self._promote_waiting_tickets()
+                local_has_capacity = len(self._local_active) < self._max_local_workers
+                cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
+                if not self._draining and (local_has_capacity or cloud_has_capacity):
+                    self._dispatch_next_ticket()
+                if not self._draining:
+                    self._check_epic_completion()
+                if self._draining and not (self._local_active or self._cloud_active):
+                    logger.info("Drain complete — all workers finished. Exiting.")
+                    remove_softstop_sentinel(self._repo_root)
+                    self._running = False
+                if not self._running:
+                    break
+                time.sleep(self._POLL_INTERVAL)
+                self._emit_idle_line()
+                self._emit_heartbeat()
+                if maybe_warn_softstop_stuck(
+                    self._draining,
+                    self._draining_since,
+                    self._softstop_warned_stuck,
+                    self._local_active,
+                    self._cloud_active,
+                ):
+                    self._softstop_warned_stuck = True
+        finally:
+            wait_for_active_workers(self._local_active, self._cloud_active)
+            self._services.stop()
+            remove_pid_file()
+            if self._display is not None:
+                self._display.stop()
+            logger.info("Watcher stopped cleanly")
+
     def _emit_idle_line(self) -> None:
         """Emit a single idle line when the watcher has nothing active to do.
 
@@ -282,7 +278,7 @@ class Watcher:
                 try:
                     m = ExecutionManifest.from_json(mp)
                 except (OSError, ValueError):
-                    # Missing, unreadable, or invalid manifest — skip silently;
+                    # Missing, unreadable, or invalid manifest â€” skip silently;
                     # idle-line counter does not need to surface every malformed file.
                     continue
                 if m.status == "WaitingForDeps":
@@ -294,7 +290,7 @@ class Watcher:
         self._last_idle_state = state
 
         logger.info(
-            "Watcher idle — %d/%d local, %d/%d cloud, %d waiting for blockers, "
+            "Watcher idle â€” %d/%d local, %d/%d cloud, %d waiting for blockers, "
             "polling every %ds",
             now_local,
             self._max_local_workers,
@@ -322,7 +318,7 @@ class Watcher:
                     continue
                 self._heartbeat[key] = (elapsed, new_tick)
             else:
-                # First emission — start at the first 30-second boundary
+                # First emission â€” start at the first 30-second boundary
                 tick = int(elapsed / 30)
                 if tick < 1:
                     continue
@@ -427,7 +423,7 @@ class Watcher:
 
             if self._all_blockers_satisfied(manifest, states):
                 logger.info(
-                    "All blockers for %s satisfied — promoting to ReadyForLocal",
+                    "All blockers for %s satisfied â€” promoting to ReadyForLocal",
                     manifest.ticket_id,
                 )
                 self._transition_waiting_manifest(
@@ -471,7 +467,7 @@ class Watcher:
         state_type: str,
     ) -> None:
         logger.warning(
-            "Blocker %s for %s is %s — moving dependent to Backlog",
+            "Blocker %s for %s is %s â€” moving dependent to Backlog",
             blocker_id,
             manifest.ticket_id,
             state_type,
@@ -483,7 +479,7 @@ class Watcher:
         try:
             msg = (
                 f"Predecessor {blocker_id} moved to {state_type}"
-                " — manual intervention required."
+                " â€” manual intervention required."
             )
             self._linear.post_comment(manifest.linear_id, msg)
         except Exception as exc:
@@ -514,7 +510,7 @@ class Watcher:
             self._linear.post_comment(
                 manifest.linear_id,
                 f"All predecessors merged. `{manifest.ticket_id}` promoted to "
-                f"ReadyForLocal — watcher will pick up on next poll.",
+                f"ReadyForLocal â€” watcher will pick up on next poll.",
             )
         except Exception as exc:
             logger.warning(
@@ -544,7 +540,7 @@ class Watcher:
             ]
             if any(label.lower() == "spike" for label in labels):
                 logger.warning(
-                    "Skipping %s — Spike label detected; implement interactively",
+                    "Skipping %s â€” Spike label detected; implement interactively",
                     ticket_id,
                 )
                 continue
@@ -561,15 +557,15 @@ class Watcher:
         # Prerequisite checks
         open_blockers = self._linear.get_open_blockers(linear_id)
         if open_blockers:
-            logger.info("Skipping %s — open blockers: %s", ticket_id, open_blockers)
+            logger.info("Skipping %s â€” open blockers: %s", ticket_id, open_blockers)
             return
 
-        # Manifest-based blocker check — defense-in-depth alongside Linear check.
+        # Manifest-based blocker check â€” defense-in-depth alongside Linear check.
         for blocker_id in manifest.blocked_by_tickets:
             state_type = self._linear.get_issue_state_type(blocker_id)
             if state_type not in DONE_STATE_TYPES:
                 logger.info(
-                    "Skipping %s — manifest declares unmerged blocker %s (state=%s)",
+                    "Skipping %s â€” manifest declares unmerged blocker %s (state=%s)",
                     ticket_id,
                     blocker_id,
                     state_type,
@@ -581,7 +577,7 @@ class Watcher:
         if conflicts:
             reason = f"overlap:{','.join(conflicts)}"
             reason_msg = (
-                "Deferring %s — allowed_paths overlap with active workers: %s"
+                "Deferring %s â€” allowed_paths overlap with active workers: %s"
                 % (ticket_id, conflicts)
             )
             if suppress_dedup(ticket_id, reason, reason_msg, self._last_deferral_state):
@@ -594,7 +590,7 @@ class Watcher:
 
         if effective_mode == "local":
             if len(self._local_active) >= self._max_local_workers:
-                reason_msg = "Deferring %s — local pool full (%d/%d)" % (
+                reason_msg = "Deferring %s â€” local pool full (%d/%d)" % (
                     ticket_id,
                     len(self._local_active),
                     self._max_local_workers,
@@ -609,7 +605,7 @@ class Watcher:
                 return
         else:
             if len(self._cloud_active) >= self._max_cloud_workers:
-                reason_msg = "Deferring %s — cloud pool full (%d/%d)" % (
+                reason_msg = "Deferring %s â€” cloud pool full (%d/%d)" % (
                     ticket_id,
                     len(self._cloud_active),
                     self._max_cloud_workers,
@@ -625,7 +621,7 @@ class Watcher:
 
         if effective_mode == "local":
             if not self._services.probe_vllm_health():
-                reason_msg = "Deferring %s — vLLM not ready yet" % ticket_id
+                reason_msg = "Deferring %s â€” vLLM not ready yet" % ticket_id
                 if suppress_dedup(
                     ticket_id,
                     "vllm_not_ready",
@@ -646,7 +642,7 @@ class Watcher:
             manifest.ticket_state_map.in_progress_local,
             ticket_id,
         )
-        logger.info("Starting worker for %s — mode=%s", ticket_id, effective_mode)
+        logger.info("Starting worker for %s â€” mode=%s", ticket_id, effective_mode)
 
         backed_up_plans = backup_plan_files()
         process = launch_worker(
@@ -676,7 +672,7 @@ class Watcher:
     def _reap_pool(self, workers: list[ActiveWorker]) -> str:
         """Poll each worker; finalize completed ones in-place.
 
-        Mutates ``workers`` directly — finished workers are removed from the
+        Mutates ``workers`` directly â€” finished workers are removed from the
         list even if their ``finalize_worker`` call raises. This prevents
         ghost slots that would otherwise block future dispatch (WOR-334).
 
@@ -689,7 +685,7 @@ class Watcher:
             rc = worker.process.poll()
             if rc is None:
                 continue
-            # Worker finished — mark its slot for release BEFORE finalize so
+            # Worker finished â€” mark its slot for release BEFORE finalize so
             # an exception inside finalize cannot leak the slot.
             finished_indices.append(i)
             try:
@@ -698,7 +694,7 @@ class Watcher:
                 logger.error(
                     "finalize_worker raised for %s: %s. Worker slot freed; "
                     "result.json / last_failure.json may be incomplete and "
-                    "Linear state may not have been advanced — investigate "
+                    "Linear state may not have been advanced â€” investigate "
                     "manually.",
                     worker.ticket_id,
                     exc,
@@ -765,23 +761,19 @@ class Watcher:
         )
         return outcome
 
-    def _reap_finished_workers(self) -> None:
-        self._reap_pool(self._local_active)
-        self._reap_pool(self._cloud_active)
-
     def _terminate_overrun_workers(self) -> None:
         """Heartbeat-based stuck-worker detection (WOR-381).
 
         Each worker tees its stream-json log to
         ``<worktree>/.claude/worker_<ticket_lower>.log``. While the model is
-        making any progress — emitting tool calls, receiving tool results,
-        producing assistant text — the file's mtime advances. A genuinely
+        making any progress â€” emitting tool calls, receiving tool results,
+        producing assistant text â€” the file's mtime advances. A genuinely
         stuck worker (vLLM unresponsive, tool subprocess hung, infinite
         deadlock) stops writing.
 
         Two-stage shutdown:
 
-        1. Log idle (now − mtime) exceeds ``_WORKER_HEARTBEAT_TIMEOUT_SECONDS``
+        1. Log idle (now âˆ’ mtime) exceeds ``_WORKER_HEARTBEAT_TIMEOUT_SECONDS``
            and the process is still alive: send SIGTERM via
            ``process.terminate()``; set ``terminated_at`` to wall-clock now.
         2. ``terminated_at`` is set and the grace period has passed without
@@ -790,7 +782,7 @@ class Watcher:
            handles the eventual exit code.
 
         If the log file does not exist yet (worker just dispatched), the
-        check is skipped — natural process reap handles the case where the
+        check is skipped â€” natural process reap handles the case where the
         worker died before writing anything.
         """
         now_wall = time.time()
@@ -803,7 +795,7 @@ class Watcher:
             try:
                 last_write = log_path.stat().st_mtime
             except OSError:
-                # Log not yet written — let the worker warm up. Process
+                # Log not yet written â€” let the worker warm up. Process
                 # reap on later cycles handles the case where it never does.
                 continue
 
@@ -815,7 +807,7 @@ class Watcher:
                 and worker.process.poll() is None
             ):
                 logger.warning(
-                    "Worker %s heartbeat stalled — log idle for %.0fs "
+                    "Worker %s heartbeat stalled â€” log idle for %.0fs "
                     "(threshold %ds). Sending SIGTERM. SIGKILL grace: %ds.",
                     worker.ticket_id,
                     idle_seconds,
@@ -835,7 +827,7 @@ class Watcher:
                 and worker.process.poll() is None
             ):
                 logger.error(
-                    "Worker %s did not exit within %ds of SIGTERM — sending SIGKILL.",
+                    "Worker %s did not exit within %ds of SIGTERM â€” sending SIGKILL.",
                     worker.ticket_id,
                     _WORKER_KILL_GRACE_SECONDS,
                 )
@@ -867,46 +859,6 @@ class Watcher:
     # ------------------------------------------------------------------
     # Epic completion detection
     # ------------------------------------------------------------------
-
-    def _has_waiting_deps(self) -> bool:
-        artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
-        if not artifacts_root.exists():
-            return False
-        for manifest_path in artifacts_root.glob(_MANIFEST_GLOB):
-            try:
-                manifest = ExecutionManifest.from_json(manifest_path)
-                if manifest.status == "WaitingForDeps":
-                    return True
-            except Exception as exc:
-                logger.warning("Could not read manifest at %s: %s", manifest_path, exc)
-        return False
-
-    def _lookup_pr_url(self, branch: str) -> str:
-        try:
-            cmd = [
-                "gh",
-                "pr",
-                "list",
-                "--head",
-                branch,
-                "--json",
-                "url",
-                "--jq",
-                ".[0].url",
-            ]
-            result = subprocess.run(  # nosec B603 B607
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=str(self._repo_root),
-                check=False,
-            )
-            url = result.stdout.strip()
-            return url if url else "(not found)"
-        except Exception:
-            return "(not found)"
-
     def _check_epic_completion(self) -> None:
         if self._local_active or self._cloud_active:
             return
@@ -917,8 +869,14 @@ class Watcher:
             return
         if ready:
             return
-        if self._has_waiting_deps():
-            return
+        artifacts = self._repo_root / ".claude" / "artifacts"
+        if artifacts.exists():
+            for mp in artifacts.glob("manifest.json"):
+                try:
+                    if ExecutionManifest.from_json(mp).status == "WaitingForDeps":
+                        return
+                except Exception as exc:
+                    logger.warning("Could not read manifest at %s: %s", mp, exc)
 
         if self._processed_tickets:
             state_key = (
@@ -945,9 +903,34 @@ class Watcher:
                 logger.info("All sub-tickets processed — epic complete")
             logger.info("%-15s  %-55s  %s", "Ticket", "PR URL", "Elapsed")
             for t in self._processed_tickets:
-                pr_url = (
-                    self._lookup_pr_url(t.worker_branch) if t.succeeded else "(failed)"
-                )
+                if not t.succeeded:
+                    pr_url = "(failed)"
+                else:
+                    try:
+                        cmd = [
+                            "gh",
+                            "pr",
+                            "list",
+                            "--head",
+                            t.worker_branch,
+                            "--json",
+                            "url",
+                            "--jq",
+                            ".[0].url",
+                        ]
+                        result = subprocess.run(  # nosec B603 B607
+                            cmd,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            cwd=str(self._repo_root),
+                            check=False,
+                        )
+                        pr_url = result.stdout.strip()
+                        pr_url = pr_url if pr_url else "(not found)"
+                    except Exception:
+                        pr_url = "(not found)"
+
                 logger.info("%-15s  %-55s  %.0fs", t.ticket_id, pr_url, t.elapsed)
             if epic_id and not failed:
                 try:
@@ -1027,69 +1010,3 @@ class Watcher:
     # ------------------------------------------------------------------
     # Graceful shutdown
     # ------------------------------------------------------------------
-
-    def _register_signals(self) -> None:
-        handler = _make_signal_handler(self._services, self)
-        signal.signal(signal.SIGINT, handler)
-        if hasattr(signal, "SIGTERM"):
-            signal.signal(signal.SIGTERM, handler)
-
-    def _handle_signal(self, signum: int, frame: object) -> None:
-        _handle_signal_impl(self._services, self, signum, frame)
-
-    def _wait_for_active_workers(self) -> None:
-        _wait_for_active_workers(self._local_active, self._cloud_active)
-
-    # ------------------------------------------------------------------
-    # PID file
-    # ------------------------------------------------------------------
-
-    def _write_pid_file(self) -> None:
-        _write_pid_file(self._repo_root)
-
-    def _remove_pid_file(self) -> None:
-        _remove_pid_file()
-
-    def _cleanup_orphaned_worktrees(self) -> None:
-        _cleanup_orphaned_worktrees(self._repo_root, cleanup_worktree)
-
-    # ------------------------------------------------------------------
-    # Soft-stop / drain mode (WOR-333)
-    # ------------------------------------------------------------------
-
-    def _softstop_sentinel_path(self) -> Path:
-        return _softstop_sentinel_path(self._repo_root)
-
-    def _remove_stale_softstop_sentinel(self) -> None:
-        """Delete any sentinel left over from a prior daemon run."""
-        _remove_stale_softstop_sentinel(self._repo_root)
-
-    def _remove_softstop_sentinel(self) -> None:
-        """Delete the sentinel during graceful drain exit."""
-        _remove_softstop_sentinel(self._repo_root)
-
-    def _check_softstop_request(self) -> None:
-        """Detect the soft-stop sentinel and enter drain mode."""
-        if self._draining:
-            return
-        if not _softstop_sentinel_path(self._repo_root).exists():
-            return
-        self._draining = True
-        self._draining_since = time.monotonic()
-        active = len(self._local_active) + len(self._cloud_active)
-        logger.warning(
-            "Soft-stop requested. Draining: %d worker(s) remaining. "
-            "Daemon will exit when all finish.",
-            active,
-        )
-
-    def _maybe_warn_softstop_stuck(self) -> None:
-        """Log a one-shot WARNING if drain has been pending too long."""
-        if _maybe_warn_softstop_stuck(
-            self._draining,
-            self._draining_since,
-            self._softstop_warned_stuck,
-            self._local_active,
-            self._cloud_active,
-        ):
-            self._softstop_warned_stuck = True

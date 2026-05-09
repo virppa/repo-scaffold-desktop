@@ -651,11 +651,9 @@ def test_check_epic_completion_posts_comment_and_exits(tmp_path: Path) -> None:
     ]
 
     with (
-        patch.object(w, "_has_waiting_deps", return_value=False),
-        patch.object(
-            w, "_lookup_pr_url", return_value="https://github.com/org/repo/pull/1"
-        ),
+        patch("app.core.watcher.watcher.subprocess.run") as mock_run,
     ):
+        mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/1")
         w._check_epic_completion()
 
     linear_mock.post_comment.assert_called_once_with(
@@ -687,11 +685,9 @@ def test_check_epic_completion_no_epic_shutdown_keeps_running(
     ]
 
     with (
-        patch.object(w, "_has_waiting_deps", return_value=False),
-        patch.object(
-            w, "_lookup_pr_url", return_value="https://github.com/org/repo/pull/1"
-        ),
+        patch("app.core.watcher.watcher.subprocess.run") as mock_run,
     ):
+        mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/1")
         w._check_epic_completion()
 
     linear_mock.post_comment.assert_called_once()
@@ -705,8 +701,7 @@ def test_check_epic_completion_no_tickets_processed_no_comment_exits(
     linear_mock.list_ready_for_local.return_value = []
     w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
 
-    with patch.object(w, "_has_waiting_deps", return_value=False):
-        w._check_epic_completion()
+    w._check_epic_completion()
 
     linear_mock.post_comment.assert_not_called()
     assert w._running is True
@@ -719,8 +714,7 @@ def test_check_epic_completion_empty_startup_keeps_polling(tmp_path: Path) -> No
 
     assert not w._processed_tickets
 
-    with patch.object(w, "_has_waiting_deps", return_value=False):
-        w._check_epic_completion()
+    w._check_epic_completion()
 
     assert w._running is True
 
@@ -751,9 +745,8 @@ def test_epic_completion_memoization_suppresses_duplicate(
         )
     ]
 
-    with patch.object(w, "_has_waiting_deps", return_value=False):
-        w._check_epic_completion()
-        w._check_epic_completion()
+    w._check_epic_completion()
+    w._check_epic_completion()
 
     linear_mock.post_comment.assert_called_once()
 
@@ -779,18 +772,17 @@ def test_epic_completion_re_emit_on_state_change(
         )
     ]
 
-    with patch.object(w, "_has_waiting_deps", return_value=False):
-        w._check_epic_completion()
-        # State changed — add a second ticket
-        w._processed_tickets.append(
-            _ProcessedTicket(
-                ticket_id="WOR-11",
-                epic_id="WOR-96",
-                worker_branch="wor-11-test-ticket",
-                elapsed=60.0,
-            )
+    w._check_epic_completion()
+    # State changed — add a second ticket
+    w._processed_tickets.append(
+        _ProcessedTicket(
+            ticket_id="WOR-11",
+            epic_id="WOR-96",
+            worker_branch="wor-11-test-ticket",
+            elapsed=60.0,
         )
-        w._check_epic_completion()
+    )
+    w._check_epic_completion()
 
     assert linear_mock.post_comment.call_count == 2
 
@@ -817,9 +809,8 @@ def test_epic_completion_failed_ticket_blocks_comment(
         )
     ]
 
-    with patch.object(w, "_has_waiting_deps", return_value=False):
-        w._check_epic_completion()
-        w._check_epic_completion()
+    w._check_epic_completion()
+    w._check_epic_completion()
 
     linear_mock.post_comment.assert_not_called()
 
