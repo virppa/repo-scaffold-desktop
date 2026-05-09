@@ -23,19 +23,10 @@ from .watcher_types import _VLLM_HOST, _VLLM_PORT, _VLLM_SERVED_MODEL
 
 logger = logging.getLogger(__name__)
 
-# WOR-415: preserve_thinking via per-user-cache indirection. WOR-408 tried
-# to add --default-chat-template-kwargs '{"preserve_thinking": true}' directly
-# to the auto-start command but the JSON literal was mangled by the
-# multi-shell quoting chain (subprocess.list2cmdline → wt.exe → wsl → bash).
-# We now write the kwargs JSON inside WSL via `bash -c "tee …"` (stdin-piped,
-# no shell quoting of the JSON content), and have the inner-most bash read
-# it via $(cat …) at vLLM startup. The cat substitution happens inside the
-# spawned bash where it's safe. Path is under WSL ~/.cache/ rather than /tmp
-# to avoid shared-tmpdir hazards (bandit B108) — no symlink-attack surface
-# on a per-user XDG cache path.
-_VLLM_KWARGS_PATH = "~/.cache/repo-scaffold/qwen3_chat_template_kwargs.json"
-_VLLM_KWARGS_JSON = '{"preserve_thinking": true}'
-
+# Full canonical vLLM serve command — matches the operator-facing version
+# in CLAUDE.md / README.md / start-{ticket,epic}.md. Used for the warning
+# log line so operators can copy-paste it. NOT used directly by the
+# auto-start path — see _VLLM_AUTOSTART_CMD below.
 _VLLM_FP8_CMD = (
     "/home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4"
     " --served-model-name qwen3-coder"
@@ -44,44 +35,77 @@ _VLLM_FP8_CMD = (
     " --reasoning-parser qwen3 --enable-prefix-caching"
     " --language-model-only --safetensors-load-strategy prefetch"
     " --enable-auto-tool-choice --tool-call-parser qwen3_coder"
-    f' --default-chat-template-kwargs "$(cat {_VLLM_KWARGS_PATH})"'
+    " --default-chat-template-kwargs '{\"preserve_thinking\": true}'"
 )
 
+# WOR-415 (script-file rewrite): WOR-408 and the first WOR-415 attempt both
+# tried to pass the JSON literal through the multi-shell auto-start chain
+# (subprocess.list2cmdline → wt.exe → wsl → bash) — both failed because
+# successive shells strip or mis-escape the inner quotes. We now write the
+# entire vLLM invocation to a bash script inside WSL and have the auto-start
+# tab simply run that script. Bash reads the script directly from disk, so
+# its single-quoted JSON survives — no multi-shell argv ever touches the
+# JSON content. Path under ~/.cache/ rather than /tmp to satisfy bandit
+# B108 (per-user XDG cache, no symlink-attack surface).
+_VLLM_SCRIPT_PATH = "~/.cache/repo-scaffold/start_vllm.sh"
 
-def _write_vllm_kwargs_file() -> None:
-    """Write ``_VLLM_KWARGS_JSON`` to ``_VLLM_KWARGS_PATH`` inside WSL.
+# Bash script body. Mirrors _VLLM_FP8_CMD but as a script with backslash
+# line continuations. Bash parses single-quoted strings literally, so the
+# JSON survives intact when bash reads the script from disk.
+_VLLM_SCRIPT_BODY = (
+    "#!/bin/bash\n"
+    "exec /home/antti/vllm-env/bin/vllm serve"
+    " /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \\\n"
+    "  --served-model-name qwen3-coder \\\n"
+    "  --max-model-len 262144 --max-num-seqs 16 \\\n"
+    "  --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \\\n"
+    "  --reasoning-parser qwen3 --enable-prefix-caching \\\n"
+    "  --language-model-only --safetensors-load-strategy prefetch \\\n"
+    "  --enable-auto-tool-choice --tool-call-parser qwen3_coder \\\n"
+    "  --default-chat-template-kwargs '{\"preserve_thinking\": true}'\n"
+)
 
-    Pipes the JSON via stdin into a `bash -c "mkdir -p … && tee …"` invocation
-    so (a) the cache directory is created if missing and (b) the JSON content
-    never appears in any shell command line — only the path does, and that
-    has no special characters. Avoids the quoting chain that defeated
-    WOR-408. The auto-start command's ``$(cat …)`` substitution reads this
-    file at vLLM startup.
+# What the spawned terminal actually runs — just invokes the script. No
+# JSON in argv at any layer of the multi-shell chain.
+_VLLM_AUTOSTART_CMD = f"bash {_VLLM_SCRIPT_PATH}"
 
-    On failure (wsl.exe missing, tee error, timeout) we log a warning and
-    continue — the terminal will still open and vLLM will fail with a clear
-    "no such file" error from cat, which the operator can fix manually.
+
+def _write_vllm_script_file() -> None:
+    """Write ``_VLLM_SCRIPT_BODY`` to ``_VLLM_SCRIPT_PATH`` inside WSL.
+
+    Pipes the script body via stdin into a `bash -c "mkdir -p … && tee … &&
+    chmod +x …"` invocation. The script content travels via stdin (never as
+    an argv string), so no multi-shell argv ever touches the JSON literal.
+
+    On failure (wsl.exe missing, tee error, timeout) log a warning and
+    continue — the auto-start terminal will then fail with a clearer
+    "no such file" error than a Python exception, and the operator can
+    fall back to the canonical command in CLAUDE.md.
     """
-    bash_cmd = f"mkdir -p $(dirname {_VLLM_KWARGS_PATH}) && tee {_VLLM_KWARGS_PATH}"
+    bash_cmd = (
+        f"mkdir -p $(dirname {_VLLM_SCRIPT_PATH}) && "
+        f"tee {_VLLM_SCRIPT_PATH} > /dev/null && "
+        f"chmod +x {_VLLM_SCRIPT_PATH}"
+    )
     try:
         subprocess.run(  # nosec B603 B607
             ["wsl", "bash", "-c", bash_cmd],
-            input=_VLLM_KWARGS_JSON.encode("utf-8"),
+            input=_VLLM_SCRIPT_BODY.encode("utf-8"),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True,
             timeout=10,
         )
         logger.debug(
-            "Wrote vLLM chat-template kwargs to %s (preserve_thinking=true)",
-            _VLLM_KWARGS_PATH,
+            "Wrote vLLM auto-start script to %s (preserve_thinking=true)",
+            _VLLM_SCRIPT_PATH,
         )
     except FileNotFoundError:
         logger.warning("wsl.exe not found — vLLM will start without preserve_thinking")
     except (OSError, subprocess.SubprocessError) as exc:
         logger.warning(
             "Could not write %s — vLLM may start without preserve_thinking: %s",
-            _VLLM_KWARGS_PATH,
+            _VLLM_SCRIPT_PATH,
             exc,
         )
 
@@ -140,13 +164,13 @@ class ServiceManager:
     def _open_vllm_terminal(self) -> None:
         """Open a new Windows Terminal tab running the vLLM FP8 command in WSL2.
 
-        Writes the chat-template kwargs JSON to ``_VLLM_KWARGS_PATH`` first so
-        the auto-start command's ``$(cat …)`` substitution finds it (WOR-415).
-        If the kwargs write fails the terminal still opens — vLLM will then
-        fail to start with a clear "no such file" error from cat, which the
-        operator can fix manually.
+        Writes the auto-start script to ``_VLLM_SCRIPT_PATH`` first so the
+        terminal can simply ``bash <script>`` it. The script-file approach
+        bypasses the multi-shell quoting chain that defeated WOR-408 and the
+        first WOR-415 attempt — bash reads the script directly from disk, so
+        single-quoted JSON survives intact (WOR-415 follow-up).
         """
-        _write_vllm_kwargs_file()
+        _write_vllm_script_file()
         try:
             subprocess.Popen(  # nosec B603 B607
                 [
@@ -159,7 +183,7 @@ class ServiceManager:
                     "bash",
                     "-i",
                     "-c",
-                    _VLLM_FP8_CMD,
+                    _VLLM_AUTOSTART_CMD,
                 ],
                 creationflags=(
                     getattr(subprocess, "DETACHED_PROCESS", 0)
