@@ -16,11 +16,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.watcher.watcher_services import (
+    _VLLM_AUTOSTART_CMD,
     _VLLM_FP8_CMD,
-    _VLLM_KWARGS_JSON,
-    _VLLM_KWARGS_PATH,
+    _VLLM_SCRIPT_BODY,
+    _VLLM_SCRIPT_PATH,
     ServiceManager,
-    _write_vllm_kwargs_file,
+    _write_vllm_script_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -100,7 +101,7 @@ def test_probe_vllm_health_opens_terminal_on_windows(tmp_path: Path) -> None:
         patch("sys.platform", "win32"),
         patch("subprocess.Popen") as mock_popen,
         patch(
-            "app.core.watcher.watcher_services._write_vllm_kwargs_file"
+            "app.core.watcher.watcher_services._write_vllm_script_file"
         ) as mock_write,
     ):
         mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
@@ -110,7 +111,7 @@ def test_probe_vllm_health_opens_terminal_on_windows(tmp_path: Path) -> None:
     cmd = mock_popen.call_args[0][0]
     assert "wt.exe" in cmd
     assert "wsl" in cmd
-    # WOR-415: kwargs file must be written before the terminal spawns
+    # WOR-415: script file must be written before the terminal spawns
     mock_write.assert_called_once()
 
 
@@ -120,7 +121,7 @@ def test_probe_vllm_health_opens_terminal_only_once(tmp_path: Path) -> None:
         patch("http.client.HTTPConnection") as mock_conn_cls,
         patch("sys.platform", "win32"),
         patch("subprocess.Popen") as mock_popen,
-        patch("app.core.watcher.watcher_services._write_vllm_kwargs_file"),
+        patch("app.core.watcher.watcher_services._write_vllm_script_file"),
     ):
         mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
         mgr.probe_vllm_health()
@@ -135,91 +136,111 @@ def test_probe_vllm_health_handles_missing_wt_exe(tmp_path: Path) -> None:
         patch("http.client.HTTPConnection") as mock_conn_cls,
         patch("sys.platform", "win32"),
         patch("subprocess.Popen", side_effect=FileNotFoundError("wt.exe not found")),
-        patch("app.core.watcher.watcher_services._write_vllm_kwargs_file"),
+        patch("app.core.watcher.watcher_services._write_vllm_script_file"),
     ):
         mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
         mgr.probe_vllm_health()  # must not raise
 
 
 # ---------------------------------------------------------------------------
-# WOR-415: preserve_thinking via temp-file indirection
+# WOR-415 (script-file approach): preserve_thinking via on-disk bash script
 # ---------------------------------------------------------------------------
 
 
-def test_vllm_fp8_cmd_references_kwargs_file() -> None:
-    """The auto-start command must use $(cat <path>) substitution rather than
-    inlining the JSON literal — WOR-408 proved JSON literals don't survive the
-    multi-shell quoting chain (subprocess → wt.exe → wsl → bash)."""
-    assert _VLLM_KWARGS_PATH in _VLLM_FP8_CMD
-    assert f"$(cat {_VLLM_KWARGS_PATH})" in _VLLM_FP8_CMD
-    assert "--default-chat-template-kwargs" in _VLLM_FP8_CMD
-    # The literal JSON string must NOT appear in the command — that's the
-    # exact thing that broke in WOR-408.
-    assert _VLLM_KWARGS_JSON not in _VLLM_FP8_CMD
+def test_vllm_autostart_cmd_invokes_script_only() -> None:
+    """The auto-start command passed to wt.exe → wsl → bash must be JUST
+    `bash <script>` — no JSON literal anywhere in the multi-shell argv chain.
+    This is the entire point of the script-file approach: the JSON travels
+    only via the on-disk script that bash reads directly."""
+    assert _VLLM_AUTOSTART_CMD == f"bash {_VLLM_SCRIPT_PATH}"
+    # Sanity: no JSON, no quoting tricks
+    assert "preserve_thinking" not in _VLLM_AUTOSTART_CMD
+    assert "$(" not in _VLLM_AUTOSTART_CMD
 
 
-def test_vllm_kwargs_json_is_valid_and_enables_preserve_thinking() -> None:
-    """The kwargs JSON must parse and set preserve_thinking=true — anything
-    else would silently disable WOR-400's main feature on the auto-start path."""
-    payload = json.loads(_VLLM_KWARGS_JSON)
-    assert payload == {"preserve_thinking": True}
+def test_vllm_script_body_contains_full_invocation_with_preserve_thinking() -> None:
+    """The script body must be a complete vLLM serve command including the
+    preserve_thinking kwarg as a single-quoted JSON literal. Bash parses
+    single-quoted strings literally, so the JSON survives intact when bash
+    reads the script from disk."""
+    assert _VLLM_SCRIPT_BODY.startswith("#!/bin/bash\n")
+    assert "vllm serve" in _VLLM_SCRIPT_BODY
+    assert "qwen3-coder" in _VLLM_SCRIPT_BODY
+    # Critical: JSON literal must be single-quoted in the script
+    assert "--default-chat-template-kwargs '{\"preserve_thinking\": true}'" in (
+        _VLLM_SCRIPT_BODY
+    )
 
 
-def test_write_vllm_kwargs_file_pipes_json_via_stdin() -> None:
-    """Writing must pipe JSON via stdin to `wsl bash -c '... tee ...'` — never
-    a shell command interpolating the JSON content, which would re-introduce
-    WOR-408's quoting bug."""
+def test_vllm_fp8_cmd_is_canonical_full_command() -> None:
+    """_VLLM_FP8_CMD remains the canonical full command (used in operator-
+    facing warning logs and matches the version in CLAUDE.md). It is NOT
+    the auto-start command — that is _VLLM_AUTOSTART_CMD."""
+    assert "vllm serve" in _VLLM_FP8_CMD
+    # The canonical command DOES include the JSON literal — it's meant for
+    # operators to copy-paste into a single bash shell where JSON quoting
+    # works fine.
+    assert "preserve_thinking" in _VLLM_FP8_CMD
+    # And it is NOT the auto-start command
+    assert _VLLM_FP8_CMD != _VLLM_AUTOSTART_CMD
+
+
+def test_write_vllm_script_file_pipes_body_via_stdin() -> None:
+    """Writing must pipe the script body via stdin to `wsl bash -c '... tee
+    ...'` — never a shell command interpolating the script content. This is
+    what makes the JSON content survive: tee writes stdin bytes literally to
+    the file."""
     with patch("subprocess.run") as mock_run:
-        _write_vllm_kwargs_file()
+        _write_vllm_script_file()
 
     mock_run.assert_called_once()
     call = mock_run.call_args
     argv = call[0][0]
     assert argv[:3] == ["wsl", "bash", "-c"]
-    # The bash command references the path but NOT the JSON content
     bash_cmd = argv[3]
-    assert _VLLM_KWARGS_PATH in bash_cmd
+    # The bash command references the path and uses tee + chmod, but the
+    # script content (with JSON) does NOT appear in the command string.
+    assert _VLLM_SCRIPT_PATH in bash_cmd
     assert "tee" in bash_cmd
-    assert "mkdir -p" in bash_cmd  # ensure cache dir exists
-    assert _VLLM_KWARGS_JSON not in bash_cmd  # JSON travels via stdin, not argv
-    # JSON arrives via stdin
-    assert call.kwargs["input"] == _VLLM_KWARGS_JSON.encode("utf-8")
-    # check=True so a tee failure raises CalledProcessError, which we catch
+    assert "chmod +x" in bash_cmd  # script must be executable
+    assert "mkdir -p" in bash_cmd  # cache dir auto-created
+    assert "preserve_thinking" not in bash_cmd  # JSON travels via stdin only
+    # Script body arrives via stdin
+    assert call.kwargs["input"] == _VLLM_SCRIPT_BODY.encode("utf-8")
     assert call.kwargs.get("check") is True
 
 
-def test_write_vllm_kwargs_file_handles_missing_wsl(caplog: Any) -> None:
-    """If wsl.exe is not installed, log a warning and continue — vLLM will
-    fail with a clearer error from cat than from a Python exception."""
+def test_write_vllm_script_file_handles_missing_wsl(caplog: Any) -> None:
+    """If wsl.exe is not installed, log a warning and continue."""
     import logging
 
     with (
         patch("subprocess.run", side_effect=FileNotFoundError("wsl.exe missing")),
         caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_services"),
     ):
-        _write_vllm_kwargs_file()  # must not raise
+        _write_vllm_script_file()  # must not raise
 
     assert "wsl.exe not found" in caplog.text
 
 
-def test_write_vllm_kwargs_file_handles_tee_failure(caplog: Any) -> None:
-    """If `wsl tee` fails (CalledProcessError), log and continue."""
+def test_write_vllm_script_file_handles_tee_failure(caplog: Any) -> None:
+    """If the bash command fails (CalledProcessError), log and continue."""
     import logging
 
-    err = subprocess.CalledProcessError(1, ["wsl", "tee", _VLLM_KWARGS_PATH])
+    err = subprocess.CalledProcessError(1, ["wsl", "bash", "-c", "..."])
     with (
         patch("subprocess.run", side_effect=err),
         caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_services"),
     ):
-        _write_vllm_kwargs_file()  # must not raise
+        _write_vllm_script_file()  # must not raise
 
     assert "Could not write" in caplog.text
 
 
-def test_open_vllm_terminal_writes_kwargs_before_spawning(tmp_path: Path) -> None:
-    """Order of operations must be: write kwargs file FIRST, then spawn the
-    terminal. If we spawn first, the terminal could try to cat the file before
-    it's written (race), and vLLM would fail at startup."""
+def test_open_vllm_terminal_writes_script_before_spawning(tmp_path: Path) -> None:
+    """Order of operations must be: write script file FIRST, then spawn the
+    terminal. If we spawn first, the terminal could try to invoke the script
+    before it's written (race), and bash would fail at startup."""
     mgr = ServiceManager(tmp_path)
     call_order: list[str] = []
 
@@ -232,7 +253,7 @@ def test_open_vllm_terminal_writes_kwargs_before_spawning(tmp_path: Path) -> Non
 
     with (
         patch(
-            "app.core.watcher.watcher_services._write_vllm_kwargs_file",
+            "app.core.watcher.watcher_services._write_vllm_script_file",
             side_effect=record_write,
         ),
         patch("subprocess.Popen", side_effect=record_popen),
@@ -242,6 +263,24 @@ def test_open_vllm_terminal_writes_kwargs_before_spawning(tmp_path: Path) -> Non
     assert call_order == ["write", "popen"], (
         f"expected write before popen, got {call_order}"
     )
+
+
+def test_open_vllm_terminal_spawn_uses_script_invocation(tmp_path: Path) -> None:
+    """The argv passed to wt.exe → wsl → bash must invoke the script — not
+    pass any JSON content as an argument. This is the contract the script-
+    file approach restores after WOR-408 / first-WOR-415 failed."""
+    mgr = ServiceManager(tmp_path)
+    with (
+        patch("app.core.watcher.watcher_services._write_vllm_script_file"),
+        patch("subprocess.Popen") as mock_popen,
+    ):
+        mgr._open_vllm_terminal()
+
+    argv = mock_popen.call_args[0][0]
+    # The last arg is the bash -c body — must be the autostart cmd, NOT
+    # the full vLLM command with JSON.
+    assert argv[-1] == _VLLM_AUTOSTART_CMD
+    assert "preserve_thinking" not in argv[-1]
 
 
 # ---------------------------------------------------------------------------
