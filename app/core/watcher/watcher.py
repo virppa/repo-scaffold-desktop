@@ -40,12 +40,41 @@ from .watcher_helpers import (
     suppress_dedup,
 )
 from .watcher_services import ServiceManager
+from .watcher_signals import (
+    _handle_signal_impl,
+)
+from .watcher_signals import (
+    cleanup_orphaned_worktrees as _cleanup_orphaned_worktrees,
+)
+from .watcher_signals import (
+    make_signal_handler as _make_signal_handler,
+)
+from .watcher_signals import (
+    maybe_warn_softstop_stuck as _maybe_warn_softstop_stuck,
+)
+from .watcher_signals import (
+    remove_pid_file as _remove_pid_file,
+)
+from .watcher_signals import (
+    remove_softstop_sentinel as _remove_softstop_sentinel,
+)
+from .watcher_signals import (
+    remove_stale_softstop_sentinel as _remove_stale_softstop_sentinel,
+)
+from .watcher_signals import (
+    softstop_sentinel_path as _softstop_sentinel_path,
+)
+from .watcher_signals import (
+    wait_for_active_workers as _wait_for_active_workers,
+)
+from .watcher_signals import (
+    write_pid_file as _write_pid_file,
+)
 from .watcher_subprocess import launch_worker
 from .watcher_tui import TrackedPR, TUIState, WatcherDisplay, WorkerState
 from .watcher_types import (
     _ARTIFACTS_DIR,
     _CLAUDE_DIR,
-    _PID_FILE,
     ActiveWorker,
     LinearClientProtocol,
 )
@@ -103,13 +132,6 @@ class _ProcessedTicket(NamedTuple):
 # ---------------------------------------------------------------------------
 # Watcher
 # ---------------------------------------------------------------------------
-
-
-_SOFTSTOP_SENTINEL_NAME = "watcher.softstop"
-# How long the daemon may sit in drain mode before logging a stuck-worker
-# warning. Keeps overnight operators from being surprised by a hung worker
-# blocking graceful exit. WOR-333.
-_SOFTSTOP_WARN_AFTER_MIN = 60
 
 
 class Watcher:
@@ -1007,95 +1029,50 @@ class Watcher:
     # ------------------------------------------------------------------
 
     def _register_signals(self) -> None:
-        signal.signal(signal.SIGINT, self._handle_signal)
+        handler = _make_signal_handler(self._services, self)
+        signal.signal(signal.SIGINT, handler)
         if hasattr(signal, "SIGTERM"):
-            signal.signal(signal.SIGTERM, self._handle_signal)
+            signal.signal(signal.SIGTERM, handler)
 
     def _handle_signal(self, signum: int, frame: object) -> None:
-        logger.info(
-            "Signal %d received — finishing active workers then exiting", signum
-        )
-        self._services.stop()
-        self._running = False
+        _handle_signal_impl(self._services, self, signum, frame)
 
     def _wait_for_active_workers(self) -> None:
-        all_active = self._local_active + self._cloud_active
-        if not all_active:
-            return
-        logger.info("Waiting for %d active worker(s) to finish…", len(all_active))
-        for worker in all_active:
-            try:
-                worker.process.wait(timeout=600)
-            except subprocess.TimeoutExpired:
-                logger.warning("Worker %s timed out — terminating", worker.ticket_id)
-                worker.process.terminate()
+        _wait_for_active_workers(self._local_active, self._cloud_active)
 
     # ------------------------------------------------------------------
     # PID file
     # ------------------------------------------------------------------
 
     def _write_pid_file(self) -> None:
-        _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+        _write_pid_file(self._repo_root)
 
     def _remove_pid_file(self) -> None:
-        try:
-            _PID_FILE.unlink()
-        except FileNotFoundError:
-            pass
+        _remove_pid_file()
 
     def _cleanup_orphaned_worktrees(self) -> None:
-        from app.core.watcher.watcher_types import _WORKTREE_BASE
-
-        base = self._repo_root.parent / _WORKTREE_BASE
-        if not base.exists():
-            return
-        for worktree_dir in base.iterdir():
-            if not worktree_dir.is_dir():
-                continue
-            logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
-            cleanup_worktree(self._repo_root, worktree_dir)
+        _cleanup_orphaned_worktrees(self._repo_root, cleanup_worktree)
 
     # ------------------------------------------------------------------
     # Soft-stop / drain mode (WOR-333)
     # ------------------------------------------------------------------
 
     def _softstop_sentinel_path(self) -> Path:
-        return self._repo_root / _CLAUDE_DIR / _SOFTSTOP_SENTINEL_NAME
+        return _softstop_sentinel_path(self._repo_root)
 
     def _remove_stale_softstop_sentinel(self) -> None:
-        """Delete any sentinel left over from a prior daemon run.
-
-        Without this, every daemon start would immediately enter drain mode
-        if a previous Ctrl-C left the file behind.
-        """
-        sentinel = self._softstop_sentinel_path()
-        if sentinel.exists():
-            try:
-                sentinel.unlink()
-                logger.info(
-                    "Removed stale soft-stop sentinel from prior run: %s", sentinel
-                )
-            except OSError as exc:
-                logger.warning("Could not remove stale sentinel %s: %s", sentinel, exc)
+        """Delete any sentinel left over from a prior daemon run."""
+        _remove_stale_softstop_sentinel(self._repo_root)
 
     def _remove_softstop_sentinel(self) -> None:
         """Delete the sentinel during graceful drain exit."""
-        sentinel = self._softstop_sentinel_path()
-        try:
-            sentinel.unlink(missing_ok=True)
-        except OSError as exc:
-            logger.warning("Could not remove soft-stop sentinel %s: %s", sentinel, exc)
+        _remove_softstop_sentinel(self._repo_root)
 
     def _check_softstop_request(self) -> None:
-        """Detect the soft-stop sentinel and enter drain mode.
-
-        Called once per poll cycle. Idempotent — entering drain mode is a
-        one-shot transition; subsequent calls just keep `_draining` True.
-        """
+        """Detect the soft-stop sentinel and enter drain mode."""
         if self._draining:
             return
-        if not self._softstop_sentinel_path().exists():
+        if not _softstop_sentinel_path(self._repo_root).exists():
             return
         self._draining = True
         self._draining_since = time.monotonic()
@@ -1107,27 +1084,12 @@ class Watcher:
         )
 
     def _maybe_warn_softstop_stuck(self) -> None:
-        """Log a one-shot WARNING if drain has been pending too long.
-
-        Helps the operator notice a hung worker that's blocking graceful exit.
-        Threshold lives in :const:`_SOFTSTOP_WARN_AFTER_MIN`. Fires once.
-        """
-        if not self._draining or self._softstop_warned_stuck:
-            return
-        if self._draining_since is None:
-            return
-        elapsed_min = (time.monotonic() - self._draining_since) / 60.0
-        if elapsed_min < _SOFTSTOP_WARN_AFTER_MIN:
-            return
-        active = self._local_active + self._cloud_active
-        active_summary = ", ".join(
-            f"{w.ticket_id} (running {(time.monotonic() - w.start_time) / 60:.0f}m)"
-            for w in active
-        )
-        logger.warning(
-            "Soft-stop pending for %.0f min. Worker(s) may be hung. "
-            "Consider Ctrl-C to force-exit (will lose WIP). Active: %s",
-            elapsed_min,
-            active_summary or "(none — drain should have exited)",
-        )
-        self._softstop_warned_stuck = True
+        """Log a one-shot WARNING if drain has been pending too long."""
+        if _maybe_warn_softstop_stuck(
+            self._draining,
+            self._draining_since,
+            self._softstop_warned_stuck,
+            self._local_active,
+            self._cloud_active,
+        ):
+            self._softstop_warned_stuck = True

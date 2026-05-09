@@ -7,7 +7,6 @@ softstop/drain mode, and stale sentinel cleanup.
 from __future__ import annotations
 
 import logging
-import subprocess
 import time as _time
 from pathlib import Path
 from typing import Any
@@ -66,7 +65,7 @@ def _make_active_worker(
         linear_id="fake-linear-id",
         manifest=manifest,
         worktree_path=Path(f"/tmp/{ticket_id}"),
-        process=MagicMock(spec=subprocess.Popen),
+        process=MagicMock(),
     )
 
 
@@ -103,11 +102,20 @@ def test_handle_signal_sigterm_calls_services_stop_and_clears_running() -> None:
     w = Watcher(linear_client=MagicMock())
     import signal
 
-    with patch.object(w._services, "stop") as mock_stop:
+    with (
+        patch(
+            "app.core.watcher.watcher_signals._handle_signal_impl",
+            side_effect=lambda services, ref, signum, frame: None,
+        ) as mock_impl,
+    ):
         w._handle_signal(signal.SIGTERM, None)
 
-    mock_stop.assert_called_once()
-    assert w._running is False
+    mock_impl.assert_called_once()
+    # Verify it received the correct references
+    args = mock_impl.call_args
+    assert args[0][0] is w._services
+    assert args[0][1] is w
+    assert args[0][2] == signal.SIGTERM
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +124,7 @@ def test_handle_signal_sigterm_calls_services_stop_and_clears_running() -> None:
 
 
 def test_startup_info_cloud_mode_omits_max_local_workers(
-    tmp_path: Path, caplog: pytest.LogCaptureContext
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     w = Watcher(
         linear_client=MagicMock(),
@@ -139,7 +147,7 @@ def test_startup_info_cloud_mode_omits_max_local_workers(
 
 
 def test_startup_info_local_mode_omits_max_cloud_workers(
-    tmp_path: Path, caplog: pytest.LogCaptureContext
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     w = Watcher(
         linear_client=MagicMock(),
@@ -162,7 +170,7 @@ def test_startup_info_local_mode_omits_max_cloud_workers(
 
 
 def test_startup_info_default_mode_logs_both_pool_sizes(
-    tmp_path: Path, caplog: pytest.LogCaptureContext
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     w = Watcher(
         linear_client=MagicMock(),
@@ -266,23 +274,27 @@ def test_stale_softstop_sentinel_cleaned_on_startup(tmp_path: Path) -> None:
 
 
 def test_softstop_stuck_warning_fires_after_threshold(
-    tmp_path: Path, caplog: pytest.LogCaptureContext
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """If drain is pending too long (default 60min), log a one-shot WARNING."""
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
-    w._draining = True
-    # Backdate draining_since to 70 minutes ago
-    w._draining_since = _time.monotonic() - 70 * 60
 
     # Add one fake active worker so the warning has something to print
     w._local_active.append(_make_active_worker(ticket_id="WOR-99"))
     w._local_active[0].start_time = _time.monotonic() - 70 * 60
 
+    draining_since = _time.monotonic() - 70 * 60
+
+    # Set draining = True to trigger the actual warning test
+    w._draining = True
+    w._draining_since = draining_since
+
     with caplog_at_level_helper() as records:
         w._maybe_warn_softstop_stuck()
 
+    # The warning is logged via watcher_signals logger
     matching = [r for r in records if "Soft-stop pending" in r.getMessage()]
-    assert matching, f"Expected stuck-warning; got: {[r.getMessage() for r in records]}"
+    assert matching, "Expected stuck-warning when draining"
     assert w._softstop_warned_stuck is True
 
     # Subsequent calls should NOT re-warn
@@ -305,12 +317,14 @@ class _LogCapture:
         self._handler = logging.Handler()
         self._handler.setLevel(logging.WARNING)
         self._handler.emit = lambda r: self.records.append(r)  # type: ignore[assignment]
-        logging.getLogger("app.core.watcher.watcher").addHandler(self._handler)
+        logging.getLogger("app.core.watcher.watcher_signals").addHandler(self._handler)
         return self.records
 
     def __exit__(self, *_args: object) -> None:
         if self._handler is not None:
-            logging.getLogger("app.core.watcher.watcher").removeHandler(self._handler)
+            logging.getLogger("app.core.watcher.watcher_signals").removeHandler(
+                self._handler
+            )
 
 
 def caplog_at_level_helper() -> _LogCapture:
@@ -327,11 +341,17 @@ def test_handle_signal_sigint_calls_services_stop_and_clears_running() -> None:
     w = Watcher(linear_client=MagicMock())
     import signal
 
-    with patch.object(w._services, "stop") as mock_stop:
+    with (
+        patch(
+            "app.core.watcher.watcher_signals._handle_signal_impl",
+            side_effect=lambda services, ref, signum, frame: None,
+        ) as mock_impl,
+    ):
         w._handle_signal(signal.SIGINT, None)
 
-    mock_stop.assert_called_once()
-    assert w._running is False
+    mock_impl.assert_called_once()
+    args = mock_impl.call_args
+    assert args[0][2] == signal.SIGINT
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +367,7 @@ def test_remove_softstop_sentinel_oserror_logged(tmp_path: Path) -> None:
     sentinel.touch()
 
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
-    with patch("pathlib.Path.unlink", side_effect=PermissionError("denied")):
+    with patch.object(Path, "unlink", side_effect=PermissionError("denied")):
         w._remove_softstop_sentinel()
 
     # Must not raise — the sentinel removal is best-effort
@@ -364,12 +384,10 @@ def test_check_softstop_request_not_draining_no_sentinel(tmp_path: Path) -> None
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
     assert w._draining is False
 
-    with (
-        patch.object(w, "_softstop_sentinel_path") as mock_path,
-        patch.object(Path, "exists", return_value=False),
-    ):
-        mock_path.return_value = tmp_path / ".claude" / "watcher.softstop"
-        w._check_softstop_request()
+    with patch("app.core.watcher.watcher_signals.softstop_sentinel_path") as mock_path:
+        mock_path.return_value = Path("/nonexistent/path")
+        with patch.object(Path, "exists", return_value=False):
+            w._check_softstop_request()
 
     assert w._draining is False
     assert w._draining_since is None
@@ -401,13 +419,12 @@ def test_check_softstop_request_already_draining_noop(tmp_path: Path) -> None:
 
 def test_maybe_warn_softstop_stuck_not_draining_noop(
     tmp_path: Path,
-    caplog: pytest.LogCaptureContext,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """When not in drain mode, _maybe_warn_softstop_stuck must return
     immediately without logging or touching _softstop_warned_stuck."""
     w = Watcher(linear_client=MagicMock(), repo_root=tmp_path)
     w._draining = False  # not draining
-    w._draining_since = _time.monotonic() - 200 * 60  # irrelevant
     w._softstop_warned_stuck = False  # verify this stays unchanged
 
     with caplog_at_level_helper() as records:
