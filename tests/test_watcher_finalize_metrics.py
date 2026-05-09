@@ -75,7 +75,7 @@ def test_finalize_worker_check_failures_populated_on_check_failure(
     )
     with (
         patch(
-            "app.core.watcher.watcher_finalize.run_checks",
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
             return_value=(
                 False,
                 [{"check": "mypy app/", "exit_code": 1}],
@@ -111,7 +111,7 @@ def test_finalize_worker_check_failures_empty_on_success(
     )
     with (
         patch(
-            "app.core.watcher.watcher_finalize.run_checks",
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
             return_value=(True, []),
         ),
         patch(
@@ -149,7 +149,7 @@ def test_finalize_worker_sonar_count_zero_on_empty_findings(
     )
     with (
         patch(
-            "app.core.watcher.watcher_finalize.run_checks",
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
             return_value=(True, []),
         ),
         patch(
@@ -158,7 +158,7 @@ def test_finalize_worker_sonar_count_zero_on_empty_findings(
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
         patch(
-            "app.core.watcher.watcher_finalize.fetch_sonar_findings",
+            "app.core.watcher.watcher_finalize_helpers.fetch_sonar_findings",
             return_value=[],
         ),
     ):
@@ -188,7 +188,7 @@ def test_finalize_worker_failed_check_in_run_log_on_failure(
     )
     with (
         patch(
-            "app.core.watcher.watcher_finalize.run_checks",
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
             return_value=(
                 False,
                 [
@@ -244,7 +244,10 @@ def test_finalize_worker_cloud_metrics_populated_for_cloud_run(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
@@ -305,7 +308,10 @@ def test_finalize_worker_cloud_model_from_env(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
@@ -340,7 +346,10 @@ def test_finalize_worker_cloud_no_token_log(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
@@ -391,7 +400,10 @@ def test_finalize_worker_local_run_keeps_local_fields(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
@@ -451,7 +463,10 @@ def test_finalize_worker_local_model_non_null_for_local_run(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
@@ -487,7 +502,10 @@ def test_finalize_worker_local_model_is_none_for_cloud_run(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
@@ -643,7 +661,7 @@ def _finalize_with_real_diff(repo: Path, ticket_id: str = "WOR-354") -> object:
     )
     with (
         patch(
-            "app.core.watcher.watcher_finalize.run_checks",
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
             return_value=(True, []),
         ),
         patch(
@@ -652,7 +670,7 @@ def _finalize_with_real_diff(repo: Path, ticket_id: str = "WOR-354") -> object:
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
         patch(
-            "app.core.watcher.watcher_finalize.fetch_sonar_findings",
+            "app.core.watcher.watcher_finalize_helpers.fetch_sonar_findings",
             return_value=[],
         ),
     ):

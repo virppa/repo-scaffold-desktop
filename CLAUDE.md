@@ -97,9 +97,12 @@ Module responsibilities:
 - `watcher/` — watcher subpackage (subpackage boundary, not flat files):
   - `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
   - `watcher_dispatch.py` — extracted ticket start logic: `start_ticket` module function plus thin class wrappers
-  - `watcher_finalize.py` — worker finalization logic: `finalize_worker`, `attempt_pr`, `safe_set_state`
-  - `watcher_helpers.py` — pure stateless functions: `check_allowed_paths_overlap`, `build_worker_env`, `build_worker_cmd`, `resolve_effective_mode`, `_tee_worker_output`, `_parse_worker_usage`
+  - `watcher_finalize.py` — worker finalization public API: `finalize_worker`, `attempt_pr`, `safe_set_state`
+  - `watcher_finalize_helpers.py` — internal helpers extracted from `watcher_finalize.py` (WOR-404): `_read_result_status`, `_execute_finalization`, `_handle_policy_outcome`, `_sonar_requires_escalation`, `_write_wip_sha_to_last_failure`, `_try_post_comment`
+  - `watcher_helpers.py` — pure stateless functions: `check_allowed_paths_overlap`, `build_worker_env`, `build_worker_cmd`, `resolve_effective_mode`, `_tee_worker_output`
+  - `watcher_log_parsing.py` — worker JSONL/log parsers extracted from `watcher_helpers.py` (WOR-403): `_parse_worker_usage`, `_parse_worker_subagent_spawns`, `_parse_worker_api_retries`, `format_token_count`, `format_elapsed`, `format_worker_token_count`
   - `watcher_services.py` — `ServiceManager` class: vLLM readiness gate (probe + ensure-Anthropic-mode); no longer spawns subprocesses post-WOR-368
+  - `watcher_signals.py` — signals/softstop/lifecycle functions extracted from `watcher.py` (WOR-401): `register_signals`, `handle_signal`, `wait_for_active_workers`, PID file helpers, softstop sentinel handling, `cleanup_orphaned_worktrees`
   - `watcher_subprocess.py` — worker subprocess lifecycle: `launch_worker`, `run_checks`, `fetch_sonar_findings`, `create_pr`, `build_snippet_tool_restrictions`
   - `watcher_types.py` — constants, `LinearClientProtocol`, `ActiveWorker` dataclass, `is_watcher_running`, `_to_metrics_mode`
   - `watcher_worktrees.py` — git worktree lifecycle: `create_worktree`, `rebase_worktree_from_base`, `copy_manifest_to_worktree`, `preserve_worker_artifacts`, `cleanup_worktree`, `cleanup_orphaned_worktrees`, `backup_plan_files`, `restore_plan_files`, `write_worker_pytest_config`

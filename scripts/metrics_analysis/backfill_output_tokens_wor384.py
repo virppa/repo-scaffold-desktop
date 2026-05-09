@@ -34,7 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from app.core.metrics import MetricsStore  # noqa: E402
-from app.core.watcher.watcher_helpers import _parse_worker_usage  # noqa: E402
+from app.core.watcher.watcher_log_parsing import _parse_worker_usage  # noqa: E402
 
 _SELECT_SQL = (
     "SELECT project_id, local_input_tokens, local_output_tokens, "

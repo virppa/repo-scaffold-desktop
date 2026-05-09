@@ -7,14 +7,18 @@ This module may import from watcher_helpers and watcher_types (no other siblings
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 import re
 import shlex
+import ssl
 import subprocess  # nosec B404
 import sys
 import threading
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO
@@ -328,6 +332,47 @@ def create_pr(manifest: ExecutionManifest, worktree_path: Path) -> str:
     return pr_url
 
 
+def _build_sonar_url(
+    token: str, project_key: str, branch: str, page: int
+) -> tuple[urllib.request.Request, str]:
+    """Build the SonarCloud API request URL and request object."""
+    creds = base64.b64encode(f"{token}:".encode()).decode()
+    params = urllib.parse.urlencode(
+        {
+            "componentKeys": project_key,
+            "branch": branch,
+            "resolved": "false",
+            "ps": "500",
+            "p": str(page),
+        }
+    )
+    url = f"https://sonarcloud.io/api/issues/search?{params}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
+    return req, url
+
+
+def _parse_sonar_response(
+    raw_response: bytes, all_severities: list[str], page: int
+) -> tuple[list[str], int, bool]:
+    """Parse a single page of SonarCloud JSON response.
+
+    Returns ``(all_severities, total, should_break)`` where
+    *all_severities* is extended with this page's severity values,
+    *total* is the total issue count from the API, and
+    *should_break* is True when pagination is complete.
+    """
+    data: dict[str, object] = json.loads(raw_response)
+    issues = data.get("issues") or []
+    all_severities.extend(
+        str(issue["severity"])
+        for issue in (issues if isinstance(issues, list) else [])
+        if isinstance(issue, dict) and issue.get("severity")
+    )
+    raw_total = data.get("total")
+    total = int(raw_total) if isinstance(raw_total, int) else 0
+    return all_severities, total, page * 500 >= total
+
+
 def fetch_sonar_findings(branch: str) -> list[str] | None:
     """Return per-severity finding list from SonarCloud for *branch*, or None.
 
@@ -335,46 +380,24 @@ def fetch_sonar_findings(branch: str) -> list[str] | None:
     when SONAR_TOKEN / SONAR_PROJECT_KEY are absent or the API call fails. An
     empty list means the branch was scanned and has no open issues.
     """
-    import base64
-    import ssl
-    import urllib.parse
-    import urllib.request
-
     token = os.environ.get("SONAR_TOKEN")
     project_key = os.environ.get("SONAR_PROJECT_KEY")
     if not token or not project_key:
         return None
 
-    creds = base64.b64encode(f"{token}:".encode()).decode()
     ctx = ssl.create_default_context()
     all_severities: list[str] = []
 
     for page in range(1, _SONAR_MAX_PAGES + 1):
-        params = urllib.parse.urlencode(
-            {
-                "componentKeys": project_key,
-                "branch": branch,
-                "resolved": "false",
-                "ps": "500",
-                "p": str(page),
-            }
-        )
-        url = f"https://sonarcloud.io/api/issues/search?{params}"
-        req = urllib.request.Request(url, headers={"Authorization": f"Basic {creds}"})
         try:
+            req, _ = _build_sonar_url(token, project_key, branch, page)
             with urllib.request.urlopen(  # nosec B310  # nosemgrep
                 req, timeout=10, context=ctx
             ) as resp:
-                data: dict[str, object] = json.loads(resp.read())
-            issues = data.get("issues") or []
-            all_severities.extend(
-                str(issue["severity"])
-                for issue in (issues if isinstance(issues, list) else [])
-                if isinstance(issue, dict) and issue.get("severity")
-            )
-            raw_total = data.get("total")
-            total = int(raw_total) if isinstance(raw_total, int) else 0
-            if page * 500 >= total:
+                all_severities, total, should_break = _parse_sonar_response(
+                    resp.read(), all_severities, page
+                )
+            if should_break:
                 break
         except Exception:
             logger.debug(
