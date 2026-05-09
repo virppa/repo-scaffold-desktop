@@ -6,7 +6,7 @@ A Python CLI tool for generating opinionated starter repositories for agent-driv
 
 Creates ready-to-use repository scaffolds for solo developers and small teams, with sensible defaults for CI, pre-commit, issue templates, and Claude/Linear wiring.
 
-> Desktop GUI is planned for V2. The CLI is the primary interface for V1.
+> The V1 CLI scaffolder ships. Desktop GUI work is gated behind the Wizard CLI milestone (interactive `generate --interactive` substitute for the GUI). The codebase has matured into a hybrid execution engine — see CLAUDE.md "Current focus" for the active milestone.
 
 ## Usage
 
@@ -38,7 +38,7 @@ python -m app.cli config delete github-token
 # Watcher daemon (local worker orchestrator)
 python -m app.cli watcher                        # respects each manifest's implementation_mode
 python -m app.cli watcher --worker-mode cloud    # force cloud (Anthropic API)
-python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy)
+python -m app.cli watcher --worker-mode local    # force local (vLLM-served Qwen)
 python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concurrency
 python -m app.cli watcher --max-cloud-workers 3  # default 3
 python -m app.cli watcher --verbose              # DEBUG level on the watcher's own logger
@@ -88,17 +88,23 @@ Module responsibilities:
 - `metrics.py` — SQLite-backed per-ticket cost and execution metrics; tables `ticket_metrics`, `ticket_run_log`, `check_run_log`
 - `bench_store.py` — SQLite-backed benchmark run records store (shares `app.db` with `metrics.py`)
 - `escalation_policy.py` — loads `config/escalation_policy.toml`, classifies failures into watcher actions
+- `wizard.py` — interactive `generate --interactive` wizard
 - `watcher/` — orchestrator subpackage (`app/core/watcher/`):
   - `watcher.py` — main loop; polls Linear, delegates dispatch
   - `watcher_dispatch.py` — `start_ticket` extracted dispatch logic
-  - `watcher_finalize.py` — worker finalization: outcome classification, PR creation, metrics record, escalation
+  - `watcher_finalize.py` — worker finalization public API: outcome classification, PR creation, metrics record, escalation
+  - `watcher_finalize_helpers.py` — internal helpers extracted from `watcher_finalize.py` (WOR-404)
   - `watcher_subprocess.py` — worker subprocess lifecycle, checks, Sonar integration
   - `watcher_worktrees.py` — git worktree setup, teardown, artifact preservation, wip-state preservation, wip squash
-  - `watcher_helpers.py` — pure stateless helpers (cmd builder, env, log parsing)
-  - `watcher_services.py` — LiteLLM proxy and Ollama process management
+  - `watcher_helpers.py` — pure stateless helpers (cmd builder, env, allowed-paths overlap)
+  - `watcher_log_parsing.py` — worker JSONL log parsers extracted from `watcher_helpers.py` (WOR-403)
+  - `watcher_signals.py` — signals/softstop/lifecycle functions extracted from `watcher.py` (WOR-401)
+  - `watcher_services.py` — vLLM readiness gate (probe + ensure-Anthropic-mode); auto-spawns vLLM via on-disk script when missing on Windows (WOR-415). LiteLLM/Ollama plumbing was retired in WOR-368 once vLLM 0.20 began serving `/v1/messages` natively.
+  - `watcher_tui.py` — `WatcherDisplay` rich-based live TUI (worker table, cost panel, PR auto-merge tracker)
   - `watcher_types.py` — shared types: `ActiveWorker`, `LinearClientProtocol`
+  - `worker_waste.py` — post-hoc waste-score analysis on worker JSONL logs
 - `cli.py` — CLI entry point
-- `main.py` — PySide6 app entry point (V2)
+- `main.py` — PySide6 app entry point
 
 Data flows one way: CLI → config model → generator → disk. Post-setup runs after generation.
 
@@ -146,11 +152,12 @@ Data flows one way: CLI → config model → generator → disk. Post-setup runs
 
 ## Local model development
 
-To run Claude Code against a local vLLM server instead of the Anthropic API:
+vLLM 0.20 serves the Anthropic Messages API natively (`/v1/messages`), so Claude Code talks to it directly with no proxy in the path (the LiteLLM proxy was retired in WOR-368; spike findings: [`docs/spikes/wor-344-vllm-native-anthropic-api.md`](docs/spikes/wor-344-vllm-native-anthropic-api.md)).
 
 ```bash
 # 1. Start vLLM server in WSL2 (keep terminal open)
 /home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
+  --served-model-name qwen3-coder \
   --max-model-len 262144 --max-num-seqs 16 \
   --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \
   --reasoning-parser qwen3 --enable-prefix-caching \
@@ -158,17 +165,21 @@ To run Claude Code against a local vLLM server instead of the Anthropic API:
   --enable-auto-tool-choice --tool-call-parser qwen3_coder \
   --default-chat-template-kwargs '{"preserve_thinking": true}'
 
-# 2. Copy the example config and start LiteLLM proxy (keep terminal open)
-cp litellm-local.yaml.example litellm-local.yaml
-litellm --config litellm-local.yaml --port 8082 --drop_params
-
-# 3. Launch Claude Code in a new terminal
-set ANTHROPIC_BASE_URL=http://localhost:8082   # Windows
-set ANTHROPIC_API_KEY=sk-dummy
-claude --model claude-sonnet-4-6
+# 2. Launch Claude Code in a new terminal (Windows / cmd.exe)
+set ANTHROPIC_BASE_URL=http://localhost:8000
+set ANTHROPIC_API_KEY=dummy
+set ANTHROPIC_AUTH_TOKEN=dummy
+set ANTHROPIC_DEFAULT_OPUS_MODEL=qwen3-coder
+set ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3-coder
+set ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen3-coder
+claude
 ```
 
-`litellm-local.yaml` is gitignored. See [`docs/spikes/vllm-benchmark-plan.md`](docs/spikes/vllm-benchmark-plan.md) for the production vLLM model config and benchmark results. [`docs/spikes/local-model-setup.md`](docs/spikes/local-model-setup.md) covers the historical Ollama setup.
+The three `ANTHROPIC_DEFAULT_*_MODEL` env vars route by tier (Opus / Sonnet / Haiku) — Claude Code substitutes them when `--model` is not passed. Do **not** pass `--model claude-sonnet-4-6` unless you also serve that name via `--served-model-name qwen3-coder claude-sonnet-4-6 claude-opus-4-7 claude-haiku-4-5-20251001`.
+
+When the watcher daemon needs vLLM and finds the port unreachable, it auto-spawns vLLM via a per-user bash script under `~/.cache/repo-scaffold/start_vllm.sh` (WOR-415). The script-file approach bypasses the `subprocess → wt.exe → wsl → bash` quoting chain that defeated earlier attempts to inline the `--default-chat-template-kwargs` JSON.
+
+See [`docs/spikes/vllm-benchmark-plan.md`](docs/spikes/vllm-benchmark-plan.md) for the production model config and benchmark results. [`docs/spikes/local-model-setup.md`](docs/spikes/local-model-setup.md) covers the historical Ollama setup (also retired).
 
 ## Claude Code and MCP setup
 
