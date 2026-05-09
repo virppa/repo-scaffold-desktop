@@ -728,6 +728,26 @@ def _run_waste_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _dispatch_command(args: argparse.Namespace) -> int:
+    """Route parsed args to the appropriate command handler.
+
+    Separated from ``main()`` to keep its cognitive complexity under 15.
+    """
+    if args.command == "config":
+        return _run_config(args)
+    if args.command == "metrics":
+        return _run_metrics(args)
+    if args.command == "watcher":
+        return _run_watcher(args)
+    if args.command == "watcher-softstop":
+        return _run_watcher_softstop(args)
+    if args.command == "waste-score":
+        return _run_waste_score(args)
+    if args.command == "generate":
+        return _run_generate(args)
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     # Ensure the terminal can emit UTF-8 (e.g. ✓); no-op on StringIO (pytest capsys).
@@ -755,22 +775,7 @@ def main(argv: list[str] | None = None) -> int:
                 "argument --git-push: must also specify --github-create or --remote-url"
             )
 
-    if args.command == "config":
-        return _run_config(args)
-
-    if args.command == "metrics":
-        return _run_metrics(args)
-
-    if args.command == "watcher":
-        return _run_watcher(args)
-
-    if args.command == "watcher-softstop":
-        return _run_watcher_softstop(args)
-
-    if args.command == "waste-score":
-        return _run_waste_score(args)
-
-    return _run_generate(args)
+    return _dispatch_command(args)
 
 
 if __name__ == "__main__":
