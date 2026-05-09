@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import subprocess
 from pathlib import Path
@@ -347,6 +348,61 @@ def test_fetch_sonar_findings_breaks_and_returns_partial_on_mid_pagination_error
     assert findings is not None
     assert len(findings) == 500
     assert all(s == "MAJOR" for s in findings)
+
+
+# ---------------------------------------------------------------------------
+# _parse_sonar_response
+# ---------------------------------------------------------------------------
+
+
+def test_parse_sonar_response_extracts_severities() -> None:
+    """Extract severity strings from a well-formed SonarCloud response."""
+    from app.core.watcher.watcher_subprocess import _parse_sonar_response
+
+    raw = json.dumps(
+        {
+            "issues": [
+                {"key": "A", "severity": "MAJOR"},
+                {"key": "B", "severity": "MINOR"},
+            ],
+            "total": 2,
+        }
+    ).encode()
+
+    severities: list[str] = []
+    severities, total, should_break = _parse_sonar_response(raw, severities, page=1)
+
+    assert severities == ["MAJOR", "MINOR"]
+    assert total == 2
+    assert should_break is True  # page 1, 500 >= 2
+
+
+def test_parse_sonar_response_empty_issues() -> None:
+    """Handle a response with no issues."""
+    from app.core.watcher.watcher_subprocess import _parse_sonar_response
+
+    raw = json.dumps({"issues": [], "total": 0}).encode()
+
+    severities: list[str] = []
+    severities, total, should_break = _parse_sonar_response(raw, severities, page=1)
+
+    assert severities == []
+    assert total == 0
+    assert should_break is True
+
+
+def test_parse_sonar_response_handles_missing_total() -> None:
+    """When total is absent, treat as 0."""
+    from app.core.watcher.watcher_subprocess import _parse_sonar_response
+
+    raw = json.dumps({"issues": [{"key": "A", "severity": "BLOCKER"}]}).encode()
+
+    severities: list[str] = []
+    severities, total, should_break = _parse_sonar_response(raw, severities, page=1)
+
+    assert severities == ["BLOCKER"]
+    assert total == 0
+    assert should_break is True
 
 
 # ---------------------------------------------------------------------------
