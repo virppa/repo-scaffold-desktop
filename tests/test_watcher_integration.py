@@ -115,18 +115,21 @@ def test_finalize_worker_happy_path_all_enriched_fields(
 
     # Patch the three functions the manifest calls out plus generic helpers.
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/repo/pull/130",
         ),
         patch(
-            "app.core.watcher.watcher_finalize.fetch_sonar_findings",
+            "app.core.watcher.watcher_finalize_helpers.fetch_sonar_findings",
             return_value=["MAJOR", "MINOR", "MINOR", "INFO"],
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
-        patch("app.core.watcher.watcher_finalize.compute_tags", return_value=[]),
-        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch("app.core.metrics.compute_tags", return_value=[]),
+        patch("app.core.watcher.watcher_finalize_helpers.preserve_worker_artifacts"),
     ):
         finalize_worker(
             worker,
