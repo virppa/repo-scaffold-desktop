@@ -34,11 +34,10 @@ from app.core.metrics import CostRollup, MetricsStore
 from .watcher_finalize import finalize_worker, safe_set_state
 from .watcher_helpers import (
     check_allowed_paths_overlap,
-    format_elapsed,
-    format_worker_token_count,
     resolve_effective_mode,
     suppress_dedup,
 )
+from .watcher_log_parsing import format_elapsed, format_worker_token_count
 from .watcher_services import ServiceManager
 from .watcher_subprocess import launch_worker
 from .watcher_tui import TrackedPR, TUIState, WatcherDisplay, WorkerState
