@@ -76,7 +76,10 @@ def test_finalize_worker_calls_commit_wip_state_on_check_failure(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -120,7 +123,10 @@ def test_finalize_worker_writes_last_failure_json_on_wip_commit(
     failure_file.write_text('{"failed_at": "2026-01-01"}', encoding="utf-8")
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -159,7 +165,10 @@ def test_finalize_worker_last_failure_json_created_when_absent(
     # No last_failure.json exists
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -193,7 +202,10 @@ def test_finalize_worker_skips_commit_wip_when_no_sha(tmp_path: Path) -> None:
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -252,7 +264,10 @@ def test_finalize_worker_success_resultjson_overrides_nonzero_exit(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
@@ -388,7 +403,10 @@ def test_finalize_worker_success_resultjson_but_checks_fail_routes_failure(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -435,7 +453,10 @@ def test_finalize_worker_failure_path_cleanup_skipped_when_wip_failed(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -477,7 +498,10 @@ def test_finalize_worker_failure_path_cleanup_runs_when_wip_pushed(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -510,7 +534,10 @@ def test_finalize_worker_failure_path_cleanup_runs_when_wip_backup(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -546,7 +573,10 @@ def test_finalize_worker_failure_path_cleanup_runs_when_wip_clean(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -582,7 +612,10 @@ def test_finalize_worker_passes_backup_root_to_commit_wip_state(
     repo_root.mkdir()
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(False, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.commit_wip_state",
             return_value=WipPreservationResult(
@@ -629,7 +662,10 @@ def test_finalize_worker_success_path_runs_commit_wip_state(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
@@ -678,7 +714,10 @@ def test_finalize_worker_success_path_skips_cleanup_when_wip_preservation_fails(
     )
 
     with (
-        patch("app.core.watcher.watcher_finalize.run_checks", return_value=(True, [])),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://github.com/example/pr/1",
