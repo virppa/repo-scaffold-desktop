@@ -8,13 +8,20 @@ removed because the underlying methods no longer exist.
 from __future__ import annotations
 
 import json
+import subprocess  # noqa: S404 — used for CalledProcessError type only
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.core.watcher.watcher_services import _VLLM_FP8_CMD, ServiceManager
+from app.core.watcher.watcher_services import (
+    _VLLM_FP8_CMD,
+    _VLLM_KWARGS_JSON,
+    _VLLM_KWARGS_PATH,
+    ServiceManager,
+    _write_vllm_kwargs_file,
+)
 
 # ---------------------------------------------------------------------------
 # ServiceManager.stop  (no-op kept for call-site compat)
@@ -92,6 +99,9 @@ def test_probe_vllm_health_opens_terminal_on_windows(tmp_path: Path) -> None:
         patch("http.client.HTTPConnection") as mock_conn_cls,
         patch("sys.platform", "win32"),
         patch("subprocess.Popen") as mock_popen,
+        patch(
+            "app.core.watcher.watcher_services._write_vllm_kwargs_file"
+        ) as mock_write,
     ):
         mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
         mgr.probe_vllm_health()
@@ -100,6 +110,8 @@ def test_probe_vllm_health_opens_terminal_on_windows(tmp_path: Path) -> None:
     cmd = mock_popen.call_args[0][0]
     assert "wt.exe" in cmd
     assert "wsl" in cmd
+    # WOR-415: kwargs file must be written before the terminal spawns
+    mock_write.assert_called_once()
 
 
 def test_probe_vllm_health_opens_terminal_only_once(tmp_path: Path) -> None:
@@ -108,6 +120,7 @@ def test_probe_vllm_health_opens_terminal_only_once(tmp_path: Path) -> None:
         patch("http.client.HTTPConnection") as mock_conn_cls,
         patch("sys.platform", "win32"),
         patch("subprocess.Popen") as mock_popen,
+        patch("app.core.watcher.watcher_services._write_vllm_kwargs_file"),
     ):
         mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
         mgr.probe_vllm_health()
@@ -122,9 +135,113 @@ def test_probe_vllm_health_handles_missing_wt_exe(tmp_path: Path) -> None:
         patch("http.client.HTTPConnection") as mock_conn_cls,
         patch("sys.platform", "win32"),
         patch("subprocess.Popen", side_effect=FileNotFoundError("wt.exe not found")),
+        patch("app.core.watcher.watcher_services._write_vllm_kwargs_file"),
     ):
         mock_conn_cls.return_value.request.side_effect = OSError("connection refused")
         mgr.probe_vllm_health()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# WOR-415: preserve_thinking via temp-file indirection
+# ---------------------------------------------------------------------------
+
+
+def test_vllm_fp8_cmd_references_kwargs_file() -> None:
+    """The auto-start command must use $(cat <path>) substitution rather than
+    inlining the JSON literal — WOR-408 proved JSON literals don't survive the
+    multi-shell quoting chain (subprocess → wt.exe → wsl → bash)."""
+    assert _VLLM_KWARGS_PATH in _VLLM_FP8_CMD
+    assert f"$(cat {_VLLM_KWARGS_PATH})" in _VLLM_FP8_CMD
+    assert "--default-chat-template-kwargs" in _VLLM_FP8_CMD
+    # The literal JSON string must NOT appear in the command — that's the
+    # exact thing that broke in WOR-408.
+    assert _VLLM_KWARGS_JSON not in _VLLM_FP8_CMD
+
+
+def test_vllm_kwargs_json_is_valid_and_enables_preserve_thinking() -> None:
+    """The kwargs JSON must parse and set preserve_thinking=true — anything
+    else would silently disable WOR-400's main feature on the auto-start path."""
+    payload = json.loads(_VLLM_KWARGS_JSON)
+    assert payload == {"preserve_thinking": True}
+
+
+def test_write_vllm_kwargs_file_pipes_json_via_stdin() -> None:
+    """Writing must pipe JSON via stdin to `wsl bash -c '... tee ...'` — never
+    a shell command interpolating the JSON content, which would re-introduce
+    WOR-408's quoting bug."""
+    with patch("subprocess.run") as mock_run:
+        _write_vllm_kwargs_file()
+
+    mock_run.assert_called_once()
+    call = mock_run.call_args
+    argv = call[0][0]
+    assert argv[:3] == ["wsl", "bash", "-c"]
+    # The bash command references the path but NOT the JSON content
+    bash_cmd = argv[3]
+    assert _VLLM_KWARGS_PATH in bash_cmd
+    assert "tee" in bash_cmd
+    assert "mkdir -p" in bash_cmd  # ensure cache dir exists
+    assert _VLLM_KWARGS_JSON not in bash_cmd  # JSON travels via stdin, not argv
+    # JSON arrives via stdin
+    assert call.kwargs["input"] == _VLLM_KWARGS_JSON.encode("utf-8")
+    # check=True so a tee failure raises CalledProcessError, which we catch
+    assert call.kwargs.get("check") is True
+
+
+def test_write_vllm_kwargs_file_handles_missing_wsl(caplog: Any) -> None:
+    """If wsl.exe is not installed, log a warning and continue — vLLM will
+    fail with a clearer error from cat than from a Python exception."""
+    import logging
+
+    with (
+        patch("subprocess.run", side_effect=FileNotFoundError("wsl.exe missing")),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_services"),
+    ):
+        _write_vllm_kwargs_file()  # must not raise
+
+    assert "wsl.exe not found" in caplog.text
+
+
+def test_write_vllm_kwargs_file_handles_tee_failure(caplog: Any) -> None:
+    """If `wsl tee` fails (CalledProcessError), log and continue."""
+    import logging
+
+    err = subprocess.CalledProcessError(1, ["wsl", "tee", _VLLM_KWARGS_PATH])
+    with (
+        patch("subprocess.run", side_effect=err),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_services"),
+    ):
+        _write_vllm_kwargs_file()  # must not raise
+
+    assert "Could not write" in caplog.text
+
+
+def test_open_vllm_terminal_writes_kwargs_before_spawning(tmp_path: Path) -> None:
+    """Order of operations must be: write kwargs file FIRST, then spawn the
+    terminal. If we spawn first, the terminal could try to cat the file before
+    it's written (race), and vLLM would fail at startup."""
+    mgr = ServiceManager(tmp_path)
+    call_order: list[str] = []
+
+    def record_write() -> None:
+        call_order.append("write")
+
+    def record_popen(*args: Any, **kwargs: Any) -> MagicMock:
+        call_order.append("popen")
+        return MagicMock()
+
+    with (
+        patch(
+            "app.core.watcher.watcher_services._write_vllm_kwargs_file",
+            side_effect=record_write,
+        ),
+        patch("subprocess.Popen", side_effect=record_popen),
+    ):
+        mgr._open_vllm_terminal()
+
+    assert call_order == ["write", "popen"], (
+        f"expected write before popen, got {call_order}"
+    )
 
 
 # ---------------------------------------------------------------------------
