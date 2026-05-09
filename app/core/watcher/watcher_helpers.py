@@ -279,13 +279,28 @@ def _read_result_flags(result_path: Path) -> dict[str, bool]:
 # ---------------------------------------------------------------------------
 
 
+def _is_append_only_path(path: str) -> bool:
+    """Return True for path entries treated as append-only re-export barrels.
+
+    Two workers editing the same ``__init__.py`` typically only add a new
+    import + ``__all__`` entry for their respective new module — commutative
+    edits whose only conflict surface is the auto-merge at sub-ticket → epic
+    time, which is recoverable. Treating ``__init__.py`` as append-only lets
+    package-split tickets dispatch concurrently (WOR-410). If a real conflict
+    materialises, one sub-ticket PR will fail to auto-merge and need a manual
+    rebase — same outcome as any other late-stage merge collision.
+    """
+    return path == "__init__.py" or path.endswith("/__init__.py")
+
+
 def check_allowed_paths_overlap(
     active: list[ActiveWorker], candidate: ExecutionManifest
 ) -> list[str]:
     """Return identifiers of active workers whose allowed_paths overlap with candidate.
 
-    Two manifests overlap when they share at least one allowed_path pattern.
-    An empty allowed_paths list means "no restriction" — treated as overlap with
+    Two manifests overlap when they share at least one allowed_path pattern,
+    excluding append-only barrel files (see ``_is_append_only_path``). An empty
+    allowed_paths list means "no restriction" — treated as overlap with
     everything to be safe.
     """
     if not candidate.allowed_paths:
@@ -294,9 +309,11 @@ def check_allowed_paths_overlap(
     conflicts: list[str] = []
     candidate_set = set(candidate.allowed_paths)
     for worker in active:
-        if not worker.manifest.allowed_paths or candidate_set & set(
-            worker.manifest.allowed_paths
-        ):
+        if not worker.manifest.allowed_paths:
+            conflicts.append(worker.manifest.ticket_id)
+            continue
+        intersection = candidate_set & set(worker.manifest.allowed_paths)
+        if any(not _is_append_only_path(p) for p in intersection):
             conflicts.append(worker.manifest.ticket_id)
     return conflicts
 
