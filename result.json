@@ -1,0 +1,25 @@
+{
+  "ticket": "WOR-401",
+  "title": "Split watcher.py - extract signals/softstop/lifecycle to watcher_signals.py",
+  "status": "completed",
+  "changes": [
+    "Created app/core/watcher/watcher_signals.py with 9 module-level functions extracted from watcher.py",
+    "Removed 11 thin wrapper method definitions from Watcher class in watcher.py",
+    "Inlined all wrapper method calls in run() with direct function calls",
+    "Also inlined and removed _log_startup_info, _reap_finished_workers, _has_waiting_deps, _lookup_pr_url",
+    "Consolidated 10 separate watcher_signals imports into 1 block",
+    "Updated 4 test files to call module-level functions directly",
+    "watcher.py reduced from 1133 (pre-refactor) to 992 LOC unformatted / 1012 PEP 8 formatted"
+  ],
+  "verification": {
+    "ruff_check": "passed",
+    "mypy": "passed",
+    "pytest": "1434 passed, 4 skipped",
+    "lint_imports": "5 contracts kept, 0 broken"
+  },
+  "final_line_count": {
+    "unformatted": 992,
+    "pep8_formatted": 1012
+  },
+  "commit_hash": "e6d7166"
+}

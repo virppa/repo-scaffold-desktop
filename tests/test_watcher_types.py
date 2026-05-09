@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-from app.core.watcher import Watcher
+from app.core.watcher.watcher_signals import (
+    remove_pid_file,
+    write_pid_file,
+)
 from app.core.watcher.watcher_types import is_watcher_running
 
 
@@ -38,17 +40,19 @@ def test_is_watcher_running_own_pid(tmp_path: Path) -> None:
 
 
 def test_write_and_remove_pid_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pid_file = tmp_path / ".claude/watcher.pid"
+    """Write and remove the watcher PID file via the module-level functions."""
+    pid_file = tmp_path / "watcher.pid"
+    # _PID_FILE is defined in watcher_types and imported into watcher_signals at
+    # module load time. We must patch both so write_pid_file uses our temp path.
     monkeypatch.setattr("app.core.watcher.watcher_types._PID_FILE", pid_file)
-    monkeypatch.setattr("app.core.watcher.watcher._PID_FILE", pid_file)
+    monkeypatch.setattr("app.core.watcher.watcher_signals._PID_FILE", pid_file)
 
-    mock_linear = MagicMock()
-    watcher = Watcher(linear_client=mock_linear, repo_root=tmp_path)
-    watcher._write_pid_file()
+    write_pid_file(tmp_path)
     assert pid_file.exists()
     assert pid_file.read_text(encoding="utf-8") == str(os.getpid())
 
-    watcher._remove_pid_file()
+    remove_pid_file()
     assert not pid_file.exists()
