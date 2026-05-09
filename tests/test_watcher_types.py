@@ -41,8 +41,10 @@ def test_write_and_remove_pid_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid_file = tmp_path / ".claude/watcher.pid"
-    monkeypatch.setattr("app.core.watcher.watcher_types._PID_FILE", pid_file)
-    monkeypatch.setattr("app.core.watcher.watcher._PID_FILE", pid_file)
+    # Patch the actual module where _PID_FILE is used — watcher_signals
+    # imports it via "from watcher_types import _PID_FILE" which caches the
+    # name at import time, so patching watcher_types doesn't propagate.
+    monkeypatch.setattr("app.core.watcher.watcher_signals._PID_FILE", pid_file)
 
     mock_linear = MagicMock()
     watcher = Watcher(linear_client=mock_linear, repo_root=tmp_path)

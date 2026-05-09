@@ -104,7 +104,7 @@ def test_handle_signal_sigterm_calls_services_stop_and_clears_running() -> None:
 
     with (
         patch(
-            "app.core.watcher.watcher_signals._handle_signal_impl",
+            "app.core.watcher.watcher._handle_signal_impl",
             side_effect=lambda services, ref, signum, frame: None,
         ) as mock_impl,
     ):
@@ -343,7 +343,7 @@ def test_handle_signal_sigint_calls_services_stop_and_clears_running() -> None:
 
     with (
         patch(
-            "app.core.watcher.watcher_signals._handle_signal_impl",
+            "app.core.watcher.watcher._handle_signal_impl",
             side_effect=lambda services, ref, signum, frame: None,
         ) as mock_impl,
     ):
