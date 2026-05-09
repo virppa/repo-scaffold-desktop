@@ -51,6 +51,72 @@ def test_multiple_active_partial_overlap() -> None:
     assert check_allowed_paths_overlap(active, candidate) == ["WOR-11"]
 
 
+# WOR-410: __init__.py overlap carve-out
+
+
+def test_init_py_only_overlap_does_not_block() -> None:
+    """Two manifests whose only shared path is __init__.py may dispatch concurrently.
+
+    Append-only barrel files (re-export __init__.py) admit commutative edits
+    in the typical case — each worker registers its own new module name. The
+    overlap gate skips them so package-split waves don't serialize.
+    """
+    active = [
+        make_active_worker(
+            "WOR-11",
+            allowed_paths=[
+                "app/core/watcher/watcher_signals.py",
+                "app/core/watcher/__init__.py",
+            ],
+        )
+    ]
+    candidate = make_manifest(
+        allowed_paths=[
+            "app/core/watcher/watcher_promotion.py",
+            "app/core/watcher/__init__.py",
+        ]
+    )
+    assert check_allowed_paths_overlap(active, candidate) == []
+
+
+def test_non_init_overlap_still_blocks() -> None:
+    """The carve-out is __init__.py only — every other shared file still conflicts."""
+    active = [
+        make_active_worker("WOR-11", allowed_paths=["app/core/watcher/watcher.py"])
+    ]
+    candidate = make_manifest(allowed_paths=["app/core/watcher/watcher.py"])
+    assert check_allowed_paths_overlap(active, candidate) == ["WOR-11"]
+
+
+def test_overlap_on_init_plus_real_file_still_blocks() -> None:
+    """If the intersection contains __init__.py *and* a regular file, it still
+    blocks — the regular file is the real conflict surface, not the barrel."""
+    active = [
+        make_active_worker(
+            "WOR-11",
+            allowed_paths=[
+                "app/core/watcher/watcher.py",
+                "app/core/watcher/__init__.py",
+            ],
+        )
+    ]
+    candidate = make_manifest(
+        allowed_paths=[
+            "app/core/watcher/watcher.py",
+            "app/core/watcher/__init__.py",
+        ]
+    )
+    assert check_allowed_paths_overlap(active, candidate) == ["WOR-11"]
+
+
+def test_root_level_init_py_treated_as_append_only() -> None:
+    """A bare 'app/__init__.py' entry should also count as the barrel — the
+    helper checks for the literal name and any '/__init__.py' suffix."""
+    active = [make_active_worker("WOR-11", allowed_paths=["app/__init__.py"])]
+    candidate = make_manifest(allowed_paths=["app/__init__.py"])
+    assert check_allowed_paths_overlap(active, candidate) == []
+
+
 # ---------------------------------------------------------------------------
 # build_worker_env
 # ---------------------------------------------------------------------------

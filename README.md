@@ -155,7 +155,8 @@ To run Claude Code against a local vLLM server instead of the Anthropic API:
   --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \
   --reasoning-parser qwen3 --enable-prefix-caching \
   --language-model-only --safetensors-load-strategy prefetch \
-  --enable-auto-tool-choice --tool-call-parser qwen3_coder
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --default-chat-template-kwargs '{"preserve_thinking": true}'
 
 # 2. Copy the example config and start LiteLLM proxy (keep terminal open)
 cp litellm-local.yaml.example litellm-local.yaml

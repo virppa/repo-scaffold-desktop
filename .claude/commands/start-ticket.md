@@ -40,7 +40,8 @@ Watcher: not running
       --served-model-name qwen3-coder --max-model-len 262144 --max-num-seqs 16 \
       --kv-cache-dtype fp8 --max-num-batched-tokens 4096 --reasoning-parser qwen3 \
       --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch \
-      --enable-auto-tool-choice --tool-call-parser qwen3_coder
+      --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+      --default-chat-template-kwargs '{"preserve_thinking": true}'
     python -m app.cli watcher --worker-mode local
 
   Auto mode (uses each manifest's implementation_mode):

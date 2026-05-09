@@ -176,16 +176,43 @@ the PR is created, giving fine-grained retry resume.
 
 ### 4. Run required checks
 
-After implementation, run each command in `required_checks` in order. Run them
+After implementation, run each command in `required_checks`. Run them
 **verbatim** as written in the manifest — do NOT scope them down to specific
 files for "speed", because the watcher will run them at the manifest's full
 scope and any regression you missed will fail the ticket (WOR-353).
 
-```bash
-<check command 1>
-<check command 2>
-...
+**Run the four checks in parallel — they have no data dependencies (WOR-413).**
+`ruff check .`, `mypy app/`, `pytest`, `lint-imports` each read source files
+independently and produce their own findings. Emit all four as separate
+`tool_use` blocks in the **same assistant message** rather than as four
+sequential Bash calls. The runtime executes them concurrently and returns all
+four `tool_result` blocks in one user turn. Wall-time of the check phase
+becomes `max(individual durations)` instead of `sum`, typically halving it.
+
 ```
+# CORRECT: one assistant message with four parallel Bash tool_use blocks
+[Bash] ruff check .
+[Bash] mypy app/
+[Bash] lint-imports
+[Bash] pytest
+```
+
+```
+# WRONG: four sequential Bash calls across four assistant messages
+turn 1: [Bash] ruff check .  →  tool_result
+turn 2: [Bash] mypy app/     →  tool_result
+turn 3: [Bash] lint-imports  →  tool_result
+turn 4: [Bash] pytest        →  tool_result
+```
+
+WOR-412 measured the parallel-tool-use rate at 9-25% across observed worker
+sessions, with the check sweep being the largest reliably-parallel phase per
+ticket. Aim for 100% parallel here. Top observed parallel combos are
+`Bash + Bash`, `Read + Read`, `Bash + Read` — the same pattern applied to
+`Read + Read + Read` during the investigation phase before the first edit.
+
+If a check fails, fix it and re-run only the failing one (no need to re-run
+the whole sweep until you're declaring success).
 
 **Pytest scope rule (WOR-353):** When `required_checks` contains `pytest`
 without arguments, run the **full** test suite — not just the test files

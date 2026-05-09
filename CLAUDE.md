@@ -289,7 +289,8 @@ vLLM 0.20.0 serves the Anthropic Messages API natively (`/v1/messages`), so Clau
   --kv-cache-dtype fp8 --max-num-batched-tokens 4096 \
   --reasoning-parser qwen3 --enable-prefix-caching \
   --language-model-only --safetensors-load-strategy prefetch \
-  --enable-auto-tool-choice --tool-call-parser qwen3_coder
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --default-chat-template-kwargs '{"preserve_thinking": true}'
 
 # 2. Launch Claude Code in a new terminal (Windows / cmd.exe)
 set ANTHROPIC_BASE_URL=http://localhost:8000
@@ -339,6 +340,8 @@ Test core logic only. Priority: config validation, preset selection, file genera
 Rules for local worker sessions (watcher-spawned `claude` processes). Each tool call is a ~40s round-trip — minimising call count directly reduces wall time.
 
 **Emit independent tool calls in parallel (WOR-387).** When multiple tool calls don't depend on each other's results, emit ALL the `tool_use` blocks in ONE assistant message. The runtime executes them in parallel and returns all `tool_result` blocks in one user turn. A serial 4-Read sequence pays the turn-boundary cost (prefill + decode warmup, 10-30s on long context) 4 times; one parallel 4-Read pays it once. Only serialize when a later call's input genuinely depends on an earlier result (e.g. "Read the file we just located via Glob"). The investigation phase before the first edit is the highest-leverage place to apply this — replace 5-15 single-Read turns with 1-3 multi-Read turns.
+
+**The four required checks specifically should always be parallel (WOR-413).** `ruff check .`, `mypy app/`, `pytest`, `lint-imports` have no data dependencies on each other. Emit all four as `tool_use` blocks in one assistant message. WOR-412 measured the per-session parallel-tool-use rate at 9-25%; the check sweep is the easiest 100% target. Halves wall-time of the pre-finalize phase.
 
 **No standalone `cd` commands.** Every `cd` is a wasted round-trip. Use absolute paths or chain with the actual command:
 ```bash

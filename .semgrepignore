@@ -11,6 +11,10 @@ scripts/bench/lifecycle/ollama_manager.py
 # No user input flows in. Same precedent as scripts/bench/drivers/.
 scripts/spikes/
 
+# Ad-hoc experiment scripts: hit localhost/WSL-IP-only vLLM endpoints during
+# WOR-400 preserve_thinking and effort A/B investigations. No user input flows in.
+.claude/effort_test/
+
 # base_url is a TOML config value validated to http/https at construction;
 # not user-controlled. Same precedent as scripts/bench/drivers/.
 scripts/bench/workloads.py
