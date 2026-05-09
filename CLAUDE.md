@@ -94,6 +94,7 @@ Module responsibilities:
 - `escalation_policy.py` — `EscalationPolicy` Pydantic model: loads `config/escalation_policy.toml`, classifies result-artifact flags and Sonar findings into watcher actions
 - `linear_client.py` — thin Linear GraphQL client (stdlib `urllib` only, no third-party HTTP deps); requires `LINEAR_API_KEY` env var
 - `metrics.py` — SQLite-backed store for per-ticket cost and execution metrics; watcher is sole writer, workers emit JSON result files only. Tables: `ticket_metrics` (per-ticket summary, includes 7 taxonomy + cost columns), `ticket_run_log` (per-attempt records for retry analysis), `check_run_log` (per-check timing/outcome)
+- `wizard.py` — interactive `generate --interactive` wizard; pre-fills from `UserPreferences`, walks the operator through preset + toggle selection, prints a completion summary
 - `watcher/` — watcher subpackage (subpackage boundary, not flat files):
   - `watcher.py` — orchestrator only: polls Linear for `ReadyForLocal` tickets, delegates to sub-modules above
   - `watcher_dispatch.py` — extracted ticket start logic: `start_ticket` module function plus thin class wrappers
@@ -104,8 +105,10 @@ Module responsibilities:
   - `watcher_services.py` — `ServiceManager` class: vLLM readiness gate (probe + ensure-Anthropic-mode); no longer spawns subprocesses post-WOR-368
   - `watcher_signals.py` — signals/softstop/lifecycle functions extracted from `watcher.py` (WOR-401): `register_signals`, `handle_signal`, `wait_for_active_workers`, PID file helpers, softstop sentinel handling, `cleanup_orphaned_worktrees`
   - `watcher_subprocess.py` — worker subprocess lifecycle: `launch_worker`, `run_checks`, `fetch_sonar_findings`, `create_pr`, `build_snippet_tool_restrictions`
+  - `watcher_tui.py` — `WatcherDisplay` rich-based live TUI: worker table, cost panel, PR auto-merge tracker; activated with `--tui` flag (WOR-272)
   - `watcher_types.py` — constants, `LinearClientProtocol`, `ActiveWorker` dataclass, `is_watcher_running`, `_to_metrics_mode`
   - `watcher_worktrees.py` — git worktree lifecycle: `create_worktree`, `rebase_worktree_from_base`, `copy_manifest_to_worktree`, `preserve_worker_artifacts`, `cleanup_worktree`, `cleanup_orphaned_worktrees`, `backup_plan_files`, `restore_plan_files`, `write_worker_pytest_config`
+  - `worker_waste.py` — post-hoc waste-score analysis on worker JSONL logs; `compute_waste_score` flags redundant reads, suppressed loops, and tool-gap patterns; surfaced in `ticket_metrics.waste_score` for retro analysis
 - `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records; shares the same `app.db` file as `metrics.py` (separate `bench_run` table); stores hardware/timing/quality columns per run
 - `main.py` — PySide6 `QApplication` entry point
 
@@ -150,14 +153,18 @@ module-level imports between `metrics` and `bench_store` are not.
 
 ---
 
-## Current priorities
+## Current focus
 
-1. Generator logic working end-to-end
-2. Presets clean and easy to extend
-3. Minimal but usable PySide6 UI
-4. Optional post-setup actions (git init, pre-commit install)
+The hybrid execution engine is the primary delivery vehicle: the watcher daemon dispatches groomed Linear tickets to local workers (vLLM-served Qwen3.6-35B-A3B-NVFP4) by default, with cloud (Anthropic API) as fallback for tickets that can't run locally. Active milestone: **Watcher v3 — routing & cost economics** (~67% as of 2026-05-10).
 
-Do not jump ahead to integrations until the current layer works.
+V1 scaffolder priorities (generator logic, presets, PySide6 UI) are largely shipped. The codebase has matured into a self-improving build agent platform. UI work is gated behind the **Wizard CLI** milestone (currently 17%) — interactive CLI substitute for the GUI; PySide6 desktop GUI sits behind that at 11%.
+
+Recent capability shifts that inform planning (full notes in `~/.claude/projects/.../memory/`):
+
+- **Concurrent worker dispatch** (WOR-410): the `__init__.py` overlap carve-out lets package-split waves run multiple workers in parallel against the same epic. Sustained 2-worker concurrency hits ~190 tok/s aggregate vs ~27 tok/s solo (~7× total throughput). The win is duty-cycle, not raw GPU — see `project_vllm_concurrent_throughput.md`.
+- **preserve_thinking** (WOR-400): CoT preservation across worker turns is the production default in canonical commands AND watcher auto-start path. Verified across a production wave with no quality regression.
+- **Workers default to facade-style splits** (memory: `project_split_pattern_facade_default.md`): qwen3-coder splits to sibling modules without touching `__init__.py` even when the manifest allows it. Concurrent split-ticket dispatch is safer than the WOR-410 carve-out's risk model assumed.
+- **Multi-shell argv pattern** (WOR-415, memory: `reference_multishell_quoting_use_script_file.md`): when content has to traverse `subprocess → wt.exe → wsl → bash`, write it to disk and run `bash <script>`. Inline literals and `$(cat …)` substitution both fail; only on-disk scripts read by bash directly survive.
 
 ---
 
@@ -443,9 +450,3 @@ git commit -m "Part of WOR-NNN: spike findings — <topic>"
 ```
 
 Spike PRs always require human review. Do not enable auto-merge on spike PRs.
-
----
-
-## Immediate milestone
-
-**Generate a local repository skeleton from a selected preset and write all files to disk.**
