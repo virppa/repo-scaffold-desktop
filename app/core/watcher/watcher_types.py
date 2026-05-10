@@ -40,7 +40,7 @@ _VLLM_SERVED_MODEL = "qwen3-coder"
 # Claude Code routes by tier via ANTHROPIC_DEFAULT_*_MODEL, so the on-the-wire
 # request reaches vLLM as "qwen3-coder" but Claude Code's accounting still says
 # this. A "served_model_name" column would be the cleaner long-term fix.
-_LOCAL_MODEL = "claude-sonnet-4-6"
+_LOCAL_MODEL = "qwen3-coder"  # matches --served-model-name in vLLM CLI (CLAUDE.md)
 _WORKTREE_BASE = Path("worktrees")
 
 _ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(
