@@ -36,6 +36,11 @@ from app.core.watcher.watcher_worktrees import (
 
 logger = logging.getLogger(__name__)
 
+# WOR-312: Maximum number of retries per dispatch, regardless of manifest
+# failure_policy.max_retries. A value of 1 means: initial attempt + 1 retry.
+# Higher values from manifest are silently capped.
+ATTEMPT_HARDCAP = 1
+
 
 def safe_set_state(
     linear: LinearClientProtocol,
@@ -145,7 +150,7 @@ def _execute_finalization(
         project_id=project_id,
     )
     if not checks_ok:
-        worker.retry_count += 1
+        worker.attempt_count += 1
     if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
         escalated = bool(manifest.failure_policy.escalate_to_cloud)
         if escalated:

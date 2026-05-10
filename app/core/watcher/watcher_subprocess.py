@@ -89,9 +89,13 @@ def launch_worker(
     worktree_path: Path,
     effective_mode: str,
     worker_verbose: bool = False,
+    extra_constraint: str | None = None,
 ) -> subprocess.Popen[bytes]:
     """Launch a worker subprocess and return the Popen handle."""
     prompt = expand_skill(repo_root, manifest.ticket_id)
+
+    if extra_constraint:
+        prompt = f"RETRY: {extra_constraint}\n\n{prompt}"
 
     disallowed_tools: list[str] | None = None
     if manifest.context_snippets and effective_mode == "cloud":

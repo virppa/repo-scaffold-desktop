@@ -70,7 +70,9 @@ class FailurePolicy(BaseModel):
     warn  — log the failure but continue (use only for non-blocking checks)."""
 
     max_retries: Annotated[int, Field(ge=0, le=5)] = 0
-    """Number of times the worker may retry a failed required check before giving up."""
+    """Number of times the worker may retry a failed required check before giving up.
+    Enforced with a hard cap of 1 retry per dispatch (WOR-312), regardless of this
+    value. Values above 1 are silently capped."""
 
     escalate_to_cloud: bool = False
     """If True the watcher should escalate to a cloud session when the worker fails."""
