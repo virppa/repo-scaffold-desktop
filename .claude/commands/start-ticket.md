@@ -144,6 +144,8 @@ If no siblings are In Progress, skip this block silently.
 - Flag any active blockers from Linear — if this ticket is blocked by an open issue, warn before proceeding
 
 ### 2. As Architect — plan the implementation
+
+<!-- WOR-276: Successor to WOR-214's effort field — moved from a raw enum into a strict 3-tier gate with a verb-default override. -->
 - List which files need to change and what changes are needed
 - List what new files will be created (not just edited) — for each one, add to `risk_flags` in the manifest: `"<filename>.py is a new file — worker must read source type signatures before writing and run mypy on the file immediately after creation"`
 - List what new test files will be created — for each one, add to `risk_flags`: `"<test_file>.py is a new test file — worker must read a sibling test file first for fixture/mock patterns, then run pytest <file> -x immediately after creation"`
@@ -155,7 +157,11 @@ If no siblings are In Progress, skip this block silently.
 - Flag any security surface introduced: new I/O, user input handling, file operations, subprocess calls
 - Note edge cases and overwrite behavior to consider
 - Assess local-model suitability: is the scope bounded (≤3 small/medium files, straightforward wiring)? Or does it touch large/complex modules (e.g. watcher.py, generator.py) requiring multi-step reasoning across many dependencies? Record your conclusion — it determines `implementation_mode` in the manifest.
-- Classify the ticket's effort level using this rule: simple/additive work touching ≤2 files → 'high'; bounded multi-file work → 'xhigh'; complex/large modules or deep cross-file reasoning → 'max'. Record your classification in the manifest.
+- Classify the ticket's effort level using this 3-tier gate (WOR-276 successor to WOR-214's effort field). Record your classification in the manifest along with a one-sentence justification:
+  - **high** — single source file (<200 LOC) with only test files in allowed_paths; OR test-only allowed_paths; OR a single-line / single-block fix (e.g. typo, error message, return value).
+  - **xhigh** — bounded multi-file work (≤4 files), no new abstractions introduced.
+  - **max** — new core module; multi-file refactor; package reorganization; touches `watcher.py` or `generator.py`.
+  - **Verb override:** If the manifest's `objective` contains any of the words `extract`, `split`, `reorganize`, `migrate`, or `rewrite`, the default is `max` regardless of other signals.
 - **Taxonomy classification** (WOR-262) — record these 7 dimensions in the manifest. All optional but populate when you can:
   - `change_type` — one of `additive` (new feature/file), `modification` (existing behavior changes), `refactor` (no behavior change), `removal` (deletion/cleanup), `docs` (markdown / comments only)
   - `reasoning_demand` 1-5 — how much cross-file reasoning is needed (1 = local change in one function, 5 = touches many modules with non-obvious invariants)

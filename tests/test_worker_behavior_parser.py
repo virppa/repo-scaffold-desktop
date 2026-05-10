@@ -367,3 +367,22 @@ def test_worker_behavior_sentinels_distinguish_unparseable_from_readable() -> No
     assert rdb.tool_calls_breakdown == {}
     assert unp.input_tokens_max is None
     assert rdb.input_tokens_max is None  # both — readable-empty has no turns
+
+
+def test_parse_logs_warning_on_oserror(tmp_path: Path, caplog: object) -> None:
+    """When _parse_worker_behavior hits an OSError-shaped failure it emits
+    a WARNING (not silently returning all-Nones)."""
+    # Create a directory at the path — open() raises IsADirectoryError
+    # which is a subclass of OSError.
+    bad_path = tmp_path / "not_a_file"
+    bad_path.mkdir(exist_ok=True)
+
+    with caplog.at_level("WARNING", logger="app.core.watcher.watcher_helpers"):
+        result = _parse_worker_behavior(bad_path / "worker.log")
+
+    assert result.turn_count is None
+    assert any(
+        "Failed to read" in record.message
+        and " — behaviour telemetry columns will be NULL" in record.message
+        for record in caplog.records
+    )

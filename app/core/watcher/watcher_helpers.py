@@ -652,5 +652,11 @@ def _parse_worker_behavior(log_path: Path) -> WorkerBehavior:
                 input_tokens_last=input_tokens_last,
                 redundant_reads_count=redundant,
             )
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "Failed to read %s — behaviour telemetry columns will be NULL; %s",
+            log_path,
+            exc,
+            exc_info=True,
+        )
         return WorkerBehavior.empty_unparseable()
