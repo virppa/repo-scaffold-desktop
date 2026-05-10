@@ -117,8 +117,11 @@
       "mcp__linear-server__list_issue_statuses",
       "mcp__linear-server__list_teams",
       "mcp__linear-server__list_comments",
+      "mcp__sonarqube__issues",
       "Bash(ruff check *)",
-      "Bash(mypy app/)"
+      "Bash(mypy app/)",
+      "Bash(lint-imports*)",
+      "Bash(bandit *)"
     ]
   }
 }
