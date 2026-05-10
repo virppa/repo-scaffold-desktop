@@ -318,8 +318,8 @@ Construct the manifest from the planning context gathered in steps 1–4:
   "done_definition": "<plain-English done criteria>",
   "failure_policy": {
     "on_check_failure": "abort",
-    "max_retries": 0,
-    "escalate_to_cloud": false
+    "max_retries": 1,          // per WOR-223 rule: 2 for refactor, 1 otherwise
+    "escalate_to_cloud": false  // per WOR-223 rule: true when (additive AND rd>=2) OR docs
   },
   "ticket_state_map": {
     "in_progress_local": "InProgressLocal",
@@ -336,6 +336,37 @@ Construct the manifest from the planning context gathered in steps 1–4:
 ```
 
 Write this JSON to `.claude/artifacts/<ticket_id_lower>/manifest.json` (e.g. `.claude/artifacts/wor_80/manifest.json`). Create parent dirs as needed.
+
+### Routing & retry cap — per WOR-223
+
+When filling `max_retries` and `escalate_to_cloud` in the manifest above, follow this rule:
+
+```
+Set failure_policy.escalate_to_cloud = true when (change_type == "additive" AND reasoning_demand >= 2) OR (change_type == "docs"); else false.
+Set max_retries = 2 when change_type == "refactor"; else 1.
+```
+
+Do NOT set `refactor` tickets to `escalate_to_cloud=true`. They have a 0% failure rate locally — the historical data says try harder locally, never escalate.
+
+#### Why this rule (WOR-223)
+
+A 60-ticket retrospective analysis of local worker failure rates by `change_type` × `reasoning_demand` cell:
+
+| Cell | n | Failures | Failure rate |
+|------|---|----------|-------------|
+| refactor (any rd) | 20 | 0 | 0/20 = 0% |
+| additive, rd >= 2 | 21 | 7 | 7/21 = 33.3% |
+| additive, rd < 2 | — | — | low |
+| docs | 6 | 2 | 2/6 = 33.3% |
+| modification | — | — | low |
+
+Key findings:
+- **Refactor** tickets: 0/20 = 0% failure rate. These are the safest category for local execution. `max_retries=2` to encourage thorough local work.
+- **Additive + high reasoning demand** (rd >= 2): 7/21 = 33.3% failure rate. The broad cluster across all tickets with `additive` and `rd>=2` was 7/21 = 35% when counting the full population. Use 33.3% for the precise per-cell n=21 cluster. Flag for cloud routing.
+- **Docs** tickets: 2/6 = 33.3% failure rate. Small sample (n=6) but worth flagging conservatively.
+- **Modification** tickets: low failure rate historically — no special handling needed.
+
+The `max_retries` rule follows from the same data: refactor tickets are reliably successful locally so a higher retry budget is safe; all other types default to 1 retry.
 
 > **Path normalization:** `<ticket_id_lower>` is `ticket_id.lower().replace("-", "_")` — hyphens become underscores (e.g. `WOR-127` → `wor_127`). This matches `ArtifactPaths.from_ticket_id()` in `app/core/manifest.py`. Using `wor-127` (hyphen) will cause a "No such file or directory" error at watcher startup.
 
