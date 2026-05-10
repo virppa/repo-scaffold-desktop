@@ -30,6 +30,7 @@ from .watcher_finalize_helpers import (
     safe_set_state,
 )
 from .watcher_helpers import (
+    _parse_hook_trust_violations,
     _parse_worker_api_retries,
     _parse_worker_behavior,
     _parse_worker_subagent_spawns,
@@ -243,6 +244,17 @@ def finalize_worker(
     )
     api_retry_count = _parse_worker_api_retries(log_path)
     subagent_spawns = _parse_worker_subagent_spawns(log_path)
+    hook_trust_violations = _parse_hook_trust_violations(log_path)
+    # WOR-274: warn when the worker manually re-ran quality checks outside
+    # the PostToolUse hook loop.  Threshold > 1 because a single accidental
+    # re-run may be harmless; repeated re-runs indicate systematic distrust
+    # of the hook infrastructure.
+    if hook_trust_violations is not None and hook_trust_violations > 1:
+        logger.warning(
+            "hook-trust violation: %s ran quality-check tools manually %d times",
+            worker.ticket_id,
+            hook_trust_violations,
+        )
     # WOR-380: per-worker behavior telemetry. Concurrency-safe — extracted
     # from this worker's own log file.
     behavior = _parse_worker_behavior(log_path)
@@ -427,6 +439,8 @@ def finalize_worker(
             api_retry_count=api_retry_count,
             # WOR-364: persist Task-tool subagent count
             subagent_spawns=subagent_spawns,
+            # WOR-274: count of manual quality-check Bash invocations during step 3
+            hook_trust_violations=hook_trust_violations,
             # WOR-363: persist dispatch-time worker pool size
             dispatch_concurrency=worker.dispatch_concurrency,
             # WOR-370: vLLM /metrics deltas (None unless solo throughout)
