@@ -211,6 +211,63 @@ def _parse_worker_api_retries(log_path: Path) -> int | None:
         return None
 
 
+# WOR-274: commands whose manual invocation during step 3 is a hook-trust
+# violation. Case-sensitive — 'Ruff' does not match 'ruff'.
+_HOOK_VIOLATION_TOKENS = frozenset(
+    ("ruff", "mypy", "pytest", "bandit", "lint-imports"),
+)
+
+
+def _parse_hook_trust_violations(log_path: Path) -> int | None:
+    """Count manual invocations of quality-check tools as Bash tool_use events.
+
+    Scans the worker stream-json log for ``type=assistant`` events whose
+    ``content`` includes a ``Bash`` tool_use block.  The first whitespace-
+    delimited token of the command (after stripping leading whitespace) is
+    compared against ``{"ruff", "mypy", "pytest", "bandit", "lint-imports"}``
+    (case-sensitive).  Each match increments the count.
+
+    This detects when a worker manually re-runs checks that should only be
+    triggered by PostToolUse hooks (step 3 of /implement-ticket).  A count
+    greater than 1 is considered a hook-trust violation.
+
+    Returns ``None`` if the log cannot be opened/parsed; ``0`` for
+    parseable logs with no matching Bash tool_use events.
+    """
+    try:
+        with log_path.open(encoding="utf-8") as f:
+            count = 0
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") != "assistant":
+                    continue
+                msg = obj.get("message", {}) or {}
+                for block in msg.get("content", []):
+                    if (
+                        not isinstance(block, dict)
+                        or block.get("type") != "tool_use"
+                        or block.get("name") != "Bash"
+                    ):
+                        continue
+                    command = (block.get("input") or {}).get("command", "")
+                    if not isinstance(command, str):
+                        continue
+                    first_token = (
+                        command.lstrip().split()[0] if command.lstrip() else ""
+                    )
+                    if first_token in _HOOK_VIOLATION_TOKENS:
+                        count += 1
+            return count
+    except Exception:
+        return None
+
+
 def format_token_count(total: int) -> str:
     """Format a token count for display: ``142k`` for >= 1000, raw integer below."""
     if total < 1000:

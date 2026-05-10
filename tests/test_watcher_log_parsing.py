@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from app.core.watcher.watcher_log_parsing import (
+    _parse_hook_trust_violations,
     _parse_worker_api_retries,
     _parse_worker_subagent_spawns,
     _parse_worker_usage,
@@ -591,6 +592,246 @@ def test_parse_worker_subagent_spawns_other_tools_ignored(tmp_path: Path) -> Non
 def test_parse_worker_subagent_spawns_missing_log(tmp_path: Path) -> None:
     """Missing log returns None."""
     assert _parse_worker_subagent_spawns(tmp_path / "no_such_file.log") is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-274 — _parse_hook_trust_violations
+# ---------------------------------------------------------------------------
+
+
+def _bash_block(command: str) -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "a1",
+                "content": [
+                    {"type": "tool_use", "name": "Bash", "input": {"command": command}}
+                ],
+            },
+        }
+    )
+
+
+def _bash_non_match() -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "id": "a1",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "input": {"command": "echo hello"},
+                    }
+                ],
+            },
+        }
+    )
+
+
+def test_parse_hook_trust_violations_zero(tmp_path: Path) -> None:
+    """Log with no matching Bash tool_use blocks returns 0."""
+    log = _write_log(
+        tmp_path,
+        [
+            _bash_non_match(),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_hook_trust_violations(log) == 0
+
+
+def test_parse_hook_trust_violations_counts_ruff(tmp_path: Path) -> None:
+    """A Bash block whose first token is 'ruff' counts as 1."""
+    log = _write_log(tmp_path, [_bash_block("ruff check .")])
+    assert _parse_hook_trust_violations(log) == 1
+
+
+def test_parse_hook_trust_violations_counts_multiple(tmp_path: Path) -> None:
+    """Multiple violation Bash blocks are counted separately."""
+    log = _write_log(
+        tmp_path,
+        [
+            _bash_block("ruff check ."),
+            _bash_block("mypy app/"),
+            _bash_block("pytest tests/test_foo.py"),
+            _bash_block("bandit app/"),
+            _bash_block("lint-imports"),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_hook_trust_violations(log) == 5
+
+
+def test_parse_hook_trust_violations_ignores_non_matching_tools(tmp_path: Path) -> None:
+    """Other tool names (Read, Edit, Grep) or non-check commands don't count."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "id": "a1",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Read",
+                                "input": {"file_path": "x"},
+                            }
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "id": "a1",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Edit",
+                                "input": {"file_path": "x"},
+                            }
+                        ],
+                    },
+                }
+            ),
+            _bash_non_match(),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_hook_trust_violations(log) == 0
+
+
+def test_parse_hook_trust_violations_system_events_ignored(tmp_path: Path) -> None:
+    """system events with Bash-like content are ignored."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps({"type": "system", "subtype": "api_retry"}),
+            _bash_non_match(),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_hook_trust_violations(log) == 0
+
+
+def test_parse_hook_trust_violations_missing_log(tmp_path: Path) -> None:
+    """Missing log returns None."""
+    assert _parse_hook_trust_violations(tmp_path / "no_such_file.log") is None
+
+
+def test_parse_hook_trust_violations_empty_command_no_match(tmp_path: Path) -> None:
+    """Bash tool_use with an empty command string does not match."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "id": "a1",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Bash",
+                                "input": {"command": ""},
+                            }
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_hook_trust_violations(log) == 0
+
+
+def test_parse_hook_trust_violations_case_sensitive(tmp_path: Path) -> None:
+    """Case-sensitive: 'Ruff' does not match 'ruff'."""
+    log = _write_log(
+        tmp_path,
+        [
+            _bash_block("Ruff check ."),
+            _bash_block("MYPI app/"),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_hook_trust_violations(log) == 0
+
+
+def test_parse_hook_trust_violations_whitespace_stripping(tmp_path: Path) -> None:
+    """Leading whitespace is stripped before token matching."""
+    log = _write_log(
+        tmp_path,
+        [
+            _bash_block("   ruff check ."),
+            _bash_block("\t\truff format ."),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_hook_trust_violations(log) == 2
+
+
+def test_parse_hook_trust_violations_non_bash_tool_ignored(tmp_path: Path) -> None:
+    """tool_use blocks with names other than Bash are ignored."""
+    log = _write_log(
+        tmp_path,
+        [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "id": "a1",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Task",
+                                "input": {"command": "ruff check"},
+                            }
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_hook_trust_violations(log) == 0
+
+
+def test_parse_hook_trust_violations_docker_run_not_matched(tmp_path: Path) -> None:
+    """'docker run ruff/lint' does not match because first token is 'docker'."""
+    log = _write_log(
+        tmp_path,
+        [
+            _bash_block("docker run ruff/lint check ."),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 5}}
+            ),
+        ],
+    )
+    assert _parse_hook_trust_violations(log) == 0
 
 
 # ---------------------------------------------------------------------------

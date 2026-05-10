@@ -15,6 +15,7 @@ from typing import IO
 from app.core.manifest import ExecutionManifest
 
 from .watcher_log_parsing import (
+    _parse_hook_trust_violations,
     _parse_worker_api_retries,
     _parse_worker_subagent_spawns,
     _parse_worker_usage,
@@ -28,6 +29,7 @@ __all__ = [
     "_read_result_flags",
     "_parse_worker_usage",
     "_parse_worker_subagent_spawns",
+    "_parse_hook_trust_violations",
     "_parse_worker_api_retries",
     "format_token_count",
     "format_elapsed",
