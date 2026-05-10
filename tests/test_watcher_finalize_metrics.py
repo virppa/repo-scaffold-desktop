@@ -202,7 +202,7 @@ def test_finalize_worker_failed_check_in_run_log_on_failure(
         _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
 
     run_call = metrics_mock.record_run.call_args[0][0]
-    assert run_call.failed_check == "ruff check ."
+    assert run_call.failed_check == '["ruff check .", "mypy app/"]'
 
 
 # ---------------------------------------------------------------------------

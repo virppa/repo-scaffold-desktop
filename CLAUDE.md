@@ -231,6 +231,8 @@ Linear workflow states for the hybrid execution model. The watcher daemon uses t
 | `MainPRReady` | `/close-epic` | Epic → main PR is open awaiting human review |
 | `Done` | human merge | Merged to main |
 
+**In-dispatch retry:** When a local worker fails quality checks, the watcher retries the same dispatch cycle by re-launching the worker with a RETRY hint — avoiding the slower Blocked → ReadyForLocal Linear state transition. Maximum 1 retry per dispatch (hard-capped), controlled by the manifest's `failure_policy.max_retries` (0 = no retry).
+
 **`local-ready` label:** A tag on the ticket indicating it is safe for local LLM execution — bounded scope, no cloud-only dependencies, no sensitive credentials needed. The watcher checks for this label as a secondary signal alongside `ReadyForLocal` state. A ticket can carry `local-ready` before `/start-ticket` runs to pre-declare it as a local candidate.
 
 **Escalation:** If the local worker fails beyond the configured retry budget, the watcher moves the ticket back to `In Progress` (cloud) and attaches an escalation artifact. See `app/core/escalation_policy.py` for the rules.

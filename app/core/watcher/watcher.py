@@ -150,7 +150,6 @@ class Watcher:
         self._running = True
         self._services = ServiceManager(self._repo_root)
         self._worker_verbose = worker_verbose
-        self._retry_counters: dict[str, int] = {}
         self._escalation_policy = EscalationPolicy.from_toml()
         self._no_epic_shutdown = no_epic_shutdown
         self._last_deferral_state: dict[str, str] = {}

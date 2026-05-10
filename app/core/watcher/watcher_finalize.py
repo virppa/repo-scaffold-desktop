@@ -23,6 +23,7 @@ from app.core.metrics import (
 )
 
 from .watcher_finalize_helpers import (
+    ATTEMPT_HARDCAP,
     _execute_finalization,
     _read_result_status,
     _try_post_comment,
@@ -42,6 +43,7 @@ from .watcher_helpers import (
 )
 from .watcher_subprocess import (
     create_pr,
+    launch_worker,
     parse_git_shortstat,
 )
 from .watcher_tui import TrackedPR
@@ -225,18 +227,61 @@ def finalize_worker(
     project_id: str,
     tracked_prs: list[TrackedPR] | None = None,
 ) -> Outcome:
-    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, _ = (
-        _execute_finalization(
-            worker,
-            returncode,
-            linear,
-            escalation_policy,
-            repo_root,
-            tracked_prs=tracked_prs,
-            metrics=metrics,
-            project_id=project_id,
+    eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
+
+    # WOR-312: in-dispatch retry loop. On check failure, re-launch the worker
+    # with a RETRY hint and loop back to re-run checks — avoiding the slower
+    # Linear Blocked → ReadyForLocal redispatch path.
+    first_finalization = True
+    max_retries = min(ATTEMPT_HARDCAP, worker.manifest.failure_policy.max_retries)
+    while True:
+        outcome, escalated, artifacts_preserved, sonar_findings, failed_checks, _ = (
+            _execute_finalization(
+                worker,
+                returncode,
+                linear,
+                escalation_policy,
+                repo_root,
+                tracked_prs=tracked_prs,
+                metrics=metrics,
+                project_id=project_id,
+            )
         )
-    )
+        if not failed_checks:
+            break
+        # WOR-312: attempt_count is the number of _execute_finalization calls
+        # so far. Use > (not >=) so that max_retries=1 means: 1 initial attempt
+        # + 1 retry before breaking.  max_retries=0 breaks immediately.
+        if worker.attempt_count > max_retries:
+            break
+        if first_finalization:
+            first_finalization = False
+            failed_checks_json = json.dumps([str(f["check"]) for f in failed_checks])
+            extra = (
+                f"Worker failed checks: {failed_checks_json}. "
+                f"Re-launching with RETRY hint."
+            )
+            logger.info("%s — %s", worker.ticket_id, extra)
+        else:
+            logger.warning(
+                "%s check retry %d/%d — %s",
+                worker.ticket_id,
+                worker.attempt_count,
+                max_retries,
+                "checks failed",
+            )
+        failed_checks_json = json.dumps([str(f["check"]) for f in failed_checks])
+        extra_constraint = (
+            f"Worker failed checks: {failed_checks_json}. Re-launching with RETRY hint."
+        )
+        launch_worker(
+            repo_root,
+            worker.manifest,
+            worker.worktree_path,
+            eff,
+            extra_constraint=extra_constraint,
+        )
+        first_finalization = False
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
     input_tokens, output_tokens, context_compactions, compact_duration_ms = (
@@ -263,7 +308,6 @@ def finalize_worker(
         if behavior.tool_calls_breakdown is not None
         else None
     )
-    eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
 
     # Parse git diff --shortstat to populate lines_changed / files_changed.
     # Three-dot diff against the merge-base — invariant under base_branch
@@ -339,9 +383,9 @@ def finalize_worker(
             top_reasons,
         )
 
-    # Derive the first failed check name for TicketRunLog (WOR-261)
-    first_failed_check: str | None = (
-        str(failed_checks[0]["check"]) if failed_checks else None
+    # failed_check: store JSON array of all failed check names (WOR-312)
+    failed_check_json: str | None = (
+        json.dumps([str(f["check"]) for f in failed_checks]) if failed_checks else None
     )
     # check_failures: store the list when non-empty, else None
     check_failures = failed_checks if failed_checks else None
@@ -413,7 +457,7 @@ def finalize_worker(
             output_tokens_per_wall_second=output_tokens_per_wall_second,
             escalated_to_cloud=escalated,
             outcome=outcome,
-            retry_count=worker.retry_count,
+            retry_count=worker.attempt_count,
             context_compactions=context_compactions,
             check_failures=check_failures,
             lines_changed=lines_changed,
@@ -469,10 +513,10 @@ def finalize_worker(
     metrics.record_run(
         TicketRunLog(
             ticket_id=worker.ticket_id,
-            attempt=worker.retry_count + 1,
+            attempt=worker.attempt_count + 1,
             implementation_mode=_to_metrics_mode(eff),
             outcome=outcome,
-            failed_check=first_failed_check,
+            failed_check=failed_check_json,
             wall_time_s=wall_time,
             input_tokens=input_tokens,
             output_tokens=output_tokens,

@@ -358,7 +358,9 @@ class TicketRunLog(BaseModel):
     model_config = {"extra": "forbid"}
 
     ticket_id: str
-    attempt: int = Field(description="1-based attempt number (retry_count + 1)")
+    attempt: int = Field(
+        description="1-based total attempt count (0-indexed attempt_count + 1)"
+    )
     implementation_mode: ImplementationMode
     outcome: Outcome
     failed_check: str | None = None
