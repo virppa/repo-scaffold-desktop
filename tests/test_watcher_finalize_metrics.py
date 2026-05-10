@@ -883,3 +883,203 @@ def test_finalize_worker_no_warning_when_violations_leq_one(
     assert m.hook_trust_violations == 1
     # No WARNING should be emitted for count == 1
     assert not any("hook-trust violation" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# WOR-420 — behavior telemetry flows through finalize → metrics.record
+# ---------------------------------------------------------------------------
+
+
+def _make_behavior_log(log_path: Path, ticket_id: str) -> None:
+    """Write a representative stream-json log with assistant turns.
+
+    Includes:
+    - 2 assistant turns with thinking blocks
+    - 3 tool_use blocks (Read, Bash, Save)
+    - 1 standalone tool_use (no thinking)
+    - A result sentinel
+    - Edge-case: a content block with multi-byte unicode
+    """
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    entries = [
+        # Turn 1: assistant with thinking + Read tool
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": (
+                            "Let me analyze the request.\n"
+                            "This block contains multi-byte unicode: café, naïve, ñ"
+                        ),
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "Read",
+                        "input": {"file_path": "app/core/foo.py"},
+                    },
+                ],
+                "usage": {"input_tokens": 15000, "output_tokens": 200},
+            },
+        },
+        # Turn 2: assistant with thinking + Bash tool
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Now run the tests.",
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "input": {"command": "pytest tests/"},
+                    },
+                ],
+                "usage": {"input_tokens": 16000, "output_tokens": 150},
+            },
+        },
+        # Turn 3: assistant with Save tool (no thinking)
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Save",
+                        "input": {"path": "app/core/foo.py"},
+                    },
+                ],
+                "usage": {"input_tokens": 14000, "output_tokens": 100},
+            },
+        },
+        # Non-assistant line (should be ignored)
+        {"type": "user", "message": {"content": [{"type": "text", "text": "ok"}]}},
+        # Result sentinel
+        {
+            "type": "result",
+            "usage": {"input_tokens": 15000, "output_tokens": 500},
+            "context_compactions": 1,
+        },
+    ]
+    with open(log_path, "w", encoding="utf-8") as f:
+        for entry in entries:
+            f.write(json.dumps(entry) + "\n")
+
+
+def test_behavior_fields_populated_from_stream_json_log(tmp_path: Path) -> None:
+    """Behavior telemetry from the worker stream-json log is populated in
+    TicketMetrics passed to metrics.record().
+
+    This is the regression test for WOR-420: after the fix, _parse_worker_behavior
+    correctly extracts assistant turns from the log and finalize_worker includes
+    them in the TicketMetrics sent to metrics.record().
+    """
+    manifest = make_manifest(
+        ticket_id="WOR-420",
+        worker_branch="wor-420-test-ticket",
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+
+    # Write the stream-json log in the worktree path (finalize_worker reads from
+    # worktree_path / ".claude/worker_<id>.log")
+    log_dir = tmp_path
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / ".claude" / "worker_wor-420.log"
+
+    _make_behavior_log(log_file, "WOR-420")
+
+    # Also write a result sentinel in the worktree root for finalize_worker
+    (log_dir / ".claude" / "result.json").write_text(
+        json.dumps({"status": "success"}) + "\n", encoding="utf-8"
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-420",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=log_dir,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+
+    # All behavior columns must be non-NULL
+    assert m.turn_count is not None and m.turn_count > 0, "turn_count must be > 0"
+    assert m.tool_calls_total is not None and m.tool_calls_total > 0
+    assert m.tool_calls_breakdown is not None
+    assert m.thinking_blocks is not None and m.thinking_blocks > 0
+    assert m.thinking_chars_total is not None and m.thinking_chars_total > 0
+    assert m.input_tokens_max is not None and m.input_tokens_max > 0
+    assert m.input_tokens_first is not None and m.input_tokens_first > 0
+    assert m.input_tokens_last is not None and m.input_tokens_last > 0
+    assert m.redundant_reads_count is not None
+
+    # Verify specific values from the fixture
+    assert m.turn_count == 3  # 3 assistant turns
+    assert m.tool_calls_total == 3  # Read + Bash + Save
+    assert m.thinking_blocks == 2  # 2 thinking blocks
+    assert m.input_tokens_first == 15000
+    assert m.input_tokens_last == 14000
+    assert m.input_tokens_max == 16000
+
+
+def test_behavior_fields_null_when_no_log(tmp_path: Path) -> None:
+    """When no worker log exists, behavior fields must be None (not crash)."""
+    manifest = make_manifest(
+        ticket_id="WOR-420",
+        worker_branch="wor-420-no-log-test",
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+
+    # No log file — worktree_path has no .claude/worker_wor-420-no-log-test.log
+    worker = ActiveWorker(
+        ticket_id="WOR-420",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+
+    # Without a log, behavior fields should be None (empty_unparseable sentinel)
+    assert m.turn_count is None
+    assert m.tool_calls_total is None
+    assert m.tool_calls_breakdown is None
+    assert m.thinking_blocks is None
+    assert m.thinking_chars_total is None
+    assert m.input_tokens_max is None
+    assert m.input_tokens_first is None
+    assert m.input_tokens_last is None
+    assert m.redundant_reads_count is None
