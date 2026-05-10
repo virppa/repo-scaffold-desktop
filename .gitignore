@@ -20,6 +20,9 @@ build/
 htmlcov/
 pytest.ini
 
+# Root-level worker logs (leaked in WOR-409 — gitignore the pattern so it can't recur)
+worker_*.log
+
 # Ruff
 .ruff_cache/
 
