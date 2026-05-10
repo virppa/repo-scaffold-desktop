@@ -108,7 +108,7 @@ class TestBackfillPopulatesNULLRows:
                 "scripts.backfill_behavior_telemetry.Path.cwd", return_value=tmp_path
             ),
         ):
-            main()
+            main([])
 
         # Verify the row was updated.
         result = store.get_by_ticket("WOR-900", "proj-test")
@@ -145,7 +145,7 @@ class TestBackfillPopulatesNULLRows:
             with patch(
                 "scripts.backfill_behavior_telemetry.Path.cwd", return_value=tmp_path
             ):
-                main()
+                main([])
 
         # Verify populated.
         result = store.get_by_ticket("WOR-900", "proj-test")
@@ -157,7 +157,7 @@ class TestBackfillPopulatesNULLRows:
             with patch(
                 "scripts.backfill_behavior_telemetry.Path.cwd", return_value=tmp_path
             ):
-                main()
+                main([])
 
         # Row should be unchanged (still turn_count=1).
         result = store.get_by_ticket("WOR-900", "proj-test")
@@ -183,7 +183,7 @@ class TestBackfillPopulatesNULLRows:
             with patch(
                 "scripts.backfill_behavior_telemetry.Path.cwd", return_value=tmp_path
             ):
-                main()
+                main([])
 
         # turn_count should still be NULL.
         result = store.get_by_ticket("WOR-901", "proj-test")
@@ -253,7 +253,7 @@ class TestBackfillReports:
             ),
             patch("scripts.backfill_behavior_telemetry.sys.stdout", io_override),
         ):
-            main()
+            main([])
 
         report = "".join(captured).strip()
         # parseable=1, missing=2, excluded=1

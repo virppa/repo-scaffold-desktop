@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(message)s")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Backfill behaviour-telemetry columns for existing ticket_metrics rows."
@@ -41,7 +41,7 @@ def main() -> None:
         default=None,
         help="SQLite DB path (default: auto-detect via MetricsStore.get_db_path).",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv if argv is not None else sys.argv[1:])
 
     db_path = args.db_path or MetricsStore.get_db_path()
     if not db_path.exists():
@@ -115,6 +115,7 @@ def main() -> None:
         if conn.total_changes > rows_updated:
             rows_updated += 1
 
+    conn.commit()
     conn.close()
 
     print(
