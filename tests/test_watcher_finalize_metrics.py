@@ -699,3 +699,187 @@ def test_lines_changed_zero_when_worker_no_op_under_drift(tmp_path: Path) -> Non
 
     assert m.lines_changed == 0
     assert m.files_changed == 0
+
+
+# ---------------------------------------------------------------------------
+# WOR-274 — hook-trust violations
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_hook_trust_violation_warning(
+    tmp_path: Path, caplog: "pytest.LogCaptureFixture"
+) -> None:
+    """When the worker log contains >1 manual check invocations, finalize_worker
+    emits a WARNING and the count lands in TicketMetrics.hook_trust_violations."""
+    import logging
+
+    caplog.set_level(logging.WARNING)
+
+    manifest = make_manifest(
+        ticket_id="WOR-274",
+        worker_branch="wor-274-test-ticket",
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+
+    # Write a log with 3 manual check invocations (ruff + mypy + pytest)
+    # finalize_worker looks at worker.worktree_path / ".claude/worker_<id>.log"
+    log_dir = tmp_path
+    log_dir = tmp_path
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / ".claude" / "worker_wor-274.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text(
+        (
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Bash",
+                                "input": {"command": "ruff check ."},
+                            },
+                        ]
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Bash",
+                                "input": {"command": "mypy app/"},
+                            },
+                        ]
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Bash",
+                                "input": {"command": "pytest tests/"},
+                            },
+                        ]
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 20000, "output_tokens": 500},
+                }
+            )
+            + "\n"
+        ),
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-274",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=log_dir,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.hook_trust_violations == 3
+
+    assert any("hook-trust violation" in rec.message for rec in caplog.records)
+
+
+def test_finalize_worker_no_warning_when_violations_leq_one(
+    tmp_path: Path, caplog: "pytest.LogCaptureFixture"
+) -> None:
+    """A single manual check invocation does NOT trigger the WARNING.
+    Threshold is >1.
+    """
+    import logging
+
+    caplog.set_level(logging.WARNING)
+
+    manifest = make_manifest(
+        ticket_id="WOR-274-single",
+        worker_branch="wor-274-single-test",
+    )
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+
+    log_dir = tmp_path
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / ".claude" / "worker_wor-274-single.log"
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Bash",
+                            "input": {"command": "ruff check ."},
+                        },
+                    ]
+                },
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {"type": "result", "usage": {"input_tokens": 20000, "output_tokens": 500}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-274-single",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=log_dir,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, linear=linear_mock, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.hook_trust_violations == 1
+    # No WARNING should be emitted for count == 1
+    assert not any("hook-trust violation" in rec.message for rec in caplog.records)

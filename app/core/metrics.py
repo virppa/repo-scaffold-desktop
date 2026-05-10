@@ -224,6 +224,14 @@ class TicketMetrics(BaseModel):
             "with its own LLM stream — multiplies effective vLLM concurrency."
         ),
     )
+    hook_trust_violations: int | None = Field(
+        default=None,
+        description=(
+            "Count of manual quality-check Bash invocations during the worker "
+            "session (WOR-274). Values above 1 indicate the worker ran "
+            "ruff/mypy/pytest/bandit/lint-imports outside PostToolUse hooks."
+        ),
+    )
     dispatch_concurrency: int | None = Field(
         default=None,
         description=(
@@ -529,6 +537,10 @@ class MetricsStore:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN subagent_spawns INTEGER"
             )
+        if "hook_trust_violations" not in existing:
+            conn.execute(
+                "ALTER TABLE ticket_metrics ADD COLUMN hook_trust_violations INTEGER"
+            )
         if "dispatch_concurrency" not in existing:
             conn.execute(
                 "ALTER TABLE ticket_metrics ADD COLUMN dispatch_concurrency INTEGER"
@@ -645,7 +657,7 @@ class MetricsStore:
                     constraint_density, ac_specificity, tech_stack, raw_extensions,
                     waste_score, waste_breakdown_json, tags, notes, effort,
                     compact_duration_ms, api_retry_count, subagent_spawns,
-                    dispatch_concurrency
+                    hook_trust_violations, dispatch_concurrency
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -661,7 +673,7 @@ class MetricsStore:
                     :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
                     :waste_score, :waste_breakdown_json, :tags, :notes, :effort,
                     :compact_duration_ms, :api_retry_count, :subagent_spawns,
-                    :dispatch_concurrency
+                    :hook_trust_violations, :dispatch_concurrency
                 )
                 """,
                 {

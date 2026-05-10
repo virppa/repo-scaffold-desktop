@@ -144,18 +144,25 @@ If no siblings are In Progress, skip this block silently.
 - Flag any active blockers from Linear — if this ticket is blocked by an open issue, warn before proceeding
 
 ### 2. As Architect — plan the implementation
+
+<!-- WOR-276: Successor to WOR-214's effort field — moved from a raw enum into a strict 3-tier gate with a verb-default override. -->
 - List which files need to change and what changes are needed
 - List what new files will be created (not just edited) — for each one, add to `risk_flags` in the manifest: `"<filename>.py is a new file — worker must read source type signatures before writing and run mypy on the file immediately after creation"`
 - List what new test files will be created — for each one, add to `risk_flags`: `"<test_file>.py is a new test file — worker must read a sibling test file first for fixture/mock patterns, then run pytest <file> -x immediately after creation"`
 - If any instance methods are being extracted from a class into module-level functions, add to `risk_flags`: `"methods extracted from <ClassName> — grep for patch.object(instance, '<method>') in tests/ and convert to patch('new.module.path.<method>') — patch.object silently does nothing once the method is no longer on the class"`
 - If `related_files_hint` has more than 5 files, add to `risk_flags`: `"related_files_hint has >5 files ({N}) — worker will read many files; enforce 2-read cap per file to prevent context bloat"`
 - If `context_snippets` is populated (non-null, non-empty), add to `risk_flags`: `"context_snippets populated ({N} snippets) — worker reads from manifest; enforce 2-read cap per file"`
+- If **all** entries in `allowed_paths` are under `tests/` (test-heavy ticket) OR all entries are under `.claude/commands/` (lint-only ticket), add to `risk_flags`: `"hook-trust-violation risk: {N} allowed_path(s) are all test-only / lint-only — worker has a strong incentive to manually re-run checks outside hooks; enforce the hard-rule in implement-ticket.md step 3 that bans Bash invocations of ruff/mypy/pytest/bandit/lint-imports outside required_checks"`
 - If the ticket involves moving files into a new subpackage, add to `risk_flags`: `"package reorganization — move ALL source files into the subpackage first, update ALL imports in consumers, then write __init__.py LAST — do not run pytest until the move is complete or ModuleNotFoundError will appear on every intermediate check"` — and add a second risk_flag with the explicit old→new module path mapping table for every moved module (e.g. `"patch path migration: app.core.watcher_subprocess → app.core.watcher.watcher_subprocess, app.core.watcher_worktrees → app.core.watcher.watcher_worktrees, ..."`) so the worker can use replace_all=True bulk substitution per file rather than discovering stale paths from test failures
 - List what new tests are needed (file, test name, what it verifies)
 - Flag any security surface introduced: new I/O, user input handling, file operations, subprocess calls
 - Note edge cases and overwrite behavior to consider
 - Assess local-model suitability: is the scope bounded (≤3 small/medium files, straightforward wiring)? Or does it touch large/complex modules (e.g. watcher.py, generator.py) requiring multi-step reasoning across many dependencies? Record your conclusion — it determines `implementation_mode` in the manifest.
-- Classify the ticket's effort level using this rule: simple/additive work touching ≤2 files → 'high'; bounded multi-file work → 'xhigh'; complex/large modules or deep cross-file reasoning → 'max'. Record your classification in the manifest.
+- Classify the ticket's effort level using this 3-tier gate (WOR-276 successor to WOR-214's effort field). Record your classification in the manifest along with a one-sentence justification:
+  - **high** — single source file (<200 LOC) with only test files in allowed_paths; OR test-only allowed_paths; OR a single-line / single-block fix (e.g. typo, error message, return value).
+  - **xhigh** — bounded multi-file work (≤4 files), no new abstractions introduced.
+  - **max** — new core module; multi-file refactor; package reorganization; touches `watcher.py` or `generator.py`.
+  - **Verb override:** If the manifest's `objective` contains any of the words `extract`, `split`, `reorganize`, `migrate`, or `rewrite`, the default is `max` regardless of other signals.
 - **Taxonomy classification** (WOR-262) — record these 7 dimensions in the manifest. All optional but populate when you can:
   - `change_type` — one of `additive` (new feature/file), `modification` (existing behavior changes), `refactor` (no behavior change), `removal` (deletion/cleanup), `docs` (markdown / comments only)
   - `reasoning_demand` 1-5 — how much cross-file reasoning is needed (1 = local change in one function, 5 = touches many modules with non-obvious invariants)
@@ -311,8 +318,8 @@ Construct the manifest from the planning context gathered in steps 1–4:
   "done_definition": "<plain-English done criteria>",
   "failure_policy": {
     "on_check_failure": "abort",
-    "max_retries": 0,
-    "escalate_to_cloud": false
+    "max_retries": 1,          // per WOR-223 rule: 2 for refactor, 1 otherwise
+    "escalate_to_cloud": false  // per WOR-223 rule: true when (additive AND rd>=2) OR docs
   },
   "ticket_state_map": {
     "in_progress_local": "InProgressLocal",
@@ -329,6 +336,37 @@ Construct the manifest from the planning context gathered in steps 1–4:
 ```
 
 Write this JSON to `.claude/artifacts/<ticket_id_lower>/manifest.json` (e.g. `.claude/artifacts/wor_80/manifest.json`). Create parent dirs as needed.
+
+### Routing & retry cap — per WOR-223
+
+When filling `max_retries` and `escalate_to_cloud` in the manifest above, follow this rule:
+
+```
+Set failure_policy.escalate_to_cloud = true when (change_type == "additive" AND reasoning_demand >= 2) OR (change_type == "docs"); else false.
+Set max_retries = 2 when change_type == "refactor"; else 1.
+```
+
+Do NOT set `refactor` tickets to `escalate_to_cloud=true`. They have a 0% failure rate locally — the historical data says try harder locally, never escalate.
+
+#### Why this rule (WOR-223)
+
+A 60-ticket retrospective analysis of local worker failure rates by `change_type` × `reasoning_demand` cell:
+
+| Cell | n | Failures | Failure rate |
+|------|---|----------|-------------|
+| refactor (any rd) | 20 | 0 | 0/20 = 0% |
+| additive, rd >= 2 | 21 | 7 | 7/21 = 33.3% |
+| additive, rd < 2 | — | — | low |
+| docs | 6 | 2 | 2/6 = 33.3% |
+| modification | — | — | low |
+
+Key findings:
+- **Refactor** tickets: 0/20 = 0% failure rate. These are the safest category for local execution. `max_retries=2` to encourage thorough local work.
+- **Additive + high reasoning demand** (rd >= 2): 7/21 = 33.3% failure rate. The broad cluster across all tickets with `additive` and `rd>=2` was 7/21 = 35% when counting the full population. Use 33.3% for the precise per-cell n=21 cluster. Flag for cloud routing.
+- **Docs** tickets: 2/6 = 33.3% failure rate. Small sample (n=6) but worth flagging conservatively.
+- **Modification** tickets: low failure rate historically — no special handling needed.
+
+The `max_retries` rule follows from the same data: refactor tickets are reliably successful locally so a higher retry budget is safe; all other types default to 1 retry.
 
 > **Path normalization:** `<ticket_id_lower>` is `ticket_id.lower().replace("-", "_")` — hyphens become underscores (e.g. `WOR-127` → `wor_127`). This matches `ArtifactPaths.from_ticket_id()` in `app/core/manifest.py`. Using `wor-127` (hyphen) will cause a "No such file or directory" error at watcher startup.
 
