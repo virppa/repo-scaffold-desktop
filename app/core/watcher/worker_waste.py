@@ -121,6 +121,47 @@ def _parse_tool_input(inp: Any) -> Any:
     return inp
 
 
+def _load_event_or_none(raw_line: str) -> dict[str, Any] | None:
+    """Parse one JSONL line into a dict, or return None on blank/invalid lines."""
+    line = raw_line.strip()
+    if not line:
+        return None
+    try:
+        loaded = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _accumulate_tool_use(
+    tool_use: dict[str, Any],
+    read_counts: dict[str, int],
+    bash_commands: list[str],
+) -> tuple[int, int]:
+    """Update read_counts / bash_commands from one tool_use block.
+
+    Returns (manual_check_delta, cd_delta) so the caller can advance its
+    aggregate counters without exposing the parsing details.
+    """
+    name = tool_use.get("name", "")
+    inp = _parse_tool_input(tool_use.get("input", {}))
+    if name == "Read":
+        fp = ""
+        if isinstance(inp, dict):
+            fp = inp.get("file_path", "") or inp.get("path", "") or inp.get("file", "")
+        if fp:
+            read_counts[fp] = read_counts.get(fp, 0) + 1
+        return 0, 0
+    if name == "Bash":
+        command = ""
+        if isinstance(inp, dict):
+            command = str(inp.get("command", ""))
+        elif isinstance(inp, str):
+            command = inp
+        return _classify_bash(command, bash_commands)
+    return 0, 0
+
+
 def _extract_signals(
     lines: list[str],
 ) -> tuple[dict[str, int], int, list[str], int, int, int]:
@@ -139,38 +180,15 @@ def _extract_signals(
     total_output_tokens = 0
 
     for raw_line in lines:
-        line = raw_line.strip()
-        if not line:
+        obj = _load_event_or_none(raw_line)
+        if obj is None:
             continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
         for tool_use in _extract_tool_uses(obj):
-            name = tool_use.get("name", "")
-            inp = _parse_tool_input(tool_use.get("input", {}))
-
-            if name == "Read":
-                fp = ""
-                if isinstance(inp, dict):
-                    fp = (
-                        inp.get("file_path", "")
-                        or inp.get("path", "")
-                        or inp.get("file", "")
-                    )
-                if fp:
-                    read_counts[fp] = read_counts.get(fp, 0) + 1
-            elif name == "Bash":
-                command = ""
-                if isinstance(inp, dict):
-                    command = str(inp.get("command", ""))
-                elif isinstance(inp, str):
-                    command = inp
-                check_delta, cd_delta = _classify_bash(command, bash_commands)
-                manual_check_runs += check_delta
-                cd_commands += cd_delta
-
+            check_delta, cd_delta = _accumulate_tool_use(
+                tool_use, read_counts, bash_commands
+            )
+            manual_check_runs += check_delta
+            cd_commands += cd_delta
         chars, output = _accumulate_thinking_tokens(obj)
         total_thinking_chars += chars
         total_output_tokens += output
