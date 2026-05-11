@@ -224,16 +224,73 @@ def _run_initial_push(output: Path, push_url: str) -> None:
     print(f"✓ Pushed initial commit to {push_url}")
 
 
-def _run_generate(args: argparse.Namespace) -> int:
+def _validate_generate_args(args: argparse.Namespace) -> bool:
+    """Return True if required args are present (or interactive mode)."""
     if args.interactive:
-        return _run_interactive(args)
-
+        return True
     if not args.preset or not args.repo_name or not args.output:
         print(
             "error: the following arguments are required: "
             "--preset, --repo-name, --output",
             file=sys.stderr,
         )
+        return False
+    return True
+
+
+def _run_github_phase(
+    args: argparse.Namespace, config: RepoConfig
+) -> tuple[int, str | None, str | None]:
+    """Run optional GitHub create + configure + push.
+
+    Returns (exit_code, clone_url, repo_full_name). exit_code is 0 on success.
+    """
+    clone_url: str | None = None
+    repo_full_name: str | None = None
+    rollback = not args.no_rollback_on_failure
+
+    if args.github_create:
+        try:
+            clone_url = _run_github_create(config, args)
+        except RuntimeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1, None, None
+
+    if clone_url is not None:
+        repo_full_name = _parse_repo_full_name(clone_url)
+
+    if repo_full_name is not None and clone_url is not None:
+        try:
+            configure_github_repo(repo_full_name, config.preset, config.include_ci)
+            print("✓ Configured GitHub repository settings")
+        except RuntimeError as exc:
+            if rollback:
+                delete_github_repo(repo_full_name)
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1, None, None
+
+    if args.git_push:
+        push_url: str | None = clone_url if clone_url is not None else args.remote_url
+        if push_url is None:
+            print("Error: no remote URL specified", file=sys.stderr)
+            return 1, None, None
+        try:
+            _run_initial_push(args.output, push_url)
+        except RuntimeError as exc:
+            if rollback and repo_full_name is not None:
+                delete_github_repo(repo_full_name)
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1, None, None
+
+    return 0, clone_url, repo_full_name
+
+
+def _run_generate(args: argparse.Namespace) -> int:
+    """Top-level dispatcher for `generate` subcommand."""
+    if args.interactive:
+        return _run_interactive(args)
+
+    if not _validate_generate_args(args):
         return 1
 
     try:
@@ -260,40 +317,5 @@ def _run_generate(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    clone_url: str | None = None
-    if args.github_create:
-        try:
-            clone_url = _run_github_create(config, args)
-        except RuntimeError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
-
-    repo_full_name: str | None = None
-    if clone_url is not None:
-        repo_full_name = _parse_repo_full_name(clone_url)
-
-    rollback = not args.no_rollback_on_failure
-    if repo_full_name is not None and clone_url is not None:
-        try:
-            configure_github_repo(repo_full_name, config.preset, config.include_ci)
-            print("✓ Configured GitHub repository settings")
-        except RuntimeError as exc:
-            if rollback:
-                delete_github_repo(repo_full_name)
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
-
-    if args.git_push:
-        push_url: str | None = clone_url if clone_url is not None else args.remote_url
-        if push_url is None:
-            print("Error: no remote URL specified", file=sys.stderr)
-            return 1
-        try:
-            _run_initial_push(args.output, push_url)
-        except RuntimeError as exc:
-            if rollback and repo_full_name is not None:
-                delete_github_repo(repo_full_name)
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1
-
-    return 0
+    exit_code, _clone_url, _repo_full_name = _run_github_phase(args, config)
+    return exit_code

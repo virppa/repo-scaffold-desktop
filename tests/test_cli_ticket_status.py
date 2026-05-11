@@ -65,7 +65,7 @@ class TestTicketStatusNotFound:
         client.get_issue.side_effect = Exception("issue not found")
         with (
             patch.dict("os.environ", {"LINEAR_API_KEY": FAKE_API_KEY}, clear=True),
-            patch("app.core.linear_client.LinearClient", return_value=client),
+            patch("app.cli.operator.LinearClient", return_value=client),
         ):
             rc = main(["ticket-status", "WOR-999"])
         assert rc == 0
@@ -81,7 +81,7 @@ class TestTicketStatusJson:
         client = _mock_linear_client()
         with (
             patch.dict("os.environ", {"LINEAR_API_KEY": FAKE_API_KEY}, clear=True),
-            patch("app.core.linear_client.LinearClient", return_value=client),
+            patch("app.cli.operator.LinearClient", return_value=client),
         ):
             rc = main(["ticket-status", "--json", "WOR-123"])
 
@@ -95,7 +95,7 @@ class TestTicketStatusJson:
         client = _mock_linear_client()
         with (
             patch.dict("os.environ", {"LINEAR_API_KEY": FAKE_API_KEY}, clear=True),
-            patch("app.core.linear_client.LinearClient", return_value=client),
+            patch("app.cli.operator.LinearClient", return_value=client),
         ):
             rc = main(["ticket-status", "--json", "WOR-123"])
 
@@ -113,7 +113,7 @@ class TestTicketStatusBrief:
         client = _mock_linear_client()
         with (
             patch.dict("os.environ", {"LINEAR_API_KEY": FAKE_API_KEY}, clear=True),
-            patch("app.core.linear_client.LinearClient", return_value=client),
+            patch("app.cli.operator.LinearClient", return_value=client),
         ):
             rc = main(["ticket-status", "--brief", "WOR-123"])
 
@@ -132,7 +132,7 @@ class TestTicketStatusNormalOutput:
         client = _mock_linear_client()
         with (
             patch.dict("os.environ", {"LINEAR_API_KEY": FAKE_API_KEY}, clear=True),
-            patch("app.core.linear_client.LinearClient", return_value=client),
+            patch("app.cli.operator.LinearClient", return_value=client),
         ):
             rc = main(["ticket-status", "WOR-123"])
 
@@ -152,7 +152,7 @@ class TestTicketStatusSubparser:
         client = _mock_linear_client()
         with (
             patch.dict("os.environ", {"LINEAR_API_KEY": FAKE_API_KEY}, clear=True),
-            patch("app.core.linear_client.LinearClient", return_value=client),
+            patch("app.cli.operator.LinearClient", return_value=client),
         ):
             rc = main(["ticket-status", "--json", "--brief", "WOR-123"])
         assert rc == 0
