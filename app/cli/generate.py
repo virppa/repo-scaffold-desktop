@@ -346,6 +346,13 @@ def _execute_generation_pipeline(config: RepoConfig, args: argparse.Namespace) -
 
 def _run_generate(args: argparse.Namespace) -> int:
     """Top-level dispatcher for `generate` subcommand."""
+    if args.interactive and args.preset:
+        print(
+            "error: --interactive and --preset are mutually exclusive.",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.interactive:
         return _run_interactive(args)
 
