@@ -283,13 +283,13 @@ The informational scan runs on `github.base_ref != 'main'`; the blocking scan ru
 - **PostToolUse** — pytest (no coverage) on the edited test file after changes to `tests/` files only
 - **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)
 
-`.pre-commit-config.yaml` adds repo-level checks (run on `git commit`):
+`.pre-commit-config.yaml` uses a **tiered split** — fast checks at `pre-commit`, slow checks at `pre-push` — to keep local commit latency under 3 seconds. The latency investigation (WOR-242) measured per-hook durations on a clean tree: semgrep 7.5s, mypy 1.35s, detect-secrets 1.12s, bandit 0.41s, the rest <0.5s. CI runs the full set plus pytest, deptry, and SonarCloud.
 
-- **trailing-whitespace / end-of-file-fixer / check-yaml / check-toml / check-merge-conflict**
-- **ruff** + **ruff-format** + **bandit** + **mypy** + **semgrep** + **detect-secrets**
-- **check-patch-paths** — local hook (`scripts/check_patch_paths.py`) that validates `unittest.mock.patch("app...")` strings against the actual module structure (catches stale paths after package reorganization before commit)
+**Fast tier (pre-commit, total ~1.5s on clean tree):** trailing-whitespace, end-of-file-fixer, check-yaml, check-toml, check-merge-conflict, ruff, ruff-format, bandit, check-patch-paths, lint-imports, detect-secrets, check-file-sizes.
 
-No setup needed — hooks activate as soon as Claude Code loads the project.
+**Slow tier (pre-push):** mypy 1.35s, semgrep 7.5s.
+
+**PostToolUse hooks** (Claude Code only): ruff, mypy, bandit, lint-imports after any Python file edit; pytest on edited test files. These are separate from the pre-commit config — they run per-tool-use to give immediate feedback during implementation.
 
 ---
 
