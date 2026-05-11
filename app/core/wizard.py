@@ -63,64 +63,56 @@ def validate_bool(value: str) -> str:
     return value.strip().lower()
 
 
+def _resolve_default_value(
+    step: WizardStep, prefs: UserPreferences | None
+) -> str | None:
+    """Extract the pre-fill string default from prefs for *step*, if any."""
+    if prefs is None or step.default is None:
+        return None
+    field = step.default
+    if not isinstance(field, str) or not hasattr(prefs, field):
+        return None
+    val = getattr(prefs, field, "")
+    return str(val) if val else None
+
+
+def _handle_empty_input(step: WizardStep, default_val: str | None) -> str:
+    """Resolve the empty-input branch: default → skip-signal → raise."""
+    if default_val is not None:
+        return default_val
+    if step.skip_on_default:
+        return step.key  # signal skip
+    raise ValueError(f"{step.prompt} cannot be empty")
+
+
 def collect_wizard_input(
     step: WizardStep,
     inputs: Iterator[str] | None = None,
     prefs: UserPreferences | None = None,
 ) -> str:
-    """Collect one piece of input from the user with validation.
+    """Collect one piece of input with validation and pre-fill.
 
-    Args:
-        step: The wizard step describing the prompt/validation/defaults.
-        inputs: Iterator of canned answers (used in tests).
-        prefs: User preferences for pre-fill.
-
-    Returns:
-        The validated input string.
-
-    Raises:
-        ValueError: If validation fails after all retries exhausted.
+    Returns the validated input. Raises ValueError if the field is required
+    and the user supplied no value (and no default is configured).
     """
-    prompt = step.prompt
-    default_val = None
-    if prefs is not None and step.default is not None:
-        field = step.default
-        if isinstance(field, str) and hasattr(prefs, field):
-            val = getattr(prefs, field, "")
-            if val:
-                default_val = str(val)
-
-    display = ""
-    if default_val is not None:
-        display = f" [{default_val}]"
+    default_val = _resolve_default_value(step, prefs)
+    display = f" [{default_val}]" if default_val is not None else ""
 
     while True:
         if inputs is not None:
             raw = next(inputs)
         else:
-            raw = input(prompt + display + ": ")  # noqa: T201
+            raw = input(step.prompt + display + ": ")  # noqa: T201
 
-        # Handle empty input
         if raw.strip() == "":
-            if default_val is not None:
-                value = default_val
-            elif step.skip_on_default:
-                value = step.key  # return key to signal skip
-            else:
-                raise ValueError(f"{step.prompt} cannot be empty")
-            break
+            return _handle_empty_input(step, default_val)
 
-        # Validate
-        if step.validator is not None:
-            try:
-                value = step.validator(raw)
-            except ValueError:
-                continue
-        else:
-            value = raw.strip()
-        break
-
-    return value
+        if step.validator is None:
+            return raw.strip()
+        try:
+            return step.validator(raw)
+        except ValueError:
+            continue
 
 
 def _collect_bool_input(
