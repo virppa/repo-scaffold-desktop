@@ -43,10 +43,17 @@ from .watcher_log_parsing import format_elapsed, format_worker_token_count
 from .watcher_services import ServiceManager
 from .watcher_signals import (
     cleanup_orphaned_worktrees,
+    forcestop_sentinel_path,
+    kill_sentinel_path,
     make_signal_handler,
     maybe_warn_softstop_stuck,
+    pause_sentinel_path,
+    read_kill_sentinel,
     remove_pid_file,
     remove_softstop_sentinel,
+    remove_stale_forcestop_sentinel,
+    remove_stale_kill_sentinel,
+    remove_stale_pause_sentinel,
     remove_stale_softstop_sentinel,
     softstop_sentinel_path,
     terminate_overrun_workers,
@@ -57,11 +64,13 @@ from .watcher_tui import TrackedPR, WatcherDisplay
 from .watcher_types import (
     _ARTIFACTS_DIR,
     _CLAUDE_DIR,
+    _WORKTREE_BASE,
     ActiveWorker,
     LinearClientProtocol,
 )
 from .watcher_worktrees import (
     cleanup_worktree,
+    commit_wip_state,
 )
 
 logger = logging.getLogger(__name__)
@@ -147,6 +156,11 @@ class Watcher:
         self._draining: bool = False
         self._draining_since: float | None = None
         self._softstop_warned_stuck: bool = False
+        # Daemon-control gestures (WOR-352). CLI operators write sentinel files
+        # under .claude/ to pause, force-stop, or kill specific workers.
+        self._paused: bool = False
+        self._forcestopping: bool = False
+        self._killing: list[str] = []  # ticket IDs being processed by kill
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -190,12 +204,101 @@ class Watcher:
             active,
         )
 
+    def _check_pause_sentinel(self) -> None:
+        """If the pause sentinel file exists, pause dispatch/promotion/epic.
+
+        Pause keeps reaping and stuck-worker detection active. The sentinel
+        is kept so that the resume command can delete it to unpause.
+        """
+        if self._paused:
+            return
+        sentinel = pause_sentinel_path(self._repo_root)
+        if not sentinel.exists():
+            return
+        self._paused = True
+        logger.warning(
+            "Pause requested. Dispatcher paused — reaping and health checks continue."
+        )
+
+    def _resume(self) -> None:
+        """Resume dispatch after a pause gesture."""
+        if not self._paused:
+            return
+        self._paused = False
+        logger.info("Pause cleared — dispatcher resumed.")
+
+    def _check_forcestop_sentinel(self) -> None:
+        """If the force-stop sentinel exists, commit WIP and terminate all workers."""
+        if self._forcestopping:
+            return
+        sentinel = forcestop_sentinel_path(self._repo_root)
+        if not sentinel.exists():
+            return
+        self._forcestopping = True
+        active = self._local_active + self._cloud_active
+        for worker in active:
+            logger.info("Force-stop: committing WIP for %s", worker.ticket_id)
+            commit_wip_state(
+                worker.worktree_path,
+                worker.ticket_id,
+                worker.manifest.worker_branch,
+                backup_root=self._repo_root.parent / _WORKTREE_BASE,
+            )
+            try:
+                worker.process.terminate()
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Force-stop: failed to terminate %s: %s", worker.ticket_id, exc
+                )
+        self._local_active.clear()
+        self._cloud_active.clear()
+        self._processed_tickets.clear()
+        logger.warning("Force-stop: all workers terminated. Dispatcher paused.")
+        self._paused = True
+
+    def _check_kill_sentinel(self) -> None:
+        """Read ticket IDs from the kill sentinel.
+
+        The sentinel is removed immediately so operators don't re-trigger
+        by accident. The actual worker processing happens in the same
+        poll cycle (synchronous — no deferred processing).
+        """
+        sentinel = kill_sentinel_path(self._repo_root)
+        if not sentinel.exists():
+            return
+        ticket_ids = read_kill_sentinel(self._repo_root)
+        # Remove sentinel immediately after reading
+        try:
+            sentinel.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove kill sentinel after read: %s", exc)
+        if not ticket_ids:
+            logger.warning("Kill sentinel was empty — no ticket IDs to process")
+            return
+        logger.warning(
+            "Kill requested for %d ticket(s): %s", len(ticket_ids), ticket_ids
+        )
+        all_active = self._local_active + self._cloud_active
+        for tid in ticket_ids:
+            worker = next((w for w in all_active if w.ticket_id == tid), None)
+            if worker is None:
+                logger.info("Kill %s — not found among active workers", tid)
+                continue
+            logger.info("Kill %s — terminating active worker", tid)
+            try:
+                worker.process.terminate()
+            except (OSError, ValueError) as exc:
+                logger.warning("Failed to terminate %s: %s", tid, exc)
+
     def _poll_iteration(self) -> bool:
         """One iteration of the daemon poll loop.
 
         Returns False if the loop should exit (drain complete or running=False).
         """
         self._check_softstop_sentinel()
+        self._check_pause_sentinel()
+        self._check_forcestop_sentinel()
+        self._check_kill_sentinel()
         terminate_overrun_workers(self._local_active, self._cloud_active, self._linear)
         self._reap_pool(self._local_active)
         self._reap_pool(self._cloud_active)
@@ -217,13 +320,17 @@ class Watcher:
                     queue_state=queue,
                 )
             )
-        if not self._draining:
+        if not self._draining and not self._paused:
             self._promote_waiting_tickets()
         local_has_capacity = len(self._local_active) < self._max_local_workers
         cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
-        if not self._draining and (local_has_capacity or cloud_has_capacity):
+        if (
+            not self._draining
+            and not self._paused
+            and (local_has_capacity or cloud_has_capacity)
+        ):
             self._dispatch_next_ticket()
-        if not self._draining:
+        if not self._draining and not self._paused:
             self._check_epic_completion()
         if self._draining and not (self._local_active or self._cloud_active):
             logger.info("Drain complete — all workers finished. Exiting.")
@@ -275,6 +382,9 @@ class Watcher:
             signal.signal(signal.SIGTERM, handler)
         cleanup_orphaned_worktrees(self._repo_root, cleanup_worktree)
         remove_stale_softstop_sentinel(self._repo_root)
+        remove_stale_forcestop_sentinel(self._repo_root)
+        remove_stale_pause_sentinel(self._repo_root)
+        remove_stale_kill_sentinel(self._repo_root)
         if self._tui_mode:
             self._display = WatcherDisplay()
         if self._mode in ("local", "default"):
