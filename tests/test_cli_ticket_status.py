@@ -32,7 +32,13 @@ def _clear_linear_key(env: dict[str, str]) -> dict[str, str]:
 class TestTicketStatusMissingEnv:
     def test_missing_api_key_exits_with_error(self, capsys: CapSys) -> None:
         env = _clear_linear_key(os.environ)
-        with patch.dict("os.environ", env, clear=True):
+        # WOR-427: main() calls load_dotenv() which re-populates LINEAR_API_KEY
+        # from .env if the file exists locally — defeating the env clearing.
+        # Patch load_dotenv to a no-op so the test isolates the env state.
+        with (
+            patch.dict("os.environ", env, clear=True),
+            patch("app.cli.load_dotenv"),
+        ):
             rc = main(["ticket-status", "WOR-999"])
 
         assert rc == 1

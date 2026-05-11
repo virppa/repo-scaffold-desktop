@@ -292,6 +292,42 @@ def test_get_issue_state_type_raises_on_api_error() -> None:
 
 
 # ---------------------------------------------------------------------------
+# get_issue (WOR-427)
+# ---------------------------------------------------------------------------
+
+
+def test_get_issue_returns_full_issue_dict() -> None:
+    issue_data = {
+        "id": "uuid-123",
+        "identifier": "WOR-45",
+        "title": "Test ticket",
+        "state": {
+            "name": "InProgressLocal",
+            "type": "started",
+            "createdAt": "2026-05-10T06:19:32.000Z",
+        },
+    }
+    response = {"data": {"issue": issue_data}}
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        result = _client().get_issue("WOR-45")
+    assert result == issue_data
+
+
+def test_get_issue_raises_on_missing_issue() -> None:
+    response = {"data": {"issue": None}}
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        with pytest.raises(LinearError, match="WOR-99"):
+            _client().get_issue("WOR-99")
+
+
+def test_get_issue_propagates_api_errors() -> None:
+    response = {"errors": [{"message": "unauthorized"}]}
+    with patch("urllib.request.urlopen", return_value=_mock_response(response)):
+        with pytest.raises(LinearError, match="unauthorized"):
+            _client().get_issue("WOR-45")
+
+
+# ---------------------------------------------------------------------------
 # _query retry and safe access
 # ---------------------------------------------------------------------------
 
