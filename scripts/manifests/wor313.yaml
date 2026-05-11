@@ -1,0 +1,975 @@
+# YAML schema for wor313.yaml:
+# ---
+# common_forbidden : list[str]     -- paths forbidden for ALL tickets (e.g. .env, .mcp.json)
+# epic_branch      : str           -- default base_branch for all generated manifests
+# tickets          : list[Ticket]  -- each entry produces one manifest
+#   Ticket:
+#     ticket_id          : str     -- unique identifier, e.g. "WOR-247"
+#     branch             : str     -- git branch name for the ticket
+#     title              : str     -- human-readable title
+#     allowed_paths      : list[str] -- glob paths the worker may write to
+#     forbidden_paths_extra : list[str] -- additional forbidden paths beyond common_forbidden;
+#                                       override the default forbid by listing in allowed_paths
+#     related_files_hint : list[str] -- files to read for context
+#     effort             : str     -- low | medium | high | xhigh | max
+#     change_type        : str     -- additive | modification | refactor | removal | docs
+#     reasoning_demand   : int     -- 1-5 scale
+#     scope_clarity      : int     -- 1-5 scale
+#     constraint_density : int     -- 1-5 scale
+#     ac_specificity     : int     -- 1-5 scale
+#     tech_stack         : str     -- space-separated tags, e.g. "python,pytest"
+#     raw_extensions     : list[str] -- file extensions, e.g. [".py"]
+#     objective          : str     -- one-paragraph description
+#     acceptance_criteria: list[str] -- bulleted checklist
+#     implementation_constraints: list[str] -- rules the worker must follow
+# ---
+
+common_forbidden:
+  - .env
+  - .mcp.json
+  - .claude/settings*
+
+epic_branch: epic/wor-313-mega-overnight-hardening
+
+tickets:
+  - ticket_id: WOR-247
+    branch: wor-247-bench-store-import-contract
+    title: 'Import linter: add bench_store isolation contract'
+    allowed_paths: [".importlinter"]
+    related_files_hint: [.importlinter, app/core/bench_store.py]
+    effort: high
+    change_type: additive
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,importlinter,toml
+    raw_extensions: [".importlinter"]
+    objective: >-
+      Add a `forbidden` contract to `.importlinter` blocking watcher modules from
+      importing app.core.bench_store, then run `lint-imports` to confirm it passes.
+    acceptance_criteria:
+      - >-
+        New `[importlinter:contract:bench-store-not-in-watcher]` contract added to .importlinter
+      - >-
+        Contract is type=forbidden, source_modules lists all app.core.watcher.* modules,
+        forbidden_modules=app.core.bench_store
+      - "`lint-imports` passes with the new contract"
+      - >-
+        Contract has CONTRACT OWNER comment matching existing style
+    implementation_constraints:
+      - Use Edit tool to modify .importlinter, do not rewrite the whole file
+      - >-
+        Mirror the comment style of existing contracts (CONTRACT OWNER, type, name)
+      - Add the contract block at the END of the file
+
+  - ticket_id: WOR-250
+    branch: wor-250-archive-bench-tomls
+    title: Config: archive stale bench experiment TOML files
+    allowed_paths: [config/**, scripts/bench/**, README.md]
+    related_files_hint: [config/, scripts/bench/run_bench.py, README.md]
+    effort: high
+    change_type: removal
+    reasoning_demand: 2
+    scope_clarity: 4
+    constraint_density: 3
+    ac_specificity: 4
+    tech_stack: toml,filesystem
+    raw_extensions: [".toml", ".md"]
+    objective: >-
+      Archive WOR-221/cliff bench experiment TOML files to config/archive/ keeping
+      only the active configs (escalation_policy.toml + currently-referenced bench TOMLs).
+    acceptance_criteria:
+      - >-
+        config/ contains <= 5 files at the top level (the rest moved to config/archive/)
+      - >-
+        scripts/bench/run_bench.py still works with the kept configs
+        (run --tier speed --dry-run if available)
+      - Each remaining bench TOML has a one-line top comment describing its purpose
+      - "git mv used (not delete + create) so history is preserved"
+    implementation_constraints:
+      - "Use git mv not shutil.move"
+      - Do NOT delete escalation_policy.toml -- that's production
+      - >-
+        Check scripts/bench/ source for which bench-*.toml files are actually loaded;
+        keep those
+
+  - ticket_id: WOR-251
+    branch: wor-251-pin-sonarqube-mcp
+    title: MCP: pin SonarQube MCP server to a specific version in .mcp.json
+    allowed_paths: [".mcp.json"]
+    forbidden_paths_extra: []
+    related_files_hint: [.mcp.json]
+    effort: high
+    change_type: modification
+    reasoning_demand: 1
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: json,npm
+    raw_extensions: [".json"]
+    objective: >-
+      Pin sonarqube-mcp-server to a specific version in .mcp.json so it doesn't
+      redownload+upgrade on every cold session.
+    acceptance_criteria:
+      - >-
+        .mcp.json args specify sonarqube-mcp-server@<version> not just sonarqube-mcp-server
+      - >-
+        Version comes from `npm show sonarqube-mcp-server version` or equivalent
+      - "Run `npm view sonarqube-mcp-server version` first to find current stable"
+      - "JSON syntax remains valid"
+    implementation_constraints:
+      - "Use Edit tool -- do not rewrite the whole .mcp.json"
+      - >-
+        Override the default forbidden_paths protection on .mcp.json -- this ticket
+        explicitly targets it
+      - "Verify json.load still parses the file after the edit"
+
+  - ticket_id: WOR-252
+    branch: wor-252-remove-type-ignore-metrics-mode
+    title: Fix: remove type: ignore in _to_metrics_mode with proper cast
+    allowed_paths: [app/core/watcher/watcher_types.py]
+    related_files_hint:
+      - app/core/watcher/watcher_types.py
+      - app/core/metrics.py
+    effort: high
+    change_type: refactor
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,mypy,typing
+    raw_extensions: [".py"]
+    objective: >-
+      Replace the `# type: ignore[return-value]` on _to_metrics_mode with proper
+      typing.cast() -- preferably using get_args(ImplementationMode) so the valid
+      values stay in sync with the type.
+    acceptance_criteria:
+      - >-
+        _to_metrics_mode no longer has any # type: ignore comment
+      - "mypy app/ passes"
+      - >-
+        Function behavior unchanged: returns 'cloud' for unknown values, otherwise
+        returns the input as ImplementationMode
+      - >-
+        Prefer the `get_args(ImplementationMode)` pattern (option A in ticket description)
+    implementation_constraints:
+      - "Use Edit tool"
+      - "Add `from typing import cast, get_args` if not already imported"
+      - Do not modify metrics.py or any other file
+
+  - ticket_id: WOR-275
+    branch: wor-275-file-reread-cap
+    title: Worker file re-read suppression: cap at 2 reads/file with explicit instruction
+    allowed_paths:
+      - .claude/commands/implement-ticket.md
+      - .claude/commands/start-ticket.md
+    forbidden_paths_extra:
+      - .claude/commands/start-epic.md
+    related_files_hint:
+      - .claude/commands/implement-ticket.md
+      - .claude/commands/start-ticket.md
+    effort: high
+    change_type: modification
+    reasoning_demand: 2
+    scope_clarity: 4
+    constraint_density: 3
+    ac_specificity: 4
+    tech_stack: markdown
+    raw_extensions: [".md"]
+    objective: >-
+      Add a 'Read each file at most 2 times per session' rule to implement-ticket.md
+      and conditional risk_flags to start-ticket.md when context_snippets are populated.
+      Skill-text-only change; no code.
+    acceptance_criteria:
+      - >-
+        implement-ticket.md has a per-file 2-read cap rule with the exact text from
+        the ticket description
+      - >-
+        start-ticket.md adds a risk_flag when related_files_hint has > 5 files
+      - start-ticket.md adds a risk_flag when context_snippets is populated
+      - "No code changes in app/ -- pure skill text"
+    implementation_constraints:
+      - "Use Edit tool, do not rewrite whole skill files"
+      - >-
+        Stretch goal in description (--disallowed-tools enforcement) is OUT OF SCOPE
+        for this ticket
+      - Do not touch start-epic.md or close-epic.md
+
+  - ticket_id: WOR-277
+    branch: wor-277-waste-score-column
+    title: Watcher waste-score: per-session metric in ticket_metrics + warning log
+    allowed_paths:
+      - app/core/watcher/worker_waste.py
+      - app/core/watcher/watcher_finalize.py
+      - app/core/metrics.py
+      - app/cli.py
+      - config/escalation_policy.toml
+      - app/core/escalation_policy.py
+      - tests/test_worker_waste.py
+      - tests/test_metrics.py
+      - tests/test_watcher_finalize.py
+    related_files_hint:
+      - app/core/watcher/watcher_helpers.py
+      - app/core/watcher/watcher_finalize.py
+      - app/core/metrics.py
+      - app/core/escalation_policy.py
+    effort: max
+    change_type: additive
+    reasoning_demand: 4
+    scope_clarity: 4
+    constraint_density: 4
+    ac_specificity: 5
+    tech_stack: python,sqlite,pydantic,pytest
+    raw_extensions: [".py", ".toml"]
+    objective: >-
+      Add a 0-100 waste score per worker session, persist to metrics.db, log WARNING
+      when score>threshold, and add a CLI command for ad-hoc scoring.
+      Formula is pre-baked in the ticket description.
+    acceptance_criteria:
+      - >-
+        app/core/watcher/worker_waste.py exists with compute_waste_score(log_path) -> WasteReport
+      - Tests cover each waste signal independently + composite score
+      - >-
+        ticket_metrics.waste_score and ticket_metrics.waste_breakdown_json columns
+        added via _migrate
+      - finalize_worker populates them after each session
+      - Watcher emits WARNING when score > threshold (default 60)
+      - config/escalation_policy.toml has [waste] warn_threshold (default 60)
+      - "python -m app.cli waste-score WOR-NNN works"
+      - "ruff check . , mypy app/ , pytest pass"
+    implementation_constraints:
+      - >-
+        Use the formula EXACTLY as written in the ticket description -- do not invent
+        your own
+      - >-
+        worker_waste.py is a NEW file -- read source signatures BEFORE writing, run
+        mypy on it immediately after creation
+      - >-
+        test_worker_waste.py is NEW -- read tests/test_watcher_helpers.py first for
+        fixture pattern
+      - >-
+        DB migration must be idempotent (use ALTER TABLE IF NOT EXISTS pattern or
+        check before adding column)
+      - Do not block ticket completion based on waste score -- observability only
+
+  - ticket_id: WOR-278
+    branch: wor-278-github-e2e-test
+    title: GitHub flow: end-to-end integration test for generate --github-create + --git-push
+    allowed_paths:
+      - tests/test_cli.py
+      - tests/test_cli_github_flow.py
+    related_files_hint:
+      - app/cli.py
+      - app/core/post_setup.py
+      - tests/test_cli.py
+    effort: high
+    change_type: additive
+    reasoning_demand: 3
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,pytest,unittest.mock
+    raw_extensions: [".py"]
+    objective: >-
+      Add an end-to-end test for the generate --github-create + --git-push flow
+      with all external calls mocked. Verifies clone URL flows correctly through
+      create -> configure -> push.
+    acceptance_criteria:
+      - >-
+        At least one test that runs the full --github-create + --git-push chain
+        end-to-end with all external calls mocked
+      - Test verifies clone URL propagates create -> configure -> push correctly
+      - Failure-path test for the configure -> push handoff
+      - Existing tests still pass
+    implementation_constraints:
+      - >-
+        Mock app.core.credentials.keyring, app.core.post_setup.urllib.request.urlopen,
+        app.core.post_setup.subprocess.run at module boundaries
+      - Do NOT make real GitHub API calls
+      - Test-only ticket -- no production code changes
+      - >-
+        Either extend tests/test_cli.py or create tests/test_cli_github_flow.py
+        (your choice based on size)
+
+  - ticket_id: WOR-279
+    branch: wor-279-github-flow-rollback
+    title: GitHub flow: rollback / cleanup on partial failure
+    allowed_paths:
+      - app/core/post_setup.py
+      - app/cli.py
+      - tests/test_post_setup.py
+      - tests/test_cli.py
+    related_files_hint:
+      - app/core/post_setup.py
+      - app/cli.py
+      - tests/test_post_setup.py
+    effort: xhigh
+    change_type: additive
+    reasoning_demand: 3
+    scope_clarity: 4
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,urllib,subprocess
+    raw_extensions: [".py"]
+    objective: >-
+      Add delete_github_repo() + wrap _run_generate's GitHub flow in try/except with
+      optional --no-rollback-on-failure flag. When create succeeds but configure/push
+      fails, delete the orphaned repo.
+    acceptance_criteria:
+      - >-
+        delete_github_repo function added with same security/error patterns as
+        create_github_repo (nosec, timeout=10, format-validate first)
+      - _run_generate rolls back the created repo when configure or push fails
+      - "--no-rollback-on-failure flag opts out of rollback"
+      - >-
+        Tests cover success, configure-fail-rollback, push-fail-rollback, and opt-out
+        paths
+      - "ruff + mypy + pytest pass"
+    implementation_constraints:
+      - >-
+        Mirror the security patterns of create_github_repo: nosec B310 on urlopen,
+        timeout=10, format-validate repo_full_name before DELETE
+      - >-
+        delete_github_repo errors WARN to stderr but do not raise (best-effort cleanup)
+      - Re-raise the original exception after rollback -- don't swallow
+      - >-
+        Touches post_setup.py -- may serialize with WOR-322 (docstrings) and WOR-323
+        (bare except audit)
+
+  - ticket_id: WOR-280
+    branch: wor-280-cli-set-token-getpass-test
+    title: GitHub flow: cover interactive getpass path in cli_set_token
+    allowed_paths:
+      - app/core/credentials.py
+      - tests/test_credentials.py
+    related_files_hint:
+      - app/core/credentials.py
+      - tests/test_credentials.py
+    effort: high
+    change_type: modification
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,pytest,getpass
+    raw_extensions: [".py"]
+    objective: >-
+      Refactor cli_set_token to use top-level `from getpass import getpass` import
+      (mock-friendly), then add 4 tests covering success, empty input, EOF, and
+      keyring error paths.
+    acceptance_criteria:
+      - >-
+        cli_set_token refactored to use top-level getpass import (or otherwise made
+        mock-friendly)
+      - >-
+        4 new tests: test_cli_set_token_success, test_cli_set_token_empty_input,
+        test_cli_set_token_eof, test_cli_set_token_keyring_error
+      - credentials.py coverage rises to >= 80%
+      - "No CLI behavior change (still prompts via getpass on real TTYs)"
+      - All existing tests still pass
+    implementation_constraints:
+      - "Use patch('app.core.credentials.getpass') in the new tests"
+      - "Touches tests/test_credentials.py -- may serialize with WOR-316"
+      - >-
+        Do NOT remove the env-var fallback for GITHUB_TOKEN; that's separately tested
+        by WOR-316
+
+  - ticket_id: WOR-304
+    branch: wor-304-watcher-daemon-smoke-test-ci
+    title: CI: smoke-start watcher daemon for 5s to catch startup-only bugs
+    allowed_paths:
+      - .github/workflows/ci.yml
+      - .github/workflows/*.yml
+      - CLAUDE.md
+      - Makefile
+    related_files_hint:
+      - .github/workflows/
+      - CLAUDE.md
+      - app/cli.py
+    effort: high
+    change_type: additive
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: yaml,bash,github-actions
+    raw_extensions: [".yml", ".md"]
+    objective: >-
+      Add a CI step that smoke-starts `python -m app.cli watcher` for 5 seconds
+      and asserts it stays alive. Catches the class of startup-only daemon bugs
+      (PRs #601-#604) that pytest/mypy don't catch.
+    acceptance_criteria:
+      - >-
+        .github/workflows/ci.yml gains a watcher-smoke job that fails the build when
+        daemon exits within 5s
+      - "Job uses LINEAR_API_KEY=dummy + clean working dir"
+      - >-
+        Job runs after pytest and on every PR targeting main or epic/*
+      - >-
+        Local one-liner equivalent documented in CLAUDE.md (e.g. make watcher-smoke
+        or bash one-liner)
+      - "Cost: ~6 sec per CI run"
+    implementation_constraints:
+      - >-
+        Use `timeout 5 python -m app.cli watcher --no-epic-shutdown || ([ $? -eq 124
+        ] && echo OK) || (echo FAIL && exit 1)` pattern
+      - "Pre-flight: read .github/workflows/ to see the existing CI structure first"
+      - >-
+        If a Makefile doesn't exist, you can create one with the smoke target -- or
+        document in CLAUDE.md as a bash one-liner
+      - "DO NOT run the smoke test locally to verify (requires vLLM); CI will validate"
+
+  - ticket_id: WOR-314
+    branch: wor-314-tests-dispatch-start-ticket
+    title: Tests: add tests/test_watcher_dispatch.py for dispatch.start_ticket flow
+    allowed_paths: [tests/test_watcher_dispatch.py]
+    related_files_hint:
+      - app/core/watcher/dispatch.py
+      - tests/test_watcher.py
+      - tests/test_watcher_dispatch.py
+    effort: high
+    change_type: additive
+    reasoning_demand: 3
+    scope_clarity: 5
+    constraint_density: 4
+    ac_specificity: 5
+    tech_stack: python,pytest,unittest.mock
+    raw_extensions: [".py"]
+    objective: >-
+      Add 5+ direct unit tests for dispatch.start_ticket. The existing test file has
+      watcher-level smoke tests that mock start_ticket; this ticket adds direct unit
+      tests of the function itself.
+    acceptance_criteria:
+      - >-
+        5+ new tests covering: cloud pool full, vLLM not ready, vLLM ready dispatch,
+        ActiveWorker creation, safe_set_state failure tolerance,
+        copy_manifest_to_worktree failure propagation, backup_plan_files called
+      - Coverage of app/core/watcher/dispatch.py rises to >= 70%
+      - All existing tests still pass
+      - "ruff + mypy + pytest pass"
+    implementation_constraints:
+      - "Mock at app.core.watcher.dispatch.<name> not at the source module"
+      - "Use MagicMock(spec=ServiceManager) for service mocks"
+      - Test-only ticket -- no production code changes
+      - >-
+        WOR-328 (Sonar S3) may also touch tests/test_watcher_dispatch.py -- watcher
+        will serialize
+
+  - ticket_id: WOR-315
+    branch: wor-315-tests-color-formatter
+    title: Tests: add tests/test_watcher_log_format.py for ColorFormatter
+    allowed_paths: [tests/test_watcher_log_format.py]
+    related_files_hint: [app/core/watcher/log_format.py]
+    effort: high
+    change_type: additive
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,pytest,logging
+    raw_extensions: [".py"]
+    objective: >-
+      Create a NEW test file tests/test_watcher_log_format.py with 6+ tests covering
+      ColorFormatter ANSI prefixes for each log level + TTY detection guard.
+    acceptance_criteria:
+      - >-
+        tests/test_watcher_log_format.py exists with 6+ tests for
+        DEBUG/INFO/WARNING/ERROR/CRITICAL color prefixes + TTY guard
+      - Coverage of app/core/watcher/log_format.py >= 90%
+      - "ruff + mypy + pytest pass"
+    implementation_constraints:
+      - >-
+        NEW test file -- read tests/test_watcher_helpers.py FIRST for fixture/import
+        patterns
+      - >-
+        Run pytest tests/test_watcher_log_format.py -x IMMEDIATELY after creation to
+        catch import errors
+      - >-
+        Construct LogRecord directly via logging.LogRecord(...) -- do not use
+        logging.getLogger() side effects
+      - Test-only ticket
+
+  - ticket_id: WOR-316
+    branch: wor-316-tests-credentials-edge-cases
+    title: Tests: add edge-case coverage for app/core/credentials.py
+    allowed_paths: [tests/test_credentials.py]
+    related_files_hint:
+      - app/core/credentials.py
+      - tests/test_credentials.py
+    effort: high
+    change_type: additive
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,pytest,keyring
+    raw_extensions: [".py"]
+    objective: >-
+      Add 6+ edge-case tests for save_token, get_token, delete_token + GITHUB_TOKEN
+      env-var fallback. Complements WOR-280 (which covers cli_set_token specifically).
+    acceptance_criteria:
+      - >-
+        6+ new tests covering save_token success/error, get_token (keyring hit/miss/env
+        fallback/error+env), delete_token (exists/missing)
+      - credentials.py coverage rises (current ~51%, target >= 80%)
+      - All existing tests still pass
+      - Do not duplicate WOR-280's cli_set_token tests
+    implementation_constraints:
+      - >-
+        Use unittest.mock.patch('app.core.credentials.keyring') for keyring mocks
+      - "Use monkeypatch.setenv / delenv for env-var manipulation"
+      - "Touches tests/test_credentials.py -- may serialize with WOR-280"
+      - Test-only ticket
+
+  - ticket_id: WOR-317
+    branch: wor-317-tests-user-prefs-edge-cases
+    title: Tests: add edge-case coverage for app/core/user_prefs.py
+    allowed_paths: [tests/test_user_prefs.py]
+    related_files_hint:
+      - app/core/user_prefs.py
+      - tests/test_user_prefs.py
+    effort: high
+    change_type: additive
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,pytest,pydantic
+    raw_extensions: [".py"]
+    objective: >-
+      Add 5+ edge-case tests for PrefsStore (corrupt JSON, missing file/dir, atomic
+      write, round-trip) and UserPreferences validation.
+    acceptance_criteria:
+      - >-
+        5+ new tests covering corrupt JSON, missing file, missing dir, atomic write,
+        JSON round-trip, Pydantic validation rejection
+      - All existing tests still pass
+      - "ruff + mypy + pytest pass"
+    implementation_constraints:
+      - Test-only ticket
+      - Use tmp_path fixture for filesystem isolation
+      - >-
+        Verify atomic write by checking that no .tmp partial file is left after a
+        successful save (or after a simulated mid-write crash)
+
+  - ticket_id: WOR-318
+    branch: wor-318-tests-escalation-policy-classify
+    title: Tests: cover EscalationPolicy.classify_* decision tables
+    allowed_paths: [tests/test_escalation_policy.py]
+    related_files_hint:
+      - app/core/escalation_policy.py
+      - config/escalation_policy.toml
+      - tests/test_escalation_policy.py
+    effort: high
+    change_type: additive
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,pytest,toml
+    raw_extensions: [".py"]
+    objective: >-
+      Add 8+ tests locking the EscalationPolicy decision tables (4 result-flag
+      classifiers, 5 sonar severity classifiers, 2 from_toml error paths).
+    acceptance_criteria:
+      - >-
+        8+ new tests covering classify_result for each flag, classify_sonar_finding
+        for each severity, from_toml malformed/missing-section error paths
+      - All existing tests still pass
+      - app/core/escalation_policy.py coverage rises
+    implementation_constraints:
+      - Test-only ticket
+      - Do NOT modify config/escalation_policy.toml -- write test TOML to tmp_path
+      - >-
+        Use EscalationPolicy.from_toml(tmp_path / 'escalation_policy.toml') for setup
+
+  - ticket_id: WOR-319
+    branch: wor-319-tests-manifest-validators
+    title: Tests: add validator tests for app/core/manifest.py (extra=forbid, paths, taxonomy ranges)
+    allowed_paths: [tests/test_manifest.py]
+    related_files_hint:
+      - app/core/manifest.py
+      - tests/test_manifest.py
+    effort: high
+    change_type: additive
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python,pytest,pydantic
+    raw_extensions: [".py"]
+    objective: >-
+      Add 8+ validator tests for ExecutionManifest covering extra=forbid rejection,
+      Literal/range constraints, ArtifactPaths normalization.
+    acceptance_criteria:
+      - >-
+        8+ new tests covering extra_forbidden, change_type Literal, reasoning_demand
+        range, scope_clarity range, max_retries values, allowed_paths edge cases,
+        ArtifactPaths.from_ticket_id normalization
+      - "Use pytest.raises(ValidationError) with match= for error message checks"
+      - All existing tests still pass
+    implementation_constraints:
+      - Test-only ticket
+      - Read tests/test_manifest.py first for existing fixture patterns
+      - >-
+        Use ExecutionManifest constructor directly OR
+        ExecutionManifest.model_validate(dict) for dict-based tests
+
+  - ticket_id: WOR-320
+    branch: wor-320-docstrings-watcher-helpers
+    title: Docstrings: add to public functions in app/core/watcher/watcher_helpers.py
+    allowed_paths: [app/core/watcher/watcher_helpers.py]
+    related_files_hint: [app/core/watcher/watcher_helpers.py]
+    effort: high
+    change_type: docs
+    reasoning_demand: 1
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 4
+    tech_stack: python
+    raw_extensions: [".py"]
+    objective: >-
+      Add concise Google-style docstrings to all public functions in watcher_helpers.py
+      that lack them.
+    acceptance_criteria:
+      - >-
+        All public (non-_-prefixed) functions in watcher_helpers.py have at least a
+        one-line docstring
+      - Existing docstrings unchanged
+      - "ruff + mypy + pytest pass with no behavior change"
+    implementation_constraints:
+      - "Use Edit tool per function -- do not rewrite the file"
+      - >-
+        Match the style of existing well-documented functions like _parse_worker_usage
+      - One-sentence summary sufficient; Args/Returns/Raises only when useful
+      - Do NOT modify private (_-prefixed) functions
+
+  - ticket_id: WOR-321
+    branch: wor-321-docstrings-watcher-subprocess
+    title: Docstrings: add to public functions in app/core/watcher/watcher_subprocess.py
+    allowed_paths: [app/core/watcher/watcher_subprocess.py]
+    related_files_hint: [app/core/watcher/watcher_subprocess.py]
+    effort: high
+    change_type: docs
+    reasoning_demand: 1
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 4
+    tech_stack: python
+    raw_extensions: [".py"]
+    objective: >-
+      Add Google-style docstrings to public functions in watcher_subprocess.py
+      (launch_worker, run_checks, fetch_sonar_findings, create_pr, parse_git_shortstat, etc.).
+    acceptance_criteria:
+      - All public functions in watcher_subprocess.py have docstrings
+      - "ruff + mypy + pytest pass with no behavior change"
+    implementation_constraints:
+      - Use Edit tool per function
+      - >-
+        For launch_worker: document the worker_verbose<->tee path relationship
+      - Do NOT modify other watcher modules
+
+  - ticket_id: WOR-322
+    branch: wor-322-docstrings-post-setup
+    title: Docstrings: add to public functions in app/core/post_setup.py
+    allowed_paths: [app/core/post_setup.py]
+    related_files_hint: [app/core/post_setup.py]
+    effort: high
+    change_type: docs
+    reasoning_demand: 1
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 4
+    tech_stack: python
+    raw_extensions: [".py"]
+    objective: >-
+      Add Google-style docstrings to public functions in post_setup.py. For GitHub-API
+      helpers, document the endpoint, auth model, and failure semantics.
+    acceptance_criteria:
+      - All public functions in post_setup.py have docstrings
+      - "ruff + mypy + pytest pass with no behavior change"
+    implementation_constraints:
+      - Use Edit tool per function
+      - >-
+        Touches post_setup.py -- may serialize with WOR-279, WOR-323, WOR-329
+      - Documentation-only -- no test changes required
+
+  - ticket_id: WOR-323
+    branch: wor-323-audit-bare-except-post-setup
+    title: Audit: replace bare except Exception in app/core/post_setup.py with specific exceptions
+    allowed_paths:
+      - app/core/post_setup.py
+      - tests/test_post_setup.py
+    related_files_hint:
+      - app/core/post_setup.py
+      - tests/test_post_setup.py
+    effort: xhigh
+    change_type: refactor
+    reasoning_demand: 3
+    scope_clarity: 4
+    constraint_density: 4
+    ac_specificity: 4
+    tech_stack: python
+    raw_extensions: [".py"]
+    objective: >-
+      Audit each `except Exception` in post_setup.py and replace with specific
+      exception types where safe. Skip intentional broad catches with a comment
+      explaining why.
+    acceptance_criteria:
+      - >-
+        At least 50% of bare `except Exception` in post_setup.py are replaced with
+        specific types (or annotated as intentional)
+      - All existing tests pass
+      - "ruff + mypy + pytest pass"
+    implementation_constraints:
+      - >-
+        Per occurrence: identify the specific exceptions raised in the try-block
+        (URLError, HTTPError, CalledProcessError, JSONDecodeError, NoKeyringError, etc.)
+      - "Skip + comment if the catch is intentionally broad (e.g. cleanup/best-effort path)"
+      - "Run pytest after each batch of changes"
+      - >-
+        Touches post_setup.py -- may serialize with WOR-279, WOR-322, WOR-329
+
+  - ticket_id: WOR-324
+    branch: wor-324-audit-noqa-watcher
+    title: Audit: remove unused noqa/type:ignore comments in app/core/watcher/
+    allowed_paths: [app/core/watcher/*.py]
+    forbidden_paths_extra: [app/core/watcher/__init__.py]
+    related_files_hint: [app/core/watcher/]
+    effort: xhigh
+    change_type: refactor
+    reasoning_demand: 3
+    scope_clarity: 4
+    constraint_density: 4
+    ac_specificity: 4
+    tech_stack: python,ruff,mypy,bandit
+    raw_extensions: [".py"]
+    objective: >-
+      Find and remove stale # noqa / # type: ignore suppressions in app/core/watcher/
+      where the underlying issue no longer exists. KEEP legitimate # nosec B603/B607
+      on subprocess calls.
+    acceptance_criteria:
+      - At least 5 stale suppressions removed
+      - No new ruff/mypy errors introduced
+      - All tests pass
+      - Suppressions kept have a comment explaining why
+    implementation_constraints:
+      - >-
+        DO NOT remove # nosec B603 / B607 on subprocess.run calls -- those are
+        intentional
+      - >-
+        For each candidate: remove the suppression, run ruff/mypy, if passes keep
+        removed; otherwise restore + comment
+      - >-
+        Touches multiple watcher files -- may serialize with sibling tickets
+      - >-
+        Skip files actively touched by WOR-312 work (watcher_finalize.py, dispatch.py)
+        if WOR-312 is in flight -- but it's NOT in this overnight epic, so go ahead
+
+  - ticket_id: WOR-325
+    branch: wor-325-tests-watcher-services-probes
+    title: Tests: add coverage for app/core/watcher/watcher_services.py::ServiceManager probes
+    allowed_paths: [tests/test_watcher_services.py]
+    related_files_hint:
+      - app/core/watcher/watcher_services.py
+      - tests/test_watcher_services.py
+    effort: high
+    change_type: additive
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 4
+    tech_stack: python,pytest,subprocess,urllib
+    raw_extensions: [".py"]
+    objective: >-
+      Add 5+ tests for ServiceManager.probe_vllm_health and process-management edge cases.
+    acceptance_criteria:
+      - >-
+        5+ new tests covering: probe_vllm_health (port not bound, 5xx, 200),
+        ensure_litellm_running (already running, Popen failure),
+        ensure_ollama_running fallback, shutdown_litellm
+      - All existing tests still pass
+      - "ruff + mypy + pytest pass"
+    implementation_constraints:
+      - "Use patch('urllib.request.urlopen') for health probe mocks"
+      - "Use patch('subprocess.Popen') for process launching mocks"
+      - Test-only ticket
+
+  - ticket_id: WOR-326
+    branch: wor-326-sonar-s1-quick-wins
+    title: SonarCloud S1: quick-win cleanups (S1481, S5713, S1066) — 5 findings
+    allowed_paths:
+      - app/core/watcher/watcher.py
+      - app/core/watcher/watcher_finalize.py
+      - app/core/watcher/dispatch.py
+    related_files_hint:
+      - app/core/watcher/watcher.py
+      - app/core/watcher/watcher_finalize.py
+      - app/core/watcher/dispatch.py
+    effort: high
+    change_type: refactor
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 4
+    ac_specificity: 5
+    tech_stack: python
+    raw_extensions: [".py"]
+    objective: >-
+      Apply 5 mechanical Sonar fixes: 2x unused locals -> _, 2x duplicate exception
+      class removal, 1x collapse nested if. Pure cleanup.
+    acceptance_criteria:
+      - All 5 Sonar findings resolved (verify via mcp sonarqube issues query after merge)
+      - "ruff + mypy + pytest pass"
+      - No behavior change -- same tests pass
+    implementation_constraints:
+      - >-
+        Read ~10 lines of context around each finding before applying the fix
+      - Use Edit tool, line-by-line
+      - >-
+        Touches 3 watcher files -- may serialize with sibling Sonar tickets
+
+  - ticket_id: WOR-327
+    branch: wor-327-sonar-s2-string-literals
+    title: SonarCloud S2: extract duplicated string literals (S1192) — 2 findings
+    allowed_paths:
+      - app/core/watcher/watcher.py
+      - app/core/watcher/watcher_finalize.py
+      - app/core/watcher/watcher_types.py
+    related_files_hint:
+      - app/core/watcher/watcher.py
+      - app/core/watcher/watcher_finalize.py
+      - app/core/watcher/watcher_types.py
+    effort: high
+    change_type: refactor
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 3
+    ac_specificity: 5
+    tech_stack: python
+    raw_extensions: [".py"]
+    objective: >-
+      Extract 2 duplicated string literals into module-level constants: */manifest.json
+      (3x in watcher.py) and 'In Progress' (4x in watcher_finalize.py).
+    acceptance_criteria:
+      - Both S1192 findings resolved
+      - Constants are leading-underscore (module-private) following existing conventions
+      - "ruff + mypy + pytest pass"
+      - No behavior change
+    implementation_constraints:
+      - Check watcher_types.py for existing 'In Progress' constant before defining a new one
+      - Use Edit tool with replace_all=True for the literal substitution
+      - "Touches multiple watcher files -- may serialize with WOR-326"
+
+  - ticket_id: WOR-328
+    branch: wor-328-sonar-s3-dispatch-signature
+    title: SonarCloud S3: clean up dispatch.start_ticket signature (S107 + S1172) — remove dead params
+    allowed_paths:
+      - app/core/watcher/dispatch.py
+      - app/core/watcher/watcher.py
+      - tests/test_watcher_dispatch.py
+    related_files_hint:
+      - app/core/watcher/dispatch.py
+      - app/core/watcher/watcher.py
+      - tests/test_watcher_dispatch.py
+    effort: high
+    change_type: refactor
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 4
+    ac_specificity: 5
+    tech_stack: python
+    raw_extensions: [".py"]
+    objective: >-
+      Remove 3 dead params (project_id, retry_counters, max_local_workers) from
+      dispatch.start_ticket. Auto-resolves S107 (16 -> 13 params) + 3x S1172.
+      Confirms WOR-311's finding.
+    acceptance_criteria:
+      - All 4 Sonar findings resolved (3x S1172 + 1x S107)
+      - "ruff + mypy + pytest pass"
+      - All existing tests still pass after removing dead-param mocks
+    implementation_constraints:
+      - >-
+        Verify each param is genuinely unused inside start_ticket body before removing
+      - Update the call site in app/core/watcher/watcher.py
+      - >-
+        Update test mocks in tests/test_watcher_dispatch.py -- remove project_id=,
+        retry_counters={}, max_local_workers= keyword args
+      - >-
+        DO NOT delete Watcher._retry_counters dict itself -- that's WOR-312's territory
+      - >-
+        Touches dispatch.py + watcher.py -- may serialize with WOR-326, WOR-327
+
+  - ticket_id: WOR-329
+    branch: wor-329-sonar-s4-unused-params
+    title: SonarCloud S4: remove unused parameters in watcher_finalize.py + post_setup.py (S1172) — 3 findings
+    allowed_paths:
+      - app/core/watcher/watcher_finalize.py
+      - app/core/post_setup.py
+      - tests/test_watcher_finalize.py
+      - tests/test_post_setup.py
+    related_files_hint:
+      - app/core/watcher/watcher_finalize.py
+      - app/core/post_setup.py
+    effort: high
+    change_type: refactor
+    reasoning_demand: 2
+    scope_clarity: 5
+    constraint_density: 4
+    ac_specificity: 5
+    tech_stack: python
+    raw_extensions: [".py"]
+    objective: >-
+      Remove 3 unused params (linear_id, linear in watcher_finalize.py; prefs in
+      post_setup.py). Verify they're truly unused first.
+    acceptance_criteria:
+      - >-
+        All 3 S1172 findings resolved (or renamed to _<name> with comment if removal
+        isn't safe)
+      - "ruff + mypy + pytest pass"
+      - All call sites updated; no broken tests
+    implementation_constraints:
+      - Read each function body fully before removing -- check for hidden uses
+      - >-
+        If used in string templates or kwargs spread, do NOT remove
+      - If exists for protocol compliance, prefer rename to _<name>
+      - >-
+        Touches watcher_finalize.py + post_setup.py -- may serialize with WOR-279,
+        WOR-322, WOR-323, WOR-326, WOR-327
+
+  - ticket_id: WOR-330
+    branch: wor-330-sonar-s5-cli-complexity
+    title: SonarCloud S5: reduce cognitive complexity in app/cli.py (S3776) — 3 functions
+    allowed_paths: [app/cli.py, tests/test_cli.py]
+    related_files_hint:
+      - app/cli.py
+      - tests/test_cli.py
+    effort: xhigh
+    change_type: refactor
+    reasoning_demand: 4
+    scope_clarity: 4
+    constraint_density: 4
+    ac_specificity: 5
+    tech_stack: python
+    raw_extensions: [".py"]
+    objective: >-
+      Reduce cognitive complexity of 3 large functions in app/cli.py (currently 26,
+      23, +1 more) to <= 15 by extracting per-step helpers. Behavior must be
+      preserved exactly.
+    acceptance_criteria:
+      - All 3 S3776 cli.py findings resolved (cognitive complexity <= 15 each)
+      - "ruff + mypy + pytest pass"
+      - All 24+ existing test_cli.py tests still pass with no changes
+    implementation_constraints:
+      - >-
+        These functions are tested via app.cli.main(...) so behavior MUST be preserved
+        exactly
+      - >-
+        Functions at lines 272 and 335 are likely _run_generate and _run_config --
+        split into per-step helpers
+      - >-
+        Helper names should be descriptive (e.g. _handle_github_create, _handle_post_setup)
+      - "Run pytest after each function refactor, not at the end"
+      - >-
+        May touch tests/test_cli.py if helpers need direct test coverage -- but ideally
+        no test changes
