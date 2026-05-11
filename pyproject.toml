@@ -41,6 +41,13 @@ known_first_party = ["app"]
 
 [tool.deptry.package_module_name_map]
 "python-dotenv" = ["dotenv"]
+"pyyaml" = ["yaml"]
+
+[tool.deptry.per_rule_ignores]
+# `yaml` is in requirements-dev.txt (used by scripts/generate_overnight_manifests.py).
+# deptry classifies scripts/ as production code and complains it's transitive.
+# Keeping pyyaml as a dev-only dep is the right call (operators don't need it at runtime).
+DEP003 = ["yaml"]
 
 [tool.bandit]
 targets = ["app"]
