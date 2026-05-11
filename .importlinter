@@ -49,7 +49,7 @@ type = layers
 layers =
     app.core.watcher.watcher : app.core.watcher.dispatch : app.core.watcher.ticket_status
     app.core.watcher.watcher_finalize
-    app.core.watcher.watcher_finalize_helpers : app.core.watcher.watcher_heartbeat : app.core.watcher.watcher_signals
+    app.core.watcher.watcher_finalize_helpers : app.core.watcher.watcher_heartbeat : app.core.watcher.watcher_signals : app.core.watcher.watcher_epic
     app.core.watcher.watcher_subprocess : app.core.watcher.watcher_worktrees : app.core.watcher.watcher_services
     app.core.watcher.watcher_helpers
     app.core.watcher.watcher_types : app.core.watcher.watcher_log_parsing : app.core.watcher.watcher_tui : app.core.watcher.worker_waste : app.core.watcher.log_format

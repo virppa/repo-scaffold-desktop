@@ -651,7 +651,7 @@ def test_check_epic_completion_posts_comment_and_exits(tmp_path: Path) -> None:
     ]
 
     with (
-        patch("app.core.watcher.watcher.subprocess.run") as mock_run,
+        patch("app.core.watcher.watcher_epic.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/1")
         w._check_epic_completion()
@@ -685,7 +685,7 @@ def test_check_epic_completion_no_epic_shutdown_keeps_running(
     ]
 
     with (
-        patch("app.core.watcher.watcher.subprocess.run") as mock_run,
+        patch("app.core.watcher.watcher_epic.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(stdout="https://github.com/org/repo/pull/1")
         w._check_epic_completion()

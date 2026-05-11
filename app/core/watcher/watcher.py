@@ -20,7 +20,6 @@ from __future__ import annotations
 import json
 import logging
 import signal
-import subprocess  # nosec B404
 import time
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -30,6 +29,7 @@ from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import MetricsStore
 
+from .watcher_epic import check_epic_completion
 from .watcher_finalize import finalize_worker, safe_set_state
 from .watcher_heartbeat import build_tui_state, emit_heartbeat, emit_idle_line
 from .watcher_helpers import (
@@ -750,120 +750,27 @@ class Watcher:
     # ------------------------------------------------------------------
     # Epic completion detection
     # ------------------------------------------------------------------
-    def _no_remaining_ready_or_waiting(self) -> bool:
-        """Return True if there are no ReadyForLocal tickets AND no
-        WaitingForDeps manifests outstanding."""
-        try:
-            ready = self._linear.list_ready_for_local()
-        except Exception as exc:
-            logger.warning("Epic completion check: Linear poll failed: %s", exc)
-            return False
-        if ready:
-            return False
-        artifacts = self._repo_root / _CLAUDE_DIR / "artifacts"
-        if artifacts.exists():
-            for mp in artifacts.glob("manifest.json"):
-                try:
-                    if ExecutionManifest.from_json(mp).status == "WaitingForDeps":
-                        return False
-                except Exception as exc:
-                    logger.warning("Could not read manifest at %s: %s", mp, exc)
-        return True
-
-    def _epic_dedup_state_key(self) -> tuple[str | None, str]:
-        """Return (epic_id, state_key) for dedup of the epic-complete announcement."""
-        epic_id = next((t.epic_id for t in self._processed_tickets if t.epic_id), None)
-        state_key = (
-            "|".join(sorted(t.ticket_id for t in self._processed_tickets))
-            + ":"
-            + str(any(not t.succeeded for t in self._processed_tickets))
-        )
-        return epic_id, state_key
-
-    def _lookup_pr_url(self, branch: str) -> str:
-        """Return the PR URL for `branch` via `gh pr list`, or a fallback."""
-        try:
-            cmd = [
-                "gh",
-                "pr",
-                "list",
-                "--head",
-                branch,
-                "--json",
-                "url",
-                "--jq",
-                ".[0].url",
-            ]
-            result = subprocess.run(  # nosec B603 B607
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                cwd=str(self._repo_root),
-                check=False,
-            )
-            pr_url = result.stdout.strip()
-            return pr_url if pr_url else "(not found)"
-        except Exception:
-            return "(not found)"
-
-    def _log_epic_summary(self) -> None:
-        """Log the per-ticket summary table for processed tickets."""
-        failed = [t for t in self._processed_tickets if not t.succeeded]
-        succeeded = [t for t in self._processed_tickets if t.succeeded]
-        if failed:
-            logger.warning(
-                "All tickets processed - %d failed, %d succeeded",
-                len(failed),
-                len(succeeded),
-            )
-        else:
-            logger.info("All sub-tickets processed - epic complete")
-        logger.info("%-15s  %-55s  %s", "Ticket", "PR URL", "Elapsed")
-        for t in self._processed_tickets:
-            pr_url = (
-                "(failed)" if not t.succeeded else self._lookup_pr_url(t.worker_branch)
-            )
-            logger.info("%-15s  %-55s  %.0fs", t.ticket_id, pr_url, t.elapsed)
-
-    def _post_epic_complete_comment(self, epic_id: str) -> None:
-        """Post the epic-complete summary comment, swallowing transport errors."""
-        try:
-            self._linear.post_comment(
-                epic_id,
-                f"All sub-tickets merged — ready for `/close-epic {epic_id}`",
-            )
-            logger.info("Posted epic-complete comment on %s", epic_id)
-        except Exception as exc:
-            logger.warning(
-                "Could not post epic-complete comment on %s: %s", epic_id, exc
-            )
-
-    def _check_epic_completion(self) -> None:
-        """When pools and queue are empty, announce epic complete + maybe exit."""
-        if self._local_active or self._cloud_active:
-            return
-        if not self._no_remaining_ready_or_waiting():
-            return
-        if not self._processed_tickets:
-            return
-
-        epic_id, state_key = self._epic_dedup_state_key()
-        if epic_id and self._last_epic_complete_announced.get(epic_id) == state_key:
-            return
-        if epic_id:
-            self._last_epic_complete_announced[epic_id] = state_key
-
-        self._log_epic_summary()
-        failed = any(not t.succeeded for t in self._processed_tickets)
-        if epic_id and not failed:
-            self._post_epic_complete_comment(epic_id)
-        if not self._no_epic_shutdown:
-            self._running = False
-
     # ------------------------------------------------------------------
     # Manifest loading
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Epic completion (orchestrator wraps watcher_epic.check_epic_completion)
+    # ------------------------------------------------------------------
+
+    def _check_epic_completion(self) -> None:
+        """Delegate to watcher_epic.check_epic_completion; flip _running off
+        if the daemon should shut down."""
+        if not check_epic_completion(
+            self._local_active,
+            self._cloud_active,
+            self._linear,
+            self._repo_root,
+            self._processed_tickets,  # type: ignore[arg-type]
+            self._last_epic_complete_announced,
+            self._no_epic_shutdown,
+        ):
+            self._running = False
 
     def _enrich_with_retry_context(
         self, manifest: ExecutionManifest
