@@ -132,6 +132,7 @@ def check_allowed_paths_overlap(
 def build_worker_env(
     mode: str,
     base_env: dict[str, str],
+    quality_check_budget: int | None = None,
 ) -> dict[str, str]:
     """Return a subprocess environment dict for the given worker mode.
 
@@ -145,6 +146,12 @@ def build_worker_env(
               ANTHROPIC_AUTH_TOKEN are set to "dummy" only to satisfy Claude
               Code's local auth check; vLLM does not validate.
     default — passes base_env unchanged.
+
+    WOR-421: ``quality_check_budget`` is the per-session allowance for manual
+    Bash invocations of ruff/mypy/pytest/bandit/lint-imports. Passed via
+    ``WATCHER_QUALITY_CHECK_BUDGET`` env var, read by the
+    ``check_quality_check_budget.py`` PreToolUse hook. Defaults to
+    ``len(manifest.required_checks)`` at the call site.
     """
     env = dict(base_env)
     if mode == "cloud":
@@ -172,6 +179,8 @@ def build_worker_env(
         # prevent late-session drift observed in WOR-216/WOR-217/WOR-212 (163K peak).
         env.setdefault("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "240000")
         env.setdefault("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", "75")
+    if quality_check_budget is not None:
+        env["WATCHER_QUALITY_CHECK_BUDGET"] = str(quality_check_budget)
     return env
 
 
