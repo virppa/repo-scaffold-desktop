@@ -253,11 +253,7 @@ class LinearClient:
         for attempt in range(max_retries + 1):
             try:
                 return self._attempt_query(req)
-            except (
-                urllib.error.HTTPError,
-                urllib.error.URLError,
-                http.client.RemoteDisconnected,
-            ) as exc:
+            except (urllib.error.URLError, http.client.RemoteDisconnected) as exc:
                 last_exc = _classify_transient_or_raise(exc)
             if attempt < max_retries:
                 delay = _RETRY_DELAYS[attempt]

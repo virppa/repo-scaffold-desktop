@@ -11,6 +11,7 @@ import logging
 import os
 import subprocess  # nosec B404
 from pathlib import Path
+from typing import Any
 
 from app.core.escalation_policy import EscalationPolicy, get_waste_warn_threshold
 from app.core.manifest import ExecutionManifest
@@ -425,16 +426,7 @@ def finalize_worker(
     api_retry_count = _parse_worker_api_retries(log_path)
     subagent_spawns = _parse_worker_subagent_spawns(log_path)
     hook_trust_violations = _parse_hook_trust_violations(log_path)
-    # WOR-274: warn when the worker manually re-ran quality checks outside
-    # the PostToolUse hook loop.  Threshold > 1 because a single accidental
-    # re-run may be harmless; repeated re-runs indicate systematic distrust
-    # of the hook infrastructure.
-    if hook_trust_violations is not None and hook_trust_violations > 1:
-        logger.warning(
-            "hook-trust violation: %s ran quality-check tools manually %d times",
-            worker.ticket_id,
-            hook_trust_violations,
-        )
+    _warn_hook_trust(worker.ticket_id, hook_trust_violations)
     # WOR-380: per-worker behavior telemetry. Concurrency-safe — extracted
     # from this worker's own log file.
     behavior = _parse_worker_behavior(log_path)
@@ -449,34 +441,7 @@ def finalize_worker(
         worker.worktree_path, worker.manifest.base_branch
     )
 
-    # Cloud metrics — populated only when eff == "cloud"
-    cloud_model: str | None = None
-    cloud_tokens: int | None = None
-    cloud_cost_estimate: float | None = None
-    if eff == "cloud" and input_tokens is not None and output_tokens is not None:
-        cloud_model = _resolve_cloud_model()
-        cloud_tokens = input_tokens + output_tokens
-        cloud_cost_estimate = _estimate_cloud_cost(
-            input_tokens, output_tokens, cloud_model
-        )
-
-    # Local metrics — populated only when eff == "local"
-    local_tokens: int | None = None
-    local_input_tokens: int | None = None
-    local_output_tokens: int | None = None
-    output_tokens_per_wall_second: float | None = None
-    local_model_str: str | None = None
-    if eff == "local":
-        local_tokens = (
-            (input_tokens or 0) + (output_tokens or 0)
-            if input_tokens is not None and output_tokens is not None
-            else None
-        )
-        local_input_tokens = input_tokens
-        local_output_tokens = output_tokens
-        local_model_str = _LOCAL_MODEL
-        if output_tokens is not None and wall_time and wall_time > 0:
-            output_tokens_per_wall_second = output_tokens / wall_time
+    cost = _build_cost_metrics(eff, input_tokens, output_tokens, wall_time)
 
     # Compute waste score from the worker log (WOR-277).
     waste_report = compute_waste_score(log_path)
@@ -484,20 +449,7 @@ def finalize_worker(
     waste_breakdown_json: str | None = (
         json.dumps(waste_report.breakdown) if waste_report.score > 0 else None
     )
-    if waste_score is not None and waste_score > get_waste_warn_threshold():
-        top_reasons = ", ".join(
-            f"{k}={v}"
-            for k, v in sorted(
-                waste_report.breakdown.items(), key=lambda x: x[1], reverse=True
-            )
-            if v > 0
-        )
-        logger.warning(
-            "High waste score for %s: %d/100 (%s)",
-            worker.ticket_id,
-            waste_score,
-            top_reasons,
-        )
+    _warn_high_waste(worker.ticket_id, waste_score, waste_report)
 
     # failed_check: store JSON array of all failed check names (WOR-312)
     failed_check_json: str | None = (
@@ -516,16 +468,16 @@ def finalize_worker(
             epic_id=worker.manifest.epic_id,
             implementation_mode=_to_metrics_mode(eff),
             local_used=(eff == "local"),
-            local_model=local_model_str,
+            local_model=cost["local_model"],
             cloud_used=(eff == "cloud"),
-            cloud_model=cloud_model,
-            cloud_tokens=cloud_tokens,
-            cloud_cost_estimate=cloud_cost_estimate,
-            local_input_tokens=local_input_tokens,
-            local_output_tokens=local_output_tokens,
-            local_tokens=local_tokens,
+            cloud_model=cost["cloud_model"],
+            cloud_tokens=cost["cloud_tokens"],
+            cloud_cost_estimate=cost["cloud_cost_estimate"],
+            local_input_tokens=cost["local_input_tokens"],
+            local_output_tokens=cost["local_output_tokens"],
+            local_tokens=cost["local_tokens"],
             local_wall_time=wall_time,
-            output_tokens_per_wall_second=output_tokens_per_wall_second,
+            output_tokens_per_wall_second=cost["output_tokens_per_wall_second"],
             escalated_to_cloud=escalated,
             outcome=outcome,
             retry_count=worker.attempt_count,
@@ -594,23 +546,12 @@ def finalize_worker(
             wall_time_s=wall_time,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            output_tok_per_s=output_tokens_per_wall_second,
+            output_tok_per_s=cost["output_tokens_per_wall_second"],
             context_compactions=context_compactions,
         )
     )
 
-    # Auto-detect tags for morning retros (WOR-332).
-    _manifest = worker.manifest
-    _row = metrics.get_by_ticket(worker.ticket_id, project_id)
-    if _row is not None:
-        _tags = compute_tags(
-            _row,
-            _read_result_status(repo_root, _manifest) or "",
-            _read_result_flags(repo_root / _manifest.artifact_paths.result_json),
-            tracked_prs,
-        )
-        if _tags:
-            metrics.set_tags(worker.ticket_id, project_id, _tags)
+    _apply_auto_tags(metrics, worker, project_id, repo_root, tracked_prs)
 
     restore_plan_files(worker.backed_up_plans)
 
@@ -627,7 +568,94 @@ def finalize_worker(
         worker.manifest.worker_branch,
         backup_root=backup_root,
     )
-    # Surface silent commit_wip_state failures for operator visibility (WOR-309).
+    _handle_wip_result(wip_result, worker)
+
+    if not artifacts_preserved:
+        # Failure path: also preserve full worker artifacts (logs, last_failure,
+        # etc.) for forensic analysis. Success path doesn't need this — the PR
+        # itself is the artifact.
+        preserve_worker_artifacts(repo_root, worker)
+
+    if wip_result.status in ("clean", "pushed", "backup"):
+        cleanup_worktree(repo_root, worker.worktree_path)
+    # else: status == "failed" — WOR-288: WIP preservation failed (commit
+    # could neither push nor back up). Leaving the worktree in place for
+    # human salvage. The ERROR log at the call site above already surfaces
+    # the path and error for manual recovery.
+    return outcome
+
+
+def _warn_hook_trust(ticket_id: str, hook_trust_violations: int | None) -> None:
+    """WOR-274: warn when the worker manually re-ran quality checks outside hooks.
+
+    Threshold > 1 because a single accidental re-run may be harmless; repeated
+    re-runs indicate systematic distrust of the hook infrastructure.
+    """
+    if hook_trust_violations is None or hook_trust_violations <= 1:
+        return
+    logger.warning(
+        "hook-trust violation: %s ran quality-check tools manually %d times",
+        ticket_id,
+        hook_trust_violations,
+    )
+
+
+def _build_cost_metrics(
+    eff: str,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    wall_time: float,
+) -> dict[str, Any]:
+    """Compute cloud + local cost/token fields based on effective mode."""
+    cost: dict[str, Any] = {
+        "cloud_model": None,
+        "cloud_tokens": None,
+        "cloud_cost_estimate": None,
+        "local_model": None,
+        "local_input_tokens": None,
+        "local_output_tokens": None,
+        "local_tokens": None,
+        "output_tokens_per_wall_second": None,
+    }
+    if eff == "cloud" and input_tokens is not None and output_tokens is not None:
+        cost["cloud_model"] = _resolve_cloud_model()
+        cost["cloud_tokens"] = input_tokens + output_tokens
+        cost["cloud_cost_estimate"] = _estimate_cloud_cost(
+            input_tokens, output_tokens, cost["cloud_model"]
+        )
+        return cost
+    if eff != "local":
+        return cost
+    cost["local_model"] = _LOCAL_MODEL
+    cost["local_input_tokens"] = input_tokens
+    cost["local_output_tokens"] = output_tokens
+    if input_tokens is not None and output_tokens is not None:
+        cost["local_tokens"] = input_tokens + output_tokens
+    if output_tokens is not None and wall_time and wall_time > 0:
+        cost["output_tokens_per_wall_second"] = output_tokens / wall_time
+    return cost
+
+
+def _warn_high_waste(
+    ticket_id: str, waste_score: int | None, waste_report: Any
+) -> None:
+    """WOR-277: surface a warning when the waste score exceeds the threshold."""
+    if waste_score is None or waste_score <= get_waste_warn_threshold():
+        return
+    top_reasons = ", ".join(
+        f"{k}={v}"
+        for k, v in sorted(
+            waste_report.breakdown.items(), key=lambda x: x[1], reverse=True
+        )
+        if v > 0
+    )
+    logger.warning(
+        "High waste score for %s: %d/100 (%s)", ticket_id, waste_score, top_reasons
+    )
+
+
+def _handle_wip_result(wip_result: Any, worker: ActiveWorker) -> None:
+    """Log + persist outcome of commit_wip_state per WIP status."""
     if wip_result.status == "backup":
         logger.warning(
             "WIP backup for %s — commit or push failed, dirty worktree saved to %s",
@@ -648,16 +676,24 @@ def finalize_worker(
         _write_wip_sha_to_last_failure(worker, wip_result.sha)
     _write_wip_state_to_last_failure(worker, wip_result.status, wip_result.backup_path)
 
-    if not artifacts_preserved:
-        # Failure path: also preserve full worker artifacts (logs, last_failure,
-        # etc.) for forensic analysis. Success path doesn't need this — the PR
-        # itself is the artifact.
-        preserve_worker_artifacts(repo_root, worker)
 
-    if wip_result.status in ("clean", "pushed", "backup"):
-        cleanup_worktree(repo_root, worker.worktree_path)
-    # else: status == "failed" — WOR-288: WIP preservation failed (commit
-    # could neither push nor back up). Leaving the worktree in place for
-    # human salvage. The ERROR log at the call site above already surfaces
-    # the path and error for manual recovery.
-    return outcome
+def _apply_auto_tags(
+    metrics: MetricsStore,
+    worker: ActiveWorker,
+    project_id: str,
+    repo_root: Path,
+    tracked_prs: list[TrackedPR] | None,
+) -> None:
+    """WOR-332: compute and persist auto-tags from the metrics row + result.json."""
+    manifest = worker.manifest
+    row = metrics.get_by_ticket(worker.ticket_id, project_id)
+    if row is None:
+        return
+    tags = compute_tags(
+        row,
+        _read_result_status(repo_root, manifest) or "",
+        _read_result_flags(repo_root / manifest.artifact_paths.result_json),
+        tracked_prs,
+    )
+    if tags:
+        metrics.set_tags(worker.ticket_id, project_id, tags)

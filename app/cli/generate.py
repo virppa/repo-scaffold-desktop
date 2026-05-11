@@ -245,44 +245,79 @@ def _run_github_phase(
 
     Returns (exit_code, clone_url, repo_full_name). exit_code is 0 on success.
     """
-    clone_url: str | None = None
-    repo_full_name: str | None = None
     rollback = not args.no_rollback_on_failure
 
-    if args.github_create:
-        try:
-            clone_url = _run_github_create(config, args)
-        except RuntimeError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1, None, None
+    clone_url, rc = _gh_create_step(args, config)
+    if rc != 0:
+        return rc, None, None
 
-    if clone_url is not None:
-        repo_full_name = _parse_repo_full_name(clone_url)
+    repo_full_name = _parse_repo_full_name(clone_url) if clone_url is not None else None
 
-    if repo_full_name is not None and clone_url is not None:
-        try:
-            configure_github_repo(repo_full_name, config.preset, config.include_ci)
-            print("✓ Configured GitHub repository settings")
-        except RuntimeError as exc:
-            if rollback:
-                delete_github_repo(repo_full_name)
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1, None, None
+    rc = _gh_configure_step(repo_full_name, clone_url, config, rollback)
+    if rc != 0:
+        return rc, None, None
 
-    if args.git_push:
-        push_url: str | None = clone_url if clone_url is not None else args.remote_url
-        if push_url is None:
-            print("Error: no remote URL specified", file=sys.stderr)
-            return 1, None, None
-        try:
-            _run_initial_push(args.output, push_url)
-        except RuntimeError as exc:
-            if rollback and repo_full_name is not None:
-                delete_github_repo(repo_full_name)
-            print(f"Error: {exc}", file=sys.stderr)
-            return 1, None, None
+    rc = _gh_push_step(args, clone_url, repo_full_name, rollback)
+    if rc != 0:
+        return rc, None, None
 
     return 0, clone_url, repo_full_name
+
+
+def _gh_create_step(
+    args: argparse.Namespace, config: RepoConfig
+) -> tuple[str | None, int]:
+    """Optional GitHub repo create. Returns (clone_url, exit_code)."""
+    if not args.github_create:
+        return None, 0
+    try:
+        return _run_github_create(config, args), 0
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return None, 1
+
+
+def _gh_configure_step(
+    repo_full_name: str | None,
+    clone_url: str | None,
+    config: RepoConfig,
+    rollback: bool,
+) -> int:
+    """Optional GitHub repo settings configure. Returns exit_code."""
+    if repo_full_name is None or clone_url is None:
+        return 0
+    try:
+        configure_github_repo(repo_full_name, config.preset, config.include_ci)
+        print("✓ Configured GitHub repository settings")
+        return 0
+    except RuntimeError as exc:
+        if rollback:
+            delete_github_repo(repo_full_name)
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _gh_push_step(
+    args: argparse.Namespace,
+    clone_url: str | None,
+    repo_full_name: str | None,
+    rollback: bool,
+) -> int:
+    """Optional initial git push. Returns exit_code."""
+    if not args.git_push:
+        return 0
+    push_url: str | None = clone_url if clone_url is not None else args.remote_url
+    if push_url is None:
+        print("Error: no remote URL specified", file=sys.stderr)
+        return 1
+    try:
+        _run_initial_push(args.output, push_url)
+        return 0
+    except RuntimeError as exc:
+        if rollback and repo_full_name is not None:
+            delete_github_repo(repo_full_name)
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
 
 def _execute_generation_pipeline(config: RepoConfig, args: argparse.Namespace) -> int:
