@@ -103,6 +103,14 @@ For each eligible ticket (process them all before writing any manifests):
 - List tests to write
 - Flag any security surface (new I/O, subprocess calls, user input)
 - Assess risk: `low` / `medium` / `high`
+- **Taxonomy classification** (WOR-262) — record these 7 dimensions in the manifest. All optional but populate when you can:
+  - `change_type` — one of `additive` (new feature/file), `modification` (existing behavior changes), `refactor` (no behavior change), `removal` (deletion/cleanup), `docs` (markdown / comments only)
+  - `reasoning_demand` 1-5 — how much cross-file reasoning is needed (1 = local change in one function, 5 = touches many modules with non-obvious invariants)
+  - `scope_clarity` 1-5 — how explicit the AC is (1 = vague "improve X", 5 = exact file/line targets and expected behaviour)
+  - `constraint_density` 1-5 — number of hard rules in `implementation_constraints` (1 = none, 5 = many strict gates)
+  - `ac_specificity` 1-5 — how testable the AC is (1 = subjective only, 5 = each bullet maps to an assertion)
+  - `tech_stack` — comma-separated tags of the technologies involved, e.g. `python,sqlite,pydantic` or `markdown,yaml`
+  - `raw_extensions` — JSON array string of file extensions touched, e.g. `[".py",".md"]`
 
 **3c. Record inferred file set**
 Store `{ ticket_id, branch_name, files: [...] }` for conflict detection in step 4.
@@ -188,6 +196,14 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
   "risk_flags": ["<any specific risk notes>"],
   "implementation_mode": "local",
   "review_mode": "auto",
+  "effort": "<high|xhigh|max — effort classification>",
+  "change_type": "<additive|modification|refactor|removal|docs — taxonomy>",
+  "reasoning_demand": <1-5: cross-file reasoning depth>,
+  "scope_clarity": <1-5: how explicit the AC is>,
+  "constraint_density": <1-5: number of hard rules>,
+  "ac_specificity": <1-5: how testable the AC is>,
+  "tech_stack": "<comma-separated tags, e.g. 'python,sqlite,pydantic'>",
+  "raw_extensions": "<JSON array string of extensions, e.g. '[\".py\",\".md\"]'>",
   "base_branch": "<epic-branch>",
   "worker_branch": "<sub-ticket-branch>",
   "worktree_name": null,
