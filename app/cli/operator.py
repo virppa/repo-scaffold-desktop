@@ -17,9 +17,39 @@ from app.core.watcher.ticket_status import (
     _format_size,
     fetch_ticket_status,
 )
+from app.core.watcher.watcher_daemon import (
+    launch_detached,
+    launch_in_new_terminal,
+    load_env_file,
+)
 
 
 def _run_watcher(args: argparse.Namespace) -> int:
+    # WOR-435: auto-load .env so agent-spawned / remote shells inherit
+    # LINEAR_API_KEY without manual export. No-op if .env is absent.
+    load_env_file()
+
+    # WOR-435: --visible opens a new terminal window with the watcher
+    # attached and exits. --detach spawns a fully background daemon and
+    # exits. Both flags are mutually exclusive with each other and with
+    # the normal foreground path.
+    if args.detach and args.visible:
+        print(
+            "Error: --detach and --visible are mutually exclusive.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.visible:
+        return launch_in_new_terminal()
+    if args.detach:
+        pid = launch_detached()
+        log_path = Path.cwd() / ".claude" / "watcher.log"
+        print(
+            f"Watcher daemon started (PID {pid}). Logs: {log_path}",
+            file=sys.stderr,
+        )
+        return 0
+
     import logging
 
     from app.core.watcher import Watcher

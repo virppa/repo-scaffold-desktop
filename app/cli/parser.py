@@ -228,6 +228,28 @@ def _build_parser() -> argparse.ArgumentParser:
             "Falls back to line-based logging when stderr is piped."
         ),
     )
+    # WOR-435: programmatic launch flags.
+    watcher.add_argument(
+        "--detach",
+        action="store_true",
+        default=False,
+        help=(
+            "Run the watcher as a detached background daemon. Parent exits "
+            "immediately; child writes .claude/watcher.pid and streams logs "
+            "to .claude/watcher.log. Useful for agent-driven launches and "
+            "remote/mobile dispatch flows."
+        ),
+    )
+    watcher.add_argument(
+        "--visible",
+        action="store_true",
+        default=False,
+        help=(
+            "Windows only: open a new visible cmd.exe window with the "
+            "watcher running attached. .env is auto-loaded by the child. "
+            "Falls back with a clear error on non-Windows platforms."
+        ),
+    )
 
     # WOR-333: graceful drain/stop signal.
     sub.add_parser(
