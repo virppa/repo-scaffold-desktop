@@ -18,6 +18,7 @@ import pytest
 
 from app.core.manifest import ExecutionManifest
 from app.core.manifest_builder import (
+    ManifestOptions,
     TaxonomyFields,
     build_manifest,
     write_manifest,
@@ -27,7 +28,28 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _minimal_kwargs(**overrides: object) -> dict[str, object]:
-    """Smallest valid build_manifest call; used by several tests."""
+    """Smallest valid build_manifest call; used by several tests.
+
+    ``options`` kwargs (tech_stack, raw_extensions, forbidden_paths_extra,
+    risk_level, priority) can be supplied via the special ``_options`` key
+    and will be folded into a ``ManifestOptions`` instance.
+    """
+    opt_kwargs: dict[str, object] = {
+        "tech_stack": "python",
+        "raw_extensions": [".py"],
+    }
+    # Lift any option-bound override from `overrides` into opt_kwargs so callers
+    # can keep their previous flat-kwarg ergonomics.
+    for key in (
+        "tech_stack",
+        "raw_extensions",
+        "forbidden_paths_extra",
+        "risk_level",
+        "priority",
+    ):
+        if key in overrides:
+            opt_kwargs[key] = overrides.pop(key)
+
     base: dict[str, object] = {
         "ticket_id": "WOR-999",
         "epic_id": "WOR-313",
@@ -46,8 +68,7 @@ def _minimal_kwargs(**overrides: object) -> dict[str, object]:
         "objective": "Test that build_manifest works.",
         "acceptance_criteria": ["AC 1", "AC 2"],
         "implementation_constraints": ["Do the thing"],
-        "tech_stack": "python",
-        "raw_extensions": [".py"],
+        "options": ManifestOptions(**opt_kwargs),  # type: ignore[arg-type]
     }
     base.update(overrides)
     return base

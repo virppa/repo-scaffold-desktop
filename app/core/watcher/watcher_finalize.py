@@ -542,7 +542,7 @@ def finalize_worker(
                         worker.ticket_id,
                         exc,
                     )
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         logger.warning(
             "Could not read result.json for improvement-log harvest: %s", exc
         )

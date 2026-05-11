@@ -183,7 +183,7 @@ class Watcher:
 
     def run(self) -> None:
         """Start the poll loop. Blocks until SIGINT/SIGTERM."""
-        write_pid_file(self._repo_root)
+        write_pid_file()
         handler = make_signal_handler(self._services, self)
         signal.signal(signal.SIGINT, handler)
         if hasattr(signal, "SIGTERM"):
@@ -695,7 +695,7 @@ class Watcher:
         elapsed_str = format_elapsed(elapsed)
         log_path = (
             worker.worktree_path
-            / ".claude"
+            / _CLAUDE_DIR
             / "logs"
             / f"{worker.ticket_id.replace('-', '_')}.jsonl"
         )
@@ -758,7 +758,7 @@ class Watcher:
         for worker in (*self._local_active, *self._cloud_active):
             log_path = (
                 worker.worktree_path
-                / ".claude"
+                / _CLAUDE_DIR
                 / f"worker_{worker.ticket_id.lower()}.log"
             )
             try:
@@ -838,7 +838,7 @@ class Watcher:
             return
         if ready:
             return
-        artifacts = self._repo_root / ".claude" / "artifacts"
+        artifacts = self._repo_root / _CLAUDE_DIR / "artifacts"
         if artifacts.exists():
             for mp in artifacts.glob("manifest.json"):
                 try:
