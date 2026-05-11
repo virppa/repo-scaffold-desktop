@@ -659,7 +659,12 @@ class MetricsStore:
                     constraint_density, ac_specificity, tech_stack, raw_extensions,
                     waste_score, waste_breakdown_json, tags, notes, effort,
                     compact_duration_ms, api_retry_count, subagent_spawns,
-                    hook_trust_violations, dispatch_concurrency
+                    hook_trust_violations, dispatch_concurrency,
+                    -- WOR-380: per-worker behavior telemetry
+                    turn_count, tool_calls_total, tool_calls_breakdown,
+                    thinking_blocks, thinking_chars_total,
+                    input_tokens_max, input_tokens_first, input_tokens_last,
+                    redundant_reads_count
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -675,7 +680,11 @@ class MetricsStore:
                     :constraint_density, :ac_specificity, :tech_stack, :raw_extensions,
                     :waste_score, :waste_breakdown_json, :tags, :notes, :effort,
                     :compact_duration_ms, :api_retry_count, :subagent_spawns,
-                    :hook_trust_violations, :dispatch_concurrency
+                    :hook_trust_violations, :dispatch_concurrency,
+                    :turn_count, :tool_calls_total, :tool_calls_breakdown,
+                    :thinking_blocks, :thinking_chars_total,
+                    :input_tokens_max, :input_tokens_first, :input_tokens_last,
+                    :redundant_reads_count
                 )
                 """,
                 {
