@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -25,51 +26,92 @@ logger = logging.getLogger(__name__)
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
 
+def _accumulate_content_chars(content: Any) -> int:
+    """Sum approximate character lengths of content blocks for the WOR-384 sentinel."""
+    if not isinstance(content, list):
+        return 0
+    total = 0
+    for blk in content:
+        if not isinstance(blk, dict):
+            continue
+        btype = blk.get("type")
+        if btype in ("thinking", "text"):
+            key = "thinking" if btype == "thinking" else "text"
+            text = blk.get(key) or blk.get("text") or ""
+            if isinstance(text, str):
+                total += len(text)
+        elif btype == "tool_use":
+            inp_dict = blk.get("input")
+            if inp_dict is not None:
+                try:
+                    total += len(json.dumps(inp_dict))
+                except (TypeError, ValueError):
+                    pass
+    return total
+
+
+def _process_assistant_event(obj: dict[str, Any]) -> tuple[int, int, bool, int]:
+    """Extract (input_delta, output_delta, has_usage, content_chars) from one event."""
+    msg = obj.get("message") or {}
+    usage = msg.get("usage") or {}
+    inp = usage.get("input_tokens")
+    out = usage.get("output_tokens")
+    if inp is not None and out is not None:
+        input_delta = int(inp)
+        output_delta = int(out)
+        has_usage = True
+    else:
+        input_delta = output_delta = 0
+        has_usage = False
+    content_chars = _accumulate_content_chars(msg.get("content"))
+    return input_delta, output_delta, has_usage, content_chars
+
+
+def _process_compact_boundary(obj: dict[str, Any]) -> tuple[int, int]:
+    """Extract (count_delta=1, duration_delta) from a compact_boundary event."""
+    meta = obj.get("compact_metadata") or {}
+    dur = meta.get("duration_ms")
+    return 1, int(dur) if isinstance(dur, (int, float)) else 0
+
+
+def _resolve_usage_totals(
+    total_input: int,
+    total_output: int,
+    has_assistant_usage: bool,
+    compact_count: int,
+    compact_duration_ms: int,
+    last_input: int | None,
+    last_output: int | None,
+    content_chars: int,
+) -> tuple[int | None, int | None, int | None, int | None]:
+    """Apply WOR-384 sentinel + result-fallback rules to produce the final tuple."""
+    if has_assistant_usage:
+        if total_output == 0 and total_input > 0 and content_chars > 0:
+            estimated = content_chars // _CHARS_PER_TOKEN_ESTIMATE
+            return total_input, estimated, compact_count, compact_duration_ms
+        return total_input, total_output, compact_count, compact_duration_ms
+    if last_input is not None and last_output is not None:
+        return int(last_input), int(last_output), compact_count, compact_duration_ms
+    return None, None, compact_count, compact_duration_ms
+
+
 def _parse_worker_usage(
     log_path: Path,
 ) -> tuple[int | None, int | None, int | None, int | None]:
-    """Return 4-tuple from the stream-json worker log:
-    ``(input_tokens, output_tokens, context_compactions, compact_duration_ms)``.
+    """Return (input_tokens, output_tokens, context_compactions, compact_duration_ms).
 
-    Assistant-turn deltas are summed so that downstream metrics
-    (``local_output_tokens``, ``output_tokens_per_wall_second``) reflect the
-    true token volume of a session.
-
-    *context_compactions* is the count of ``compact_boundary`` system events
-    (WOR-357). *compact_duration_ms* (WOR-358) is the sum of
-    ``compact_metadata.duration_ms`` across those events — total wall time
-    spent on compaction during the session.
-
-    The actual compaction signal lives in events of the form::
-
-        {"type":"system","subtype":"compact_boundary",
-         "compact_metadata":{"trigger":"auto","pre_tokens":...,"post_tokens":...,
-                             "duration_ms":...}}
-
-    When assistant events carry usage data, their cumulative sum is returned.
-    When no assistant events have usage, the last ``type=result`` event's
-    usage snapshot is used as a fallback for tokens. Returns
-    ``(None, None, None, None)`` when the log itself cannot be opened or
-    parsed at all; returns ``(in, out, 0, 0)`` for parseable logs containing
-    zero compact_boundary events.
-
-    *vLLM-direct sentinel (WOR-384):* when assistant events report
-    ``output_tokens: 0`` for every turn but ``input_tokens > 0`` (the
-    post-WOR-368 vLLM-direct path emits that pattern because vLLM doesn't
-    fill per-message output token counts), we fall back to estimating output
-    from the assistant content blocks' character lengths divided by
-    ``_CHARS_PER_TOKEN_ESTIMATE``. The estimate is rough (±20% typical) but
-    drastically better than the alternative of recording 0. Forward-
-    compatible: when vLLM starts populating real output_tokens, the sentinel
-    won't trigger.
+    Sums assistant-turn deltas. Counts compact_boundary system events
+    (WOR-357) and their durations (WOR-358). WOR-384 sentinel: when
+    output_tokens is 0 across all assistant events but input_tokens > 0,
+    estimates output from content character length / _CHARS_PER_TOKEN_ESTIMATE.
+    Falls back to the last result event's usage snapshot if no assistant
+    events carry usage. Returns (None, None, None, None) on read/parse failure.
     """
     try:
         with log_path.open(encoding="utf-8") as f:
-            total_input = 0
-            total_output = 0
+            total_input = total_output = 0
             has_assistant_usage = False
-            compact_count = 0
-            compact_duration_ms = 0
+            compact_count = compact_duration_ms = 0
             last_input: int | None = None
             last_output: int | None = None
             content_chars = 0
@@ -83,68 +125,31 @@ def _parse_worker_usage(
                     continue
                 obj_type = obj.get("type")
                 if obj_type == "assistant":
-                    msg = obj.get("message") or {}
-                    usage = msg.get("usage") or {}
-                    inp = usage.get("input_tokens")
-                    out = usage.get("output_tokens")
-                    if inp is not None and out is not None:
-                        total_input += int(inp)
-                        total_output += int(out)
-                        has_assistant_usage = True
-                    # Always accumulate content chars for the WOR-384 sentinel
-                    # fallback. Cheap to compute; only used when the primary
-                    # output_tokens signal is unreliable.
-                    for blk in msg.get("content") or []:
-                        if not isinstance(blk, dict):
-                            continue
-                        btype = blk.get("type")
-                        if btype == "thinking":
-                            text = blk.get("thinking") or blk.get("text") or ""
-                            if isinstance(text, str):
-                                content_chars += len(text)
-                        elif btype == "text":
-                            text = blk.get("text") or ""
-                            if isinstance(text, str):
-                                content_chars += len(text)
-                        elif btype == "tool_use":
-                            inp_dict = blk.get("input")
-                            if inp_dict is not None:
-                                try:
-                                    content_chars += len(json.dumps(inp_dict))
-                                except (TypeError, ValueError):
-                                    pass
+                    i_d, o_d, has_u, cc = _process_assistant_event(obj)
+                    total_input += i_d
+                    total_output += o_d
+                    has_assistant_usage = has_assistant_usage or has_u
+                    content_chars += cc
                 elif obj_type == "system" and obj.get("subtype") == "compact_boundary":
-                    compact_count += 1
-                    meta = obj.get("compact_metadata") or {}
-                    dur = meta.get("duration_ms")
-                    if isinstance(dur, (int, float)):
-                        compact_duration_ms += int(dur)
+                    c_d, d_d = _process_compact_boundary(obj)
+                    compact_count += c_d
+                    compact_duration_ms += d_d
                 elif obj_type == "result":
                     usage = obj.get("usage") or {}
                     last_input = usage.get("input_tokens")
                     last_output = usage.get("output_tokens")
-            if has_assistant_usage:
-                # WOR-384 sentinel: vLLM-direct emits output_tokens=0 in every
-                # assistant.message.usage. Detect via "input>0 but output is
-                # exactly 0 across all events" and fall back to a content-
-                # length estimate. Anthropic API and any future vLLM that
-                # fills output_tokens correctly will skip this branch.
-                if total_output == 0 and total_input > 0 and content_chars > 0:
-                    estimated = content_chars // _CHARS_PER_TOKEN_ESTIMATE
-                    return total_input, estimated, compact_count, compact_duration_ms
-                return total_input, total_output, compact_count, compact_duration_ms
-            # Fallback to result snapshot when no assistant events carry usage.
-            if last_input is not None and last_output is not None:
-                return (
-                    int(last_input),
-                    int(last_output),
-                    compact_count,
-                    compact_duration_ms,
-                )
-            return None, None, compact_count, compact_duration_ms
+            return _resolve_usage_totals(
+                total_input,
+                total_output,
+                has_assistant_usage,
+                compact_count,
+                compact_duration_ms,
+                last_input,
+                last_output,
+                content_chars,
+            )
     except Exception:
         return None, None, None, None
-    return None, None, None, None
 
 
 def _parse_worker_subagent_spawns(log_path: Path) -> int | None:
@@ -218,21 +223,40 @@ _HOOK_VIOLATION_TOKENS = frozenset(
 )
 
 
+def _is_violation_bash_command(block: Any) -> str | None:
+    """Return the first token of a Bash command in a tool_use block, else None."""
+    if (
+        not isinstance(block, dict)
+        or block.get("type") != "tool_use"
+        or block.get("name") != "Bash"
+    ):
+        return None
+    command = (block.get("input") or {}).get("command", "")
+    if not isinstance(command, str):
+        return None
+    return command.lstrip().split()[0] if command.lstrip() else None
+
+
+def _count_violations_in_event(obj: dict[str, Any]) -> int:
+    """Count violation tokens in a single assistant event's tool_use blocks."""
+    if obj.get("type") != "assistant":
+        return 0
+    msg = obj.get("message", {}) or {}
+    count = 0
+    for block in msg.get("content", []):
+        token = _is_violation_bash_command(block)
+        if token and token in _HOOK_VIOLATION_TOKENS:
+            count += 1
+    return count
+
+
 def _parse_hook_trust_violations(log_path: Path) -> int | None:
-    """Count manual invocations of quality-check tools as Bash tool_use events.
+    """Count manual quality-check tool invocations in Bash tool_use events.
 
-    Scans the worker stream-json log for ``type=assistant`` events whose
-    ``content`` includes a ``Bash`` tool_use block.  The first whitespace-
-    delimited token of the command (after stripping leading whitespace) is
-    compared against ``{"ruff", "mypy", "pytest", "bandit", "lint-imports"}``
-    (case-sensitive).  Each match increments the count.
+    Targets ruff/mypy/pytest/bandit/lint-imports. Count > 1 = hook-trust
+    violation per CLAUDE.md / WOR-274.
 
-    This detects when a worker manually re-runs checks that should only be
-    triggered by PostToolUse hooks (step 3 of /implement-ticket).  A count
-    greater than 1 is considered a hook-trust violation.
-
-    Returns ``None`` if the log cannot be opened/parsed; ``0`` for
-    parseable logs with no matching Bash tool_use events.
+    Returns None on read/parse failure; 0 for parseable logs with no matches.
     """
     try:
         with log_path.open(encoding="utf-8") as f:
@@ -245,24 +269,7 @@ def _parse_hook_trust_violations(log_path: Path) -> int | None:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if obj.get("type") != "assistant":
-                    continue
-                msg = obj.get("message", {}) or {}
-                for block in msg.get("content", []):
-                    if (
-                        not isinstance(block, dict)
-                        or block.get("type") != "tool_use"
-                        or block.get("name") != "Bash"
-                    ):
-                        continue
-                    command = (block.get("input") or {}).get("command", "")
-                    if not isinstance(command, str):
-                        continue
-                    first_token = (
-                        command.lstrip().split()[0] if command.lstrip() else ""
-                    )
-                    if first_token in _HOOK_VIOLATION_TOKENS:
-                        count += 1
+                count += _count_violations_in_event(obj)
             return count
     except Exception:
         return None
