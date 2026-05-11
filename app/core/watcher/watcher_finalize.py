@@ -28,6 +28,7 @@ from .watcher_finalize_helpers import (
     _read_result_status,
     _try_post_comment,
     _write_wip_sha_to_last_failure,
+    _write_wip_state_to_last_failure,
     safe_set_state,
 )
 from .watcher_helpers import (
@@ -65,6 +66,11 @@ from .worker_waste import compute_waste_score
 __all__ = ["attempt_pr", "finalize_worker", "safe_set_state"]
 
 logger = logging.getLogger(__name__)
+
+# Minimum character threshold for result.json `notes` to qualify for
+# auto-posting to the WOR-254 improvement log. Tune here before adding a
+# config knob (WOR-303).
+NOTES_MIN_CHARS: int = 50
 
 # ---------------------------------------------------------------------------
 # Cloud pricing — per million tokens, keyed on model name
@@ -510,6 +516,37 @@ def finalize_worker(
             redundant_reads_count=behavior.redundant_reads_count,
         )
     )
+
+    # -----------------------------------------------------------------------
+    # WOR-303 — improvement-log: auto-post worker side-discoveries to WOR-254
+    # -----------------------------------------------------------------------
+    result_path = worker.worktree_path / worker.manifest.artifact_paths.result_json
+    try:
+        if result_path.exists():
+            result_data = json.loads(result_path.read_text(encoding="utf-8"))
+            notes = (result_data.get("notes") or "").strip()
+            if len(notes) > NOTES_MIN_CHARS:
+                try:
+                    linear.post_comment(
+                        "WOR-254",
+                        f"## Side-discovery from {worker.ticket_id}\n\n"
+                        f"From the {worker.ticket_id} worker session "
+                        f"({worker.manifest.title}):\n\n"
+                        f"{notes}\n\n"
+                        f"Ref: {worker.ticket_id}, branch "
+                        f"`{worker.manifest.worker_branch}`.",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not post improvement-log comment for %s: %s",
+                        worker.ticket_id,
+                        exc,
+                    )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Could not read result.json for improvement-log harvest: %s", exc
+        )
+
     metrics.record_run(
         TicketRunLog(
             ticket_id=worker.ticket_id,
@@ -553,8 +590,26 @@ def finalize_worker(
         worker.manifest.worker_branch,
         backup_root=backup_root,
     )
+    # Surface silent commit_wip_state failures for operator visibility (WOR-309).
+    if wip_result.status == "backup":
+        logger.warning(
+            "WIP backup for %s — commit or push failed, dirty worktree saved to %s",
+            worker.ticket_id,
+            wip_result.backup_path,
+        )
+    elif wip_result.status == "failed":
+        logger.error(
+            "WIP preservation failed for %s — leaving worktree in place at %s "
+            "(error: %s). Run `git -C <path> status` to inspect, then commit + push "
+            "to %s manually.",
+            worker.ticket_id,
+            worker.worktree_path,
+            wip_result.error or "unknown",
+            worker.manifest.worker_branch,
+        )
     if wip_result.sha is not None:
         _write_wip_sha_to_last_failure(worker, wip_result.sha)
+    _write_wip_state_to_last_failure(worker, wip_result.status, wip_result.backup_path)
 
     if not artifacts_preserved:
         # Failure path: also preserve full worker artifacts (logs, last_failure,
@@ -564,19 +619,8 @@ def finalize_worker(
 
     if wip_result.status in ("clean", "pushed", "backup"):
         cleanup_worktree(repo_root, worker.worktree_path)
-    else:
-        # WOR-288: WIP preservation failed (commit_wip_state could not push
-        # AND could not back up the dirty tree). Removing the worktree now
-        # would destroy uncommitted work — leave it in place for human
-        # salvage. The worktree path appears in the ERROR log so the
-        # operator can git status / commit / push manually.
-        logger.error(
-            "WIP preservation failed for %s — leaving worktree in place at %s "
-            "for manual recovery (error: %s). Run `git -C <path> status` to "
-            "inspect, then commit + push to %s manually.",
-            worker.ticket_id,
-            worker.worktree_path,
-            wip_result.error or "unknown",
-            worker.manifest.worker_branch,
-        )
+    # else: status == "failed" — WOR-288: WIP preservation failed (commit
+    # could neither push nor back up). Leaving the worktree in place for
+    # human salvage. The ERROR log at the call site above already surfaces
+    # the path and error for manual recovery.
     return outcome

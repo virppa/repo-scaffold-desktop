@@ -59,6 +59,41 @@ def start_ticket(
     # Prerequisite checks (open_blockers + overlap) are handled by
     # Watcher._start_ticket before calling this function.
 
+    # WOR-419: defense-in-depth — refuse to spawn a worker on a new epic/*
+    # branch when another epic/* branch is already in flight. This prevents
+    # overlapping epic work from competing for the same shared files
+    # (CLAUDE.md, templates/, etc.) and keeps the epic branch topology clean.
+    # Gate fires ONLY when this ticket's base_branch is epic/* AND another
+    # active worker is already on a different epic/* branch. Sub-ticket
+    # branches under the same epic are unaffected — those are the normal
+    # dispatch path and handled by the overlap check above.
+    if manifest.base_branch.startswith("epic/"):
+        for worker in _local_active:
+            if hasattr(worker, "manifest") and worker.manifest.base_branch.startswith(
+                "epic/"
+            ):
+                if worker.manifest.base_branch != manifest.base_branch:
+                    logger.warning(
+                        "Deferring %s — epic branch %s already in-flight "
+                        "(worker on %s)",
+                        ticket_id,
+                        manifest.base_branch,
+                        worker.manifest.base_branch,
+                    )
+                    linear.post_comment(
+                        linear_id,
+                        (
+                            f"Dispatch deferred: another worker is already "
+                            f"in-flight on epic branch "
+                            f"`{worker.manifest.base_branch}`. "
+                            f"Cannot dispatch to a new epic branch "
+                            f"`{manifest.base_branch}` until the in-flight "
+                            f"worker completes (one-active-epic-branch "
+                            f"principle, WOR-419)."
+                        ),
+                    )
+                    return
+
     # Manifest quality gates (WOR-378) — Pydantic validation accepts these as
     # legal but they are almost certainly authoring mistakes. Refuse early
     # with a clear Linear comment so the operator knows to re-author.

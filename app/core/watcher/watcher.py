@@ -100,6 +100,16 @@ _WORKER_KILL_GRACE_SECONDS = 5 * 60
 # S1192: extracted from literal used in 3 glob() calls (lines ~256, ~371, ~850)
 _MANIFEST_GLOB = "*/manifest.json"
 
+# WOR-419: multi-dispatch-per-cycle — bounds on how many eligible tickets the
+# watcher dispatches in a single poll cycle. Prevents a thundering-herd of
+# subprocess spawns when many tickets are queued. The loop iterates eligible
+# tickets, dispatches each, then sleeps DISPATCH_DELAY_SECONDS between
+# successive dispatches (gives Linear's state-change API and vLLM a breathing
+# moment). Stops when the pool is full, no more eligible tickets remain, or
+# MAX_DISPATCHES_PER_CYCLE is reached as a safety valve.
+MAX_DISPATCHES_PER_CYCLE = 4
+DISPATCH_DELAY_SECONDS = 2.5
+
 
 class _ProcessedTicket(NamedTuple):
     ticket_id: str
@@ -522,6 +532,7 @@ class Watcher:
     # ------------------------------------------------------------------
 
     def _dispatch_next_ticket(self) -> None:
+        dispatch_count = 0
         try:
             tickets = self._linear.list_ready_for_local()
         except Exception as exc:
@@ -544,7 +555,10 @@ class Watcher:
                 continue
             try:
                 self._start_ticket(ticket_id, ticket["id"])
-                return  # one ticket per dispatch cycle
+                dispatch_count += 1
+                if dispatch_count >= MAX_DISPATCHES_PER_CYCLE:
+                    break
+                time.sleep(DISPATCH_DELAY_SECONDS)
             except Exception as exc:
                 logger.error("Failed to start %s: %s", ticket_id, exc)
 
@@ -569,6 +583,44 @@ class Watcher:
                     state_type,
                 )
                 return
+
+        # WOR-419: defense-in-depth — refuse to spawn on a new epic/* branch
+        # when another epic/* is already in flight. Sub-ticket branches under
+        # the same epic are unaffected.
+        if manifest.base_branch.startswith("epic/"):
+            for worker in self._local_active:
+                if not hasattr(worker, "manifest"):
+                    continue
+                if not worker.manifest.base_branch.startswith("epic/"):
+                    continue
+                if worker.manifest.base_branch != manifest.base_branch:
+                    logger.warning(
+                        "Deferring %s — epic branch %s already in-flight "
+                        "(worker on %s)",
+                        ticket_id,
+                        manifest.base_branch,
+                        worker.manifest.base_branch,
+                    )
+                    try:
+                        self._linear.post_comment(
+                            linear_id,
+                            (
+                                f"Dispatch deferred: another worker is already "
+                                f"in-flight on epic branch "
+                                f"`{worker.manifest.base_branch}`. "
+                                f"Cannot dispatch to a new epic branch "
+                                f"`{manifest.base_branch}` until the in-flight "
+                                f"worker completes (one-active-epic-branch "
+                                f"principle, WOR-419)."
+                            ),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not post epic-branch conflict comment for %s: %s",
+                            ticket_id,
+                            exc,
+                        )
+                    return
 
         all_active = self._local_active + self._cloud_active
         conflicts = check_allowed_paths_overlap(all_active, manifest)
@@ -779,7 +831,7 @@ class Watcher:
            Linear comment with the timeout context. The natural reap path
            handles the eventual exit code.
 
-        If the log file does not exist yet (worker just dispatched), the
+        If the log file does not exist yet (worker just dispatch_count), the
         check is skipped â€” natural process reap handles the case where the
         worker died before writing anything.
         """

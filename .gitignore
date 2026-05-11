@@ -57,6 +57,9 @@ litellm-local.yaml
 # Claude Code local worker artifacts (ephemeral, machine-generated)
 .claude/artifacts/
 
+# Bash discipline workaround (WOR-376): tmp file for commit messages, see WOR-423
+.claude/tmp_commit_msg.txt
+
 # Claude Code watcher logs
 .claude/*.log
 .claude/*.pid

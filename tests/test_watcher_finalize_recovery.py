@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.escalation_policy import EscalationPolicy
-from app.core.manifest import FailurePolicy
+from app.core.manifest import ArtifactPaths, FailurePolicy
 from app.core.watcher.watcher_finalize import finalize_worker
 from app.core.watcher.watcher_types import ActiveWorker
 from app.core.watcher.watcher_worktrees import WipPreservationResult
@@ -186,7 +186,9 @@ def test_finalize_worker_last_failure_json_created_when_absent(
 
 
 def test_finalize_worker_skips_commit_wip_when_no_sha(tmp_path: Path) -> None:
-    """When commit_wip_state returns None, no last_failure.json update."""
+    """When commit_wip_state returns status='failed', sha=None — the worktree
+    must NOT be removed (WOR-288). last_failure.json captures wip_status even
+    without a SHA (WOR-309)."""
     manifest = make_manifest(
         ticket_id="WOR-10",
         worker_branch="wor-10-test-ticket",
@@ -217,12 +219,15 @@ def test_finalize_worker_skips_commit_wip_when_no_sha(tmp_path: Path) -> None:
         _call_finalize(worker, metrics=metrics_mock)
 
     mock_commit.assert_called_once()
-    # No last_failure.json should be created or modified
-    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
-    failure_file = artifact_dir / "last_failure.json"
-    assert not failure_file.exists()
     # WOR-288: when WIP preservation fails, the worktree must NOT be removed.
     mock_cleanup.assert_not_called()
+    # WOR-309: last_failure.json captures wip_status even without a SHA.
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_10"
+    failure_file = artifact_dir / "last_failure.json"
+    assert failure_file.exists()
+    data = json.loads(failure_file.read_text(encoding="utf-8"))
+    assert data["wip_status"] == "failed"
+    assert "wip_commit_sha" not in data
 
 
 # ---------------------------------------------------------------------------
@@ -364,6 +369,7 @@ def test_finalize_worker_missing_resultjson_with_nonzero_exit_routes_failure(
             ),
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
     ):
         _call_finalize(
             worker,
@@ -467,6 +473,7 @@ def test_finalize_worker_failure_path_cleanup_skipped_when_wip_failed(
             ),
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree") as mock_cleanup,
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
         caplog.at_level(logging.ERROR, logger="app.core.watcher.watcher_finalize"),
     ):
         _call_finalize(worker, metrics=metrics_mock, repo_root=tmp_path)
@@ -509,6 +516,7 @@ def test_finalize_worker_failure_path_cleanup_runs_when_wip_pushed(
             ),
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree") as mock_cleanup,
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
     ):
         _call_finalize(worker, metrics=metrics_mock, repo_root=tmp_path)
 
@@ -548,6 +556,7 @@ def test_finalize_worker_failure_path_cleanup_runs_when_wip_backup(
             ),
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree") as mock_cleanup,
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
     ):
         _call_finalize(worker, metrics=metrics_mock, repo_root=tmp_path)
 
@@ -584,6 +593,7 @@ def test_finalize_worker_failure_path_cleanup_runs_when_wip_clean(
             ),
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree") as mock_cleanup,
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
     ):
         _call_finalize(worker, metrics=metrics_mock, repo_root=tmp_path)
 
@@ -742,3 +752,206 @@ def test_finalize_worker_success_path_skips_cleanup_when_wip_preservation_fails(
     assert any(
         "WIP preservation failed for WOR-10" in r.message for r in caplog.records
     )
+
+
+# ---------------------------------------------------------------------------
+# WOR-309 — surface silent commit_wip_state failures (operator visibility)
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_backup_status_logs_warning(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """commit_wip_state status='backup' → WARNING log with backup_path."""
+    manifest = make_manifest(
+        ticket_id="WOR-309",
+        worker_branch="wor-309-test-ticket",
+        failure_policy=FailurePolicy(on_check_failure="abort"),
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-309"),
+    )
+    metrics_mock = MagicMock()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    worker = ActiveWorker(
+        ticket_id="WOR-309",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    backup_path = worktree / ".claude" / "artifacts" / "wor_309" / "wip"
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value=WipPreservationResult(
+                status="backup",
+                sha=None,
+                backup_path=backup_path,
+                error="push rejected",
+            ),
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_finalize"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock, repo_root=tmp_path)
+
+    assert any(
+        "WIP backup for WOR-309" in r.message and str(backup_path) in r.message
+        for r in caplog.records
+    )
+
+
+def test_finalize_worker_failed_status_logs_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """commit_wip_state status='failed' → ERROR log with error + worktree_path."""
+    manifest = make_manifest(
+        ticket_id="WOR-309",
+        worker_branch="wor-309-test-ticket",
+        failure_policy=FailurePolicy(on_check_failure="abort"),
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-309"),
+    )
+    metrics_mock = MagicMock()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    worker = ActiveWorker(
+        ticket_id="WOR-309",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value=WipPreservationResult(
+                status="failed",
+                sha=None,
+                backup_path=None,
+                error="git push rejected: branch protection",
+            ),
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree") as mock_cleanup,
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        caplog.at_level(logging.ERROR, logger="app.core.watcher.watcher_finalize"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock, repo_root=tmp_path)
+
+    mock_cleanup.assert_not_called()
+    assert any(
+        "WIP preservation failed for WOR-309" in r.message
+        and str(worktree) in r.message
+        for r in caplog.records
+    )
+
+
+def test_finalize_worker_writes_wip_status_to_last_failure(
+    tmp_path: Path,
+) -> None:
+    """last_failure.json includes wip_status on every commit_wip_state call."""
+    manifest = make_manifest(
+        ticket_id="WOR-309",
+        worker_branch="wor-309-test-ticket",
+        failure_policy=FailurePolicy(on_check_failure="abort"),
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-309"),
+    )
+    metrics_mock = MagicMock()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    worker = ActiveWorker(
+        ticket_id="WOR-309",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value=WipPreservationResult(
+                status="backup",
+                sha=None,
+                backup_path=worktree / "backup",
+                error="push failed",
+            ),
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock, repo_root=repo_root)
+
+    artifact_dir = worktree / ".claude" / "artifacts" / "wor_309"
+    failure_file = artifact_dir / "last_failure.json"
+    assert failure_file.exists()
+    data = json.loads(failure_file.read_text(encoding="utf-8"))
+    assert data["wip_status"] == "backup"
+    assert data["wip_backup_path"] == str(worktree / "backup")
+
+
+def test_finalize_worker_wip_status_failed_no_backup_path(
+    tmp_path: Path,
+) -> None:
+    """When wip_status='failed', last_failure.json has wip_status but no
+    wip_backup_path."""
+    manifest = make_manifest(
+        ticket_id="WOR-309",
+        worker_branch="wor-309-test-ticket",
+        failure_policy=FailurePolicy(on_check_failure="abort"),
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-309"),
+    )
+    metrics_mock = MagicMock()
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    worker = ActiveWorker(
+        ticket_id="WOR-309",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+            return_value=WipPreservationResult(
+                status="failed",
+                sha=None,
+                backup_path=None,
+                error="git push rejected",
+            ),
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock, repo_root=repo_root)
+
+    artifact_dir = worktree / ".claude" / "artifacts" / "wor_309"
+    failure_file = artifact_dir / "last_failure.json"
+    assert failure_file.exists()
+    data = json.loads(failure_file.read_text(encoding="utf-8"))
+    assert data["wip_status"] == "failed"
+    assert "wip_backup_path" not in data

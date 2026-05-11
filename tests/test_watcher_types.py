@@ -128,3 +128,17 @@ def test_vllm_host_derives_from_env_override(
 
     monkeypatch.delenv("WATCHER_VLLM_BASE_URL", raising=False)
     importlib.reload(wt)
+
+
+# ---------------------------------------------------------------------------
+# WOR-424: _LOCAL_MODEL constant
+# ---------------------------------------------------------------------------
+
+
+def test_local_model_is_qwen3_coder() -> None:
+    """The _LOCAL_MODEL constant must be 'qwen3-coder' to match the
+    --served-model-name flag passed to vLLM.  WOR-424."""
+
+    from app.core.watcher.watcher_types import _LOCAL_MODEL
+
+    assert _LOCAL_MODEL == "qwen3-coder"

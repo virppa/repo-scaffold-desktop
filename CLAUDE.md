@@ -109,6 +109,7 @@ Module responsibilities:
   - `watcher_types.py` — constants, `LinearClientProtocol`, `ActiveWorker` dataclass, `is_watcher_running`, `_to_metrics_mode`
   - `watcher_worktrees.py` — git worktree lifecycle: `create_worktree`, `rebase_worktree_from_base`, `copy_manifest_to_worktree`, `preserve_worker_artifacts`, `cleanup_worktree`, `cleanup_orphaned_worktrees`, `backup_plan_files`, `restore_plan_files`, `write_worker_pytest_config`
   - `worker_waste.py` — post-hoc waste-score analysis on worker JSONL logs; `compute_waste_score` flags redundant reads, suppressed loops, and tool-gap patterns; surfaced in `ticket_metrics.waste_score` for retro analysis
+- `watcher.py` dispatch loop: multi-dispatch-per-cycle — on each poll cycle the watcher dispatches up to `MAX_DISPATCHES_PER_CYCLE=4` eligible tickets with a `DISPATCH_DELAY_SECONDS=2.5` inter-dispatch gap, saturating the local pool faster than the prior single-dispatch model. Epic-branch overlap gate (WOR-419) blocks dispatch to a new epic/* branch when another is already in-flight.
 - `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records; shares the same `app.db` file as `metrics.py` (separate `bench_run` table); stores hardware/timing/quality columns per run
 - `main.py` — PySide6 `QApplication` entry point
 
@@ -245,6 +246,12 @@ main
     ├── wor-45-add-yaml-preset      ← sub-ticket branch → auto-merges to epic when CI passes
     └── wor-47-jinja-context-fix    ← parallel sub-ticket → its own worktree, isolated
 ```
+
+**Cross-epic principle:** Linear parentId describes the ticket; git base_branch
+describes the shipping unit. They can diverge (WOR-419). A ticket whose Linear
+parent is epic A can ship on epic B's branch when epic B is the one currently
+active in-flight. The `/start-ticket` architect detects this via Linear status
+queries and defaults base_branch to the active epic branch.
 
 ### Parallel work
 
