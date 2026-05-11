@@ -730,100 +730,102 @@ class Watcher:
         )
         return outcome
 
+    def _worker_log_idle(self, worker: ActiveWorker, now_wall: float) -> float | None:
+        """Return seconds since worker log last wrote, or None if log missing."""
+        log_path = (
+            worker.worktree_path
+            / _CLAUDE_DIR
+            / f"worker_{worker.ticket_id.lower()}.log"
+        )
+        try:
+            return now_wall - log_path.stat().st_mtime
+        except OSError:
+            return None
+
+    def _send_sigterm_if_stalled(
+        self, worker: ActiveWorker, idle_seconds: float, now_wall: float
+    ) -> bool:
+        """Stage 1: SIGTERM the worker if its log has been idle past threshold.
+
+        Returns True if SIGTERM was issued (caller skips stage 2 this cycle).
+        """
+        if worker.terminated_at is not None:
+            return False
+        if idle_seconds <= _WORKER_HEARTBEAT_TIMEOUT_SECONDS:
+            return False
+        if worker.process.poll() is not None:
+            return False
+        logger.warning(
+            "Worker %s heartbeat stalled - log idle for %.0fs "
+            "(threshold %ds). Sending SIGTERM. SIGKILL grace: %ds.",
+            worker.ticket_id,
+            idle_seconds,
+            _WORKER_HEARTBEAT_TIMEOUT_SECONDS,
+            _WORKER_KILL_GRACE_SECONDS,
+        )
+        try:
+            worker.process.terminate()
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to SIGTERM %s: %s", worker.ticket_id, exc)
+        worker.terminated_at = now_wall
+        return True
+
+    def _send_sigkill_if_grace_expired(
+        self, worker: ActiveWorker, idle_seconds: float, now_wall: float
+    ) -> None:
+        """Stage 2: SIGKILL the worker if SIGTERM grace period has lapsed."""
+        if worker.terminated_at is None:
+            return
+        if now_wall - worker.terminated_at <= _WORKER_KILL_GRACE_SECONDS:
+            return
+        if worker.process.poll() is not None:
+            return
+        logger.error(
+            "Worker %s did not exit within %ds of SIGTERM - sending SIGKILL.",
+            worker.ticket_id,
+            _WORKER_KILL_GRACE_SECONDS,
+        )
+        try:
+            worker.process.kill()
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to SIGKILL %s: %s", worker.ticket_id, exc)
+        slug = worker.ticket_id.lower().replace("-", "_")
+        try:
+            self._linear.post_comment(
+                worker.linear_id,
+                (
+                    f"Worker stalled: log idle {int(idle_seconds)}s "
+                    f"(threshold {_WORKER_HEARTBEAT_TIMEOUT_SECONDS}s). "
+                    f"SIGTERM was sent, then SIGKILL after "
+                    f"{_WORKER_KILL_GRACE_SECONDS}s grace. The ticket "
+                    "will be marked Blocked by the natural failure "
+                    f"path. Inspect `.claude/artifacts/{slug}/` for "
+                    "the partial worker log."
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not post timeout comment for %s: %s",
+                worker.ticket_id,
+                exc,
+            )
+
     def _terminate_overrun_workers(self) -> None:
         """Heartbeat-based stuck-worker detection (WOR-381).
 
-        Each worker tees its stream-json log to
-        ``<worktree>/.claude/worker_<ticket_lower>.log``. While the model is
-        making any progress - emitting tool calls, receiving tool results,
-        producing assistant text - the file's mtime advances. A genuinely
-        stuck worker (vLLM unresponsive, tool subprocess hung, infinite
-        deadlock) stops writing.
-
-        Two-stage shutdown:
-
-        1. Log idle (now - mtime) exceeds ``_WORKER_HEARTBEAT_TIMEOUT_SECONDS``
-           and the process is still alive: send SIGTERM via
-           ``process.terminate()``; set ``terminated_at`` to wall-clock now.
-        2. ``terminated_at`` is set and the grace period has passed without
-           the worker exiting: send SIGKILL via ``process.kill()`` and post a
-           Linear comment with the timeout context. The natural reap path
-           handles the eventual exit code.
-
-        If the log file does not exist yet (worker just dispatch_count), the
-        check is skipped â€” natural process reap handles the case where the
-        worker died before writing anything.
+        Each worker tees its stream-json log; mtime advances while the model
+        is making progress. A stuck worker stops writing. Two-stage shutdown:
+        SIGTERM after the heartbeat threshold, then SIGKILL after the grace
+        period with a Linear forensic comment.
         """
         now_wall = time.time()
         for worker in (*self._local_active, *self._cloud_active):
-            log_path = (
-                worker.worktree_path
-                / _CLAUDE_DIR
-                / f"worker_{worker.ticket_id.lower()}.log"
-            )
-            try:
-                last_write = log_path.stat().st_mtime
-            except OSError:
-                # Log not yet written - let the worker warm up. Process
-                # reap on later cycles handles the case where it never does.
+            idle_seconds = self._worker_log_idle(worker, now_wall)
+            if idle_seconds is None:
                 continue
-
-            idle_seconds = now_wall - last_write
-
-            if (
-                worker.terminated_at is None
-                and idle_seconds > _WORKER_HEARTBEAT_TIMEOUT_SECONDS
-                and worker.process.poll() is None
-            ):
-                logger.warning(
-                    "Worker %s heartbeat stalled - log idle for %.0fs "
-                    "(threshold %ds). Sending SIGTERM. SIGKILL grace: %ds.",
-                    worker.ticket_id,
-                    idle_seconds,
-                    _WORKER_HEARTBEAT_TIMEOUT_SECONDS,
-                    _WORKER_KILL_GRACE_SECONDS,
-                )
-                try:
-                    worker.process.terminate()
-                except (OSError, ValueError) as exc:
-                    logger.warning("Failed to SIGTERM %s: %s", worker.ticket_id, exc)
-                worker.terminated_at = now_wall
+            if self._send_sigterm_if_stalled(worker, idle_seconds, now_wall):
                 continue
-
-            if (
-                worker.terminated_at is not None
-                and now_wall - worker.terminated_at > _WORKER_KILL_GRACE_SECONDS
-                and worker.process.poll() is None
-            ):
-                logger.error(
-                    "Worker %s did not exit within %ds of SIGTERM - sending SIGKILL.",
-                    worker.ticket_id,
-                    _WORKER_KILL_GRACE_SECONDS,
-                )
-                try:
-                    worker.process.kill()
-                except (OSError, ValueError) as exc:
-                    logger.warning("Failed to SIGKILL %s: %s", worker.ticket_id, exc)
-                slug = worker.ticket_id.lower().replace("-", "_")
-                try:
-                    self._linear.post_comment(
-                        worker.linear_id,
-                        (
-                            f"Worker stalled: log idle {int(idle_seconds)}s "
-                            f"(threshold {_WORKER_HEARTBEAT_TIMEOUT_SECONDS}s). "
-                            f"SIGTERM was sent, then SIGKILL after "
-                            f"{_WORKER_KILL_GRACE_SECONDS}s grace. The ticket "
-                            "will be marked Blocked by the natural failure "
-                            f"path. Inspect `.claude/artifacts/{slug}/` for "
-                            "the partial worker log."
-                        ),
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Could not post timeout comment for %s: %s",
-                        worker.ticket_id,
-                        exc,
-                    )
+            self._send_sigkill_if_grace_expired(worker, idle_seconds, now_wall)
 
     # ------------------------------------------------------------------
     # Epic completion detection
