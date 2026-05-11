@@ -524,7 +524,9 @@ def test_emit_heartbeat_tick_boundary_no_duplicate() -> None:
 def test_retry_pending_sonar_success_on_first_poll(tmp_path: Path) -> None:
     """When the pending worker is found, findings are fetched and metrics
     are backfilled, then the worker is removed from the pending set."""
-    w = Watcher(repo_root=tmp_path, metrics_store=MagicMock())
+    w = Watcher(
+        repo_root=tmp_path, metrics_store=MagicMock(), linear_client=MagicMock()
+    )
     w._project_id = "test-proj"
     manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-branch")
     worker = ActiveWorker(
@@ -552,7 +554,9 @@ def test_retry_pending_sonar_success_on_first_poll(tmp_path: Path) -> None:
 def test_retry_pending_sonar_exhausts_budget(tmp_path: Path) -> None:
     """After 3 attempts the worker is removed from the pending set without
     updating metrics."""
-    w = Watcher(repo_root=tmp_path, metrics_store=MagicMock())
+    w = Watcher(
+        repo_root=tmp_path, metrics_store=MagicMock(), linear_client=MagicMock()
+    )
     w._project_id = "test-proj"
     manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-branch")
     worker = ActiveWorker(
@@ -579,7 +583,9 @@ def test_retry_pending_sonar_exhausts_budget(tmp_path: Path) -> None:
 
 def test_retry_pending_sonar_empty_set_noop(tmp_path: Path) -> None:
     """When there are no pending workers, the method returns without error."""
-    w = Watcher(repo_root=tmp_path, metrics_store=MagicMock())
+    w = Watcher(
+        repo_root=tmp_path, metrics_store=MagicMock(), linear_client=MagicMock()
+    )
     w._project_id = "test-proj"
     assert w._pending_sonar_workers == {}
     w._retry_pending_sonar()  # Should not raise
