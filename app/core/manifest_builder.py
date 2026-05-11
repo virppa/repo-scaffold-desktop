@@ -9,6 +9,7 @@ write_manifest(path, manifest_dict)    -- write + validate to disk
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,21 @@ class TaxonomyFields:
         self.ac_specificity = ac_specificity
 
 
+@dataclass
+class ManifestOptions:
+    """Optional/defaulted kwargs for ``build_manifest`` (WOR-Sonar S107).
+
+    Bundles the rarely-set knobs so the main builder signature stays under
+    the 13-parameter Sonar threshold.
+    """
+
+    tech_stack: str = ""
+    raw_extensions: list[str] = field(default_factory=list)
+    forbidden_paths_extra: list[str] = field(default_factory=list)
+    risk_level: str = "low"
+    priority: int = 3
+
+
 class ManifestBuilder:
     """Builder for ExecutionManifest dicts."""
 
@@ -79,21 +95,14 @@ class ManifestBuilder:
         objective: str,
         acceptance_criteria: list[str],
         implementation_constraints: list[str],
-        tech_stack: str = "",
-        raw_extensions: list[str] | None = None,
-        forbidden_paths_extra: list[str] | None = None,
-        risk_level: str = "low",
-        priority: int = 3,
+        options: ManifestOptions | None = None,
     ) -> dict[str, Any]:
         """Return a dict matching ExecutionManifest schema."""
-        if raw_extensions is None:
-            raw_extensions = []
-        if forbidden_paths_extra is None:
-            forbidden_paths_extra = []
+        opts = options if options is not None else ManifestOptions()
 
         forbidden_paths = self._compute_forbidden_paths(
             allowed_paths,
-            forbidden_paths_extra,
+            opts.forbidden_paths_extra,
         )
         artifact_id = self._artifact_id(ticket_id)
 
@@ -102,12 +111,12 @@ class ManifestBuilder:
             "ticket_id": ticket_id,
             "epic_id": epic_id,
             "title": title,
-            "priority": priority,
+            "priority": opts.priority,
             "status": "ReadyForLocal",
             "linear_id": None,
             "blocked_by_tickets": [],
             "parallel_safe": True,
-            "risk_level": risk_level,
+            "risk_level": opts.risk_level,
             "risk_flags": [],
             "implementation_mode": "local",
             "effort": effort,
@@ -117,8 +126,8 @@ class ManifestBuilder:
             "scope_clarity": taxonomy.scope_clarity,
             "constraint_density": taxonomy.constraint_density,
             "ac_specificity": taxonomy.ac_specificity,
-            "tech_stack": tech_stack,
-            "raw_extensions": json.dumps(raw_extensions),
+            "tech_stack": opts.tech_stack,
+            "raw_extensions": json.dumps(opts.raw_extensions),
             "base_branch": "epic/wor-313-mega-overnight-hardening",
             "worker_branch": branch,
             "worktree_name": None,
@@ -162,11 +171,7 @@ def build_manifest(
     objective: str,
     acceptance_criteria: list[str],
     implementation_constraints: list[str],
-    tech_stack: str = "",
-    raw_extensions: list[str] | None = None,
-    forbidden_paths_extra: list[str] | None = None,
-    risk_level: str = "low",
-    priority: int = 3,
+    options: ManifestOptions | None = None,
 ) -> dict[str, Any]:
     """Convenience function -- delegates to a singleton builder."""
     return ManifestBuilder().build_manifest(
@@ -182,11 +187,7 @@ def build_manifest(
         objective=objective,
         acceptance_criteria=acceptance_criteria,
         implementation_constraints=implementation_constraints,
-        tech_stack=tech_stack,
-        raw_extensions=raw_extensions,
-        forbidden_paths_extra=forbidden_paths_extra,
-        risk_level=risk_level,
-        priority=priority,
+        options=options,
     )
 
 

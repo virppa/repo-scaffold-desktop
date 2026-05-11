@@ -34,7 +34,6 @@ def _handle_signal_impl(
     services: Any,
     running_ref: Any,
     signum: int,
-    frame: Any,
 ) -> None:
     """Actual signal handler logic — called with (signum, frame) by the signal
     module. ``services`` and ``running_ref`` are captured by the closure in
@@ -49,9 +48,7 @@ def make_signal_handler(
     running_ref: object,
 ) -> Callable[[int, Any], None]:
     """Factory that creates a ``(signum, frame)`` handler bound to ``self``."""
-    return lambda signum, frame: _handle_signal_impl(
-        services, running_ref, signum, frame
-    )
+    return lambda signum, _frame: _handle_signal_impl(services, running_ref, signum)
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +56,7 @@ def make_signal_handler(
 # ---------------------------------------------------------------------------
 
 
-def write_pid_file(repo_root: Path) -> None:
+def write_pid_file() -> None:
     """Write the watcher PID to ``<repo>/.claude/watcher.pid``."""
     _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     _PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
