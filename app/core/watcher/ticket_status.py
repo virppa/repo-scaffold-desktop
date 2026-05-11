@@ -308,6 +308,17 @@ def _fetch_linear_state(
             worktree_exists=None,
             worktree_path=None,
         )
+    if issue is None:
+        return TicketStatus(
+            ticket_id=ticket_id,
+            title="ticket not found",
+            state="Unknown",
+            state_age_seconds=None,
+            worker_log=None,
+            artifacts=None,
+            worktree_exists=None,
+            worktree_path=None,
+        )
     title = issue.get("title", "")
     state_data = issue.get("state") or {}
     state = state_data.get("name", state_data.get("type", "Unknown"))
