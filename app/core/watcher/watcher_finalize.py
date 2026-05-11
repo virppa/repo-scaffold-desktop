@@ -220,24 +220,19 @@ def attempt_pr(
     return "success", pr_url
 
 
-def finalize_worker(
+def _run_retry_loop(
     worker: ActiveWorker,
-    *,
     returncode: int,
-    wall_time: float,
     linear: LinearClientProtocol,
-    metrics: MetricsStore,
     escalation_policy: EscalationPolicy,
     repo_root: Path,
-    mode: str,
+    eff: str,
+    tracked_prs: list[TrackedPR] | None,
+    metrics: MetricsStore,
     project_id: str,
-    tracked_prs: list[TrackedPR] | None = None,
-) -> Outcome:
-    eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
-
-    # WOR-312: in-dispatch retry loop. On check failure, re-launch the worker
-    # with a RETRY hint and loop back to re-run checks — avoiding the slower
-    # Linear Blocked → ReadyForLocal redispatch path.
+) -> tuple[Outcome, bool, bool, list[str] | None, list[dict[str, int | str]]]:
+    """Execute the in-dispatch retry loop (WOR-312). Returns the final
+    finalization tuple after the last attempt."""
     first_finalization = True
     max_retries = min(ATTEMPT_HARDCAP, worker.manifest.failure_policy.max_retries)
     while True:
@@ -255,32 +250,34 @@ def finalize_worker(
             )
         )
         if not failed_checks:
-            break
-        # WOR-312: attempt_count is the number of _execute_finalization calls
-        # so far. Use > (not >=) so that max_retries=1 means: 1 initial attempt
-        # + 1 retry before breaking.  max_retries=0 breaks immediately.
-        if worker.attempt_count > max_retries:
-            break
-        if first_finalization:
-            first_finalization = False
-            failed_checks_json = json.dumps([str(f["check"]) for f in failed_checks])
-            extra = (
-                f"Worker failed checks: {failed_checks_json}. "
-                f"Re-launching with RETRY hint."
+            return (
+                outcome,
+                escalated,
+                artifacts_preserved,
+                sonar_findings,
+                failed_checks,
             )
-            logger.info("%s — %s", worker.ticket_id, extra)
-        else:
-            logger.warning(
-                "%s check retry %d/%d — %s",
-                worker.ticket_id,
-                worker.attempt_count,
-                max_retries,
-                "checks failed",
+        if worker.attempt_count > max_retries:
+            return (
+                outcome,
+                escalated,
+                artifacts_preserved,
+                sonar_findings,
+                failed_checks,
             )
         failed_checks_json = json.dumps([str(f["check"]) for f in failed_checks])
         extra_constraint = (
             f"Worker failed checks: {failed_checks_json}. Re-launching with RETRY hint."
         )
+        if first_finalization:
+            logger.info("%s — %s", worker.ticket_id, extra_constraint)
+        else:
+            logger.warning(
+                "%s check retry %d/%d — checks failed",
+                worker.ticket_id,
+                worker.attempt_count,
+                max_retries,
+            )
         launch_worker(
             repo_root,
             worker.manifest,
@@ -289,6 +286,137 @@ def finalize_worker(
             extra_constraint=extra_constraint,
         )
         first_finalization = False
+
+
+def _compute_diff_stats(worktree_path: Path, base_branch: str) -> tuple[int, int]:
+    """Run `git diff --shortstat` against the merge-base; return (lines, files)."""
+    try:
+        diff_output = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "diff",
+                "--shortstat",
+                f"{base_branch}...HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        raw = (diff_output.stdout or "") + (diff_output.stderr or "")
+        return parse_git_shortstat(raw)
+    except (OSError, subprocess.TimeoutExpired):
+        return 0, 0
+
+
+def _capture_vllm_post(
+    worker: ActiveWorker, repo_root: Path
+) -> tuple[bool | None, dict[str, float | int | None]]:
+    """WOR-370: capture the post-session vLLM /metrics snapshot.
+
+    Returns (attributable, deltas). Three states:
+      - (True, deltas) — worker remained solo, after-snapshot succeeded
+      - (False, {})   — concurrent during session, OR after-snapshot failed
+      - (None, {})    — no pre-snapshot was taken
+    """
+    if worker.vllm_metrics_before is None:
+        return None, {}
+    if not worker.remained_solo:
+        _write_vllm_metrics_artifact(
+            repo_root,
+            worker.ticket_id,
+            attributable=False,
+            before=worker.vllm_metrics_before,
+            after=None,
+            deltas={},
+            reason="concurrent worker dispatched during session",
+        )
+        return False, {}
+    after = capture_vllm_metrics()
+    if after is None:
+        _write_vllm_metrics_artifact(
+            repo_root,
+            worker.ticket_id,
+            attributable=False,
+            before=worker.vllm_metrics_before,
+            after=None,
+            deltas={},
+            reason="after-snapshot failed (vLLM /metrics unreachable)",
+        )
+        return False, {}
+    deltas = compute_vllm_metrics_delta(worker.vllm_metrics_before, after)
+    _write_vllm_metrics_artifact(
+        repo_root,
+        worker.ticket_id,
+        attributable=True,
+        before=worker.vllm_metrics_before,
+        after=after,
+        deltas=deltas,
+    )
+    return True, deltas
+
+
+def _post_improvement_log(linear: LinearClientProtocol, worker: ActiveWorker) -> None:
+    """WOR-303: harvest result.json notes and post to WOR-254."""
+    result_path = worker.worktree_path / worker.manifest.artifact_paths.result_json
+    try:
+        if not result_path.exists():
+            return
+        result_data = json.loads(result_path.read_text(encoding="utf-8"))
+        notes = (result_data.get("notes") or "").strip()
+        if len(notes) <= NOTES_MIN_CHARS:
+            return
+        try:
+            linear.post_comment(
+                "WOR-254",
+                f"## Side-discovery from {worker.ticket_id}\n\n"
+                f"From the {worker.ticket_id} worker session "
+                f"({worker.manifest.title}):\n\n"
+                f"{notes}\n\n"
+                f"Ref: {worker.ticket_id}, branch "
+                f"`{worker.manifest.worker_branch}`.",
+            )
+        except Exception:
+            logger.warning(
+                "Could not post improvement-log comment for %s", worker.ticket_id
+            )
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "Could not read result.json for improvement-log harvest: %s", exc
+        )
+
+
+def finalize_worker(
+    worker: ActiveWorker,
+    *,
+    returncode: int,
+    wall_time: float,
+    linear: LinearClientProtocol,
+    metrics: MetricsStore,
+    escalation_policy: EscalationPolicy,
+    repo_root: Path,
+    mode: str,
+    project_id: str,
+    tracked_prs: list[TrackedPR] | None = None,
+) -> Outcome:
+    eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
+
+    # WOR-312: in-dispatch retry loop. Helper avoids the slower Linear
+    # Blocked -> ReadyForLocal redispatch when checks transiently fail.
+    outcome, escalated, artifacts_preserved, sonar_findings, failed_checks = (
+        _run_retry_loop(
+            worker,
+            returncode,
+            linear,
+            escalation_policy,
+            repo_root,
+            eff,
+            tracked_prs,
+            metrics,
+            project_id,
+        )
+    )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
     input_tokens, output_tokens, context_compactions, compact_duration_ms = (
@@ -316,29 +444,10 @@ def finalize_worker(
         else None
     )
 
-    # Parse git diff --shortstat to populate lines_changed / files_changed.
-    # Three-dot diff against the merge-base — invariant under base_branch
-    # advancing during the worker's lifetime (WOR-354). Two-dot would attribute
-    # sibling-merge upstream commits to this worker.
-    # Must run before preserve_worker_artifacts tears down the worktree.
-    try:
-        diff_output = subprocess.run(  # nosec B603 B607
-            [
-                "git",
-                "-C",
-                str(worker.worktree_path),
-                "diff",
-                "--shortstat",
-                f"{worker.manifest.base_branch}...HEAD",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        raw_shortstat = (diff_output.stdout or "") + (diff_output.stderr or "")
-        lines_changed, files_changed = parse_git_shortstat(raw_shortstat)
-    except (OSError, subprocess.TimeoutExpired):
-        lines_changed, files_changed = 0, 0
+    # WOR-354: 3-dot diff against merge-base. Helper to keep finalize_worker tight.
+    lines_changed, files_changed = _compute_diff_stats(
+        worker.worktree_path, worker.manifest.base_branch
+    )
 
     # Cloud metrics — populated only when eff == "cloud"
     cloud_model: str | None = None
@@ -397,53 +506,8 @@ def finalize_worker(
     # check_failures: store the list when non-empty, else None
     check_failures = failed_checks if failed_checks else None
 
-    # WOR-370: vLLM /metrics delta capture. Three states:
-    #   1. Attributable — worker was solo throughout. Take after-snapshot,
-    #      compute deltas, write artifact + populate TicketMetrics columns.
-    #   2. Concurrent during session — sentinel artifact, columns stay None,
-    #      attributable=False on the row.
-    #   3. Never captured — no artifact, columns stay None, attributable=None.
-    vllm_attributable: bool | None = None
-    vllm_deltas: dict[str, float | int | None] = {}
-    if worker.vllm_metrics_before is not None:
-        if worker.remained_solo:
-            after = capture_vllm_metrics()
-            if after is not None:
-                vllm_attributable = True
-                vllm_deltas = compute_vllm_metrics_delta(
-                    worker.vllm_metrics_before, after
-                )
-                _write_vllm_metrics_artifact(
-                    repo_root,
-                    worker.ticket_id,
-                    attributable=True,
-                    before=worker.vllm_metrics_before,
-                    after=after,
-                    deltas=vllm_deltas,
-                )
-            else:
-                # before captured, after failed — un-attributable, but the
-                # before is still useful for audit. Write sentinel.
-                _write_vllm_metrics_artifact(
-                    repo_root,
-                    worker.ticket_id,
-                    attributable=False,
-                    before=worker.vllm_metrics_before,
-                    after=None,
-                    deltas={},
-                    reason="after-snapshot failed (vLLM /metrics unreachable)",
-                )
-        else:
-            vllm_attributable = False
-            _write_vllm_metrics_artifact(
-                repo_root,
-                worker.ticket_id,
-                attributable=False,
-                before=worker.vllm_metrics_before,
-                after=None,
-                deltas={},
-                reason="concurrent worker dispatched during session",
-            )
+    # WOR-370: vLLM /metrics delta capture (3-state helper).
+    vllm_attributable, vllm_deltas = _capture_vllm_post(worker, repo_root)
 
     metrics.record(
         TicketMetrics(
@@ -518,35 +582,7 @@ def finalize_worker(
         )
     )
 
-    # -----------------------------------------------------------------------
-    # WOR-303 — improvement-log: auto-post worker side-discoveries to WOR-254
-    # -----------------------------------------------------------------------
-    result_path = worker.worktree_path / worker.manifest.artifact_paths.result_json
-    try:
-        if result_path.exists():
-            result_data = json.loads(result_path.read_text(encoding="utf-8"))
-            notes = (result_data.get("notes") or "").strip()
-            if len(notes) > NOTES_MIN_CHARS:
-                try:
-                    linear.post_comment(
-                        "WOR-254",
-                        f"## Side-discovery from {worker.ticket_id}\n\n"
-                        f"From the {worker.ticket_id} worker session "
-                        f"({worker.manifest.title}):\n\n"
-                        f"{notes}\n\n"
-                        f"Ref: {worker.ticket_id}, branch "
-                        f"`{worker.manifest.worker_branch}`.",
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Could not post improvement-log comment for %s: %s",
-                        worker.ticket_id,
-                        exc,
-                    )
-    except (OSError, ValueError) as exc:
-        logger.warning(
-            "Could not read result.json for improvement-log harvest: %s", exc
-        )
+    _post_improvement_log(linear, worker)
 
     metrics.record_run(
         TicketRunLog(

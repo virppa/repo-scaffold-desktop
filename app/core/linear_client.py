@@ -29,6 +29,19 @@ class LinearError(Exception):
     pass
 
 
+def _classify_transient_or_raise(exc: Exception) -> Exception:
+    """Return *exc* if it's a retryable transport error; raise LinearError if not.
+
+    Non-retryable HTTPError codes (anything outside _RETRYABLE_HTTP_CODES) are
+    promoted to LinearError. URLError and RemoteDisconnected are always
+    retryable.
+    """
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code not in _RETRYABLE_HTTP_CODES:
+            raise LinearError(f"Linear API HTTP {exc.code}: {exc.reason}") from exc
+    return exc
+
+
 class LinearClient:
     """Minimal Linear GraphQL client for watcher use."""
 
@@ -234,39 +247,18 @@ class LinearClient:
     def _query(
         self, query: str, variables: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        payload = json.dumps({"query": query, "variables": variables or {}}).encode()
-        req = urllib.request.Request(  # nosec B310
-            _LINEAR_API_URL,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": self._api_key,
-            },
-            method="POST",
-        )
+        req = self._build_request(query, variables)
         last_exc: Exception | None = None
         max_retries = len(_RETRY_DELAYS)
         for attempt in range(max_retries + 1):
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310
-                    body: dict[str, Any] = json.loads(resp.read())
-                errors = body.get("errors")
-                if errors:
-                    raise LinearError(f"Linear API error: {errors}")
-                data = body.get("data")
-                if data is None:
-                    raise LinearError(f"Linear API returned no data: {body!r}")
-                return cast(dict[str, Any], data)
-            except LinearError:
-                raise
-            except urllib.error.HTTPError as exc:
-                if exc.code not in _RETRYABLE_HTTP_CODES:
-                    raise LinearError(
-                        f"Linear API HTTP {exc.code}: {exc.reason}"
-                    ) from exc
-                last_exc = exc
-            except (urllib.error.URLError, http.client.RemoteDisconnected) as exc:
-                last_exc = exc
+                return self._attempt_query(req)
+            except (
+                urllib.error.HTTPError,
+                urllib.error.URLError,
+                http.client.RemoteDisconnected,
+            ) as exc:
+                last_exc = _classify_transient_or_raise(exc)
             if attempt < max_retries:
                 delay = _RETRY_DELAYS[attempt]
                 logger.warning(
@@ -280,3 +272,34 @@ class LinearClient:
         raise LinearError(
             f"Linear API failed after {max_retries + 1} attempts: {last_exc}"
         ) from last_exc
+
+    def _build_request(
+        self, query: str, variables: dict[str, Any] | None
+    ) -> urllib.request.Request:
+        payload = json.dumps({"query": query, "variables": variables or {}}).encode()
+        return urllib.request.Request(  # nosec B310
+            _LINEAR_API_URL,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": self._api_key,
+            },
+            method="POST",
+        )
+
+    def _attempt_query(self, req: urllib.request.Request) -> dict[str, Any]:
+        """Issue one request and parse the response.
+
+        Raises LinearError on a structural error (GraphQL errors or no data).
+        Raises HTTPError/URLError/RemoteDisconnected on transport failures
+        (the caller decides whether to retry).
+        """
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310
+            body: dict[str, Any] = json.loads(resp.read())
+        errors = body.get("errors")
+        if errors:
+            raise LinearError(f"Linear API error: {errors}")
+        data = body.get("data")
+        if data is None:
+            raise LinearError(f"Linear API returned no data: {body!r}")
+        return cast(dict[str, Any], data)

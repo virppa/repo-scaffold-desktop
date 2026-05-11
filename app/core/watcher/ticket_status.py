@@ -160,12 +160,32 @@ def _truncate(s: str, max_len: int = 40) -> str:
     return s[: max_len - 3] + "..."
 
 
-def _parse_last_tool_calls(log_path: Path) -> list[ToolCallInfo]:
-    """Tail the last ~10 lines of the log and extract tool_use events.
+def _parse_assistant_line(line: str) -> list[dict[str, Any]]:
+    """Return tool_use blocks from a single JSONL assistant event.
 
-    Returns up to 3 most recent tool calls as ToolCallInfo objects.
-    Returns [] when the log is empty or has no tool_use events.
+    Returns [] for any line that isn't a parseable assistant event with
+    a content array.
     """
+    line = line.strip()
+    if not line:
+        return []
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        return []
+    if obj.get("type") != "assistant":
+        return []
+    msg = obj.get("message", {}) or {}
+    content = msg.get("content") or []
+    return [
+        b
+        for b in content
+        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name")
+    ]
+
+
+def _parse_last_tool_calls(log_path: Path) -> list[ToolCallInfo]:
+    """Tail the last ~30 lines of the log and extract the 3 most recent tool calls."""
     try:
         lines = log_path.read_text(encoding="utf-8").splitlines()
         tail = lines[-30:] if len(lines) > 30 else lines
@@ -174,27 +194,9 @@ def _parse_last_tool_calls(log_path: Path) -> list[ToolCallInfo]:
 
     calls: list[ToolCallInfo] = []
     for line in tail:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if obj.get("type") != "assistant":
-            continue
-        msg = obj.get("message", {}) or {}
-        for block in msg.get("content") or []:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") != "tool_use":
-                continue
-            name = block.get("name", "")
-            if not name:
-                continue
-            input_data = block.get("input") or {}
-            display = _build_display(name, input_data)
-            calls.append(ToolCallInfo(name=name, display=_truncate(display)))
+        for block in _parse_assistant_line(line):
+            display = _build_display(block["name"], block.get("input") or {})
+            calls.append(ToolCallInfo(name=block["name"], display=_truncate(display)))
             if len(calls) >= 3:
                 return list(reversed(calls))
     return list(reversed(calls))
@@ -257,113 +259,21 @@ def fetch_ticket_status(
     """
     ticket_id_lower = ticket_id.lower()
 
-    # ---- Linear data ----
-    try:
-        issue = linear_client.get_issue(ticket_id)
-    except Exception as exc:
-        # Fallback: return minimal info when Linear is unreachable.
-        return TicketStatus(
-            ticket_id=ticket_id,
-            title=f"(error fetching: {exc})",
-            state="Unknown",
-            state_age_seconds=None,
-            worker_log=None,
-            artifacts=None,
-            worktree_exists=None,
-            worktree_path=None,
-        )
+    linear_data = _fetch_linear_state(linear_client, ticket_id)
+    if isinstance(linear_data, TicketStatus):
+        return linear_data
+    title, state, state_age_seconds = linear_data
 
-    title = issue.get("title", "")
-    state_data = issue.get("state") or {}
-    state = state_data.get("name", state_data.get("type", "Unknown"))
-    state_created = state_data.get("createdAt") or state_data.get("created_at")
-
-    state_age_seconds: int | None = None
-    if state_created:
-        try:
-            # Linear returns ISO-8601 strings like "2026-05-10T06:19:32.000Z"
-            created_dt = time.mktime(
-                time.strptime(state_created[:19], "%Y-%m-%dT%H:%M:%S")
-            )
-            state_age_seconds = max(0, int(time.time() - created_dt))
-        except (ValueError, TypeError):
-            state_age_seconds = None
-
-    # ---- Log file ----
     log_path = _parse_log_path(ticket_id_lower)
-    log_info: LogInfo | None = None
-    if log_path.exists():
-        stat = log_path.stat()
-        size_bytes = stat.st_size
-        mtime = stat.st_mtime
-        last_activity = max(0, int(time.time() - mtime))
+    log_info = _load_log_info(log_path) if log_path.exists() else None
 
-        # Last 3 tool calls
-        last_tool_calls = _parse_last_tool_calls(log_path)
-
-        # API retries and subagent spawns from existing helpers
-        from app.core.watcher.watcher_log_parsing import (
-            _parse_worker_api_retries,
-            _parse_worker_subagent_spawns,
-        )
-
-        api_retries = _parse_worker_api_retries(log_path)
-        subagent_spawns = _parse_worker_subagent_spawns(log_path)
-
-        log_info = LogInfo(
-            size_bytes=size_bytes,
-            last_activity_ago_seconds=last_activity,
-            last_tool_calls=last_tool_calls,
-            api_retries=api_retries,
-            subagent_spawns=subagent_spawns,
-        )
-
-    # ---- Artifacts ----
     if artifact_dir is None:
         artifact_paths = ArtifactPaths.from_ticket_id(ticket_id)
         artifact_dir = Path(artifact_paths.result_json).parent
+    artifacts = _load_artifacts(artifact_dir)
 
-    entries: dict[str, int] = {}
-    if artifact_dir.exists():
-        for child in sorted(artifact_dir.iterdir()):
-            if child.is_file():
-                entries[child.name] = child.stat().st_size
-
-    if entries:
-        artifacts = ArtifactInfo(path=str(artifact_dir), entries=entries)
-    else:
-        artifacts = None
-
-    # ---- Worktree ----
-    worktree_path = None
-    if worktree_dir is None:
-        slug = ticket_id_lower.replace("-", "_")
-        worktree_dir = Path(".claude") / "worktrees" / slug
-    else:
-        worktree_path = str(worktree_dir)
-
-    worktree_exists = worktree_dir.exists() if worktree_dir else None
-    if worktree_path is None and worktree_dir is not None:
-        worktree_path = str(worktree_dir)
-
-    # ---- Health flags ----
-    health_flags: dict[str, Any] = {}
-    if log_info is not None:
-        if log_info.api_retries is not None:
-            health_flags["api_retries"] = log_info.api_retries
-        if log_info.subagent_spawns is not None:
-            health_flags["subagent_spawns"] = log_info.subagent_spawns
-
-    # If there are no artifacts beyond what's expected, flag it
-    result_json_path = artifact_dir / "result.json"
-    if not result_json_path.exists() and state not in (
-        "Done",
-        "MergedToEpic",
-        "Cancelled",
-        "Duplicate",
-        "Blocked",
-    ):
-        health_flags["no_result_artifact"] = True
+    worktree_exists, worktree_path = _resolve_worktree(worktree_dir, ticket_id_lower)
+    health_flags = _compute_health_flags(log_info, artifact_dir, state)
 
     return TicketStatus(
         ticket_id=ticket_id,
@@ -376,3 +286,101 @@ def fetch_ticket_status(
         worktree_path=worktree_path,
         health_flags=health_flags,
     )
+
+
+def _fetch_linear_state(
+    linear_client: Any, ticket_id: str
+) -> tuple[str, str, int | None] | TicketStatus:
+    """Fetch issue from Linear and extract (title, state, state_age_seconds).
+
+    Returns a fallback TicketStatus directly when Linear is unreachable.
+    """
+    try:
+        issue = linear_client.get_issue(ticket_id)
+    except Exception as exc:
+        return TicketStatus(
+            ticket_id=ticket_id,
+            title=f"(error fetching: {exc})",
+            state="Unknown",
+            state_age_seconds=None,
+            worker_log=None,
+            artifacts=None,
+            worktree_exists=None,
+            worktree_path=None,
+        )
+    title = issue.get("title", "")
+    state_data = issue.get("state") or {}
+    state = state_data.get("name", state_data.get("type", "Unknown"))
+    state_created = state_data.get("createdAt") or state_data.get("created_at")
+    state_age_seconds: int | None = None
+    if state_created:
+        try:
+            created_dt = time.mktime(
+                time.strptime(state_created[:19], "%Y-%m-%dT%H:%M:%S")
+            )
+            state_age_seconds = max(0, int(time.time() - created_dt))
+        except (ValueError, TypeError):
+            state_age_seconds = None
+    return title, state, state_age_seconds
+
+
+def _load_log_info(log_path: Path) -> LogInfo:
+    """Build LogInfo from an existing worker log file."""
+    from app.core.watcher.watcher_log_parsing import (
+        _parse_worker_api_retries,
+        _parse_worker_subagent_spawns,
+    )
+
+    stat = log_path.stat()
+    return LogInfo(
+        size_bytes=stat.st_size,
+        last_activity_ago_seconds=max(0, int(time.time() - stat.st_mtime)),
+        last_tool_calls=_parse_last_tool_calls(log_path),
+        api_retries=_parse_worker_api_retries(log_path),
+        subagent_spawns=_parse_worker_subagent_spawns(log_path),
+    )
+
+
+def _load_artifacts(artifact_dir: Path) -> ArtifactInfo | None:
+    """Enumerate files in artifact_dir; None if empty or missing."""
+    if not artifact_dir.exists():
+        return None
+    entries: dict[str, int] = {
+        child.name: child.stat().st_size
+        for child in sorted(artifact_dir.iterdir())
+        if child.is_file()
+    }
+    if not entries:
+        return None
+    return ArtifactInfo(path=str(artifact_dir), entries=entries)
+
+
+def _resolve_worktree(
+    worktree_dir: Path | None, ticket_id_lower: str
+) -> tuple[bool | None, str | None]:
+    """Resolve worktree existence + display path."""
+    if worktree_dir is None:
+        slug = ticket_id_lower.replace("-", "_")
+        worktree_dir = Path(".claude") / "worktrees" / slug
+    return worktree_dir.exists(), str(worktree_dir)
+
+
+def _compute_health_flags(
+    log_info: LogInfo | None, artifact_dir: Path, state: str
+) -> dict[str, Any]:
+    """Aggregate health-flag dict for the snapshot."""
+    health_flags: dict[str, Any] = {}
+    if log_info is not None:
+        if log_info.api_retries is not None:
+            health_flags["api_retries"] = log_info.api_retries
+        if log_info.subagent_spawns is not None:
+            health_flags["subagent_spawns"] = log_info.subagent_spawns
+    if not (artifact_dir / "result.json").exists() and state not in (
+        "Done",
+        "MergedToEpic",
+        "Cancelled",
+        "Duplicate",
+        "Blocked",
+    ):
+        health_flags["no_result_artifact"] = True
+    return health_flags

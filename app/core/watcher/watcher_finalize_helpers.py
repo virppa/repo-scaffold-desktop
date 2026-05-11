@@ -85,6 +85,31 @@ def _read_result_status(repo_root: Path, manifest: ExecutionManifest) -> str | N
     return status if isinstance(status, str) else None
 
 
+def _record_failure_state(
+    worker: ActiveWorker,
+    linear: LinearClientProtocol,
+    escalate_reason: str,
+) -> bool:
+    """Set Linear state for a failed worker; return whether we escalated."""
+    manifest = worker.manifest
+    ticket_id = worker.ticket_id
+    linear_id = worker.linear_id
+    escalated = bool(manifest.failure_policy.escalate_to_cloud)
+    if escalated:
+        logger.info("Escalating %s to cloud per failure policy", ticket_id)
+        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
+        _try_post_comment(
+            linear,
+            linear_id,
+            ticket_id,
+            f"Local worker failed for `{ticket_id}` ({escalate_reason}). "
+            f"Escalating to cloud per failure policy.",
+        )
+    else:
+        safe_set_state(linear, linear_id, manifest.ticket_state_map.failed, ticket_id)
+    return escalated
+
+
 def _execute_finalization(
     worker: ActiveWorker,
     returncode: int,
@@ -106,7 +131,6 @@ def _execute_finalization(
     """
     manifest = worker.manifest
     ticket_id = worker.ticket_id
-    linear_id = worker.linear_id
 
     # WOR-286: Trust the worker's in-band success signal (result.json) over
     # the subprocess exit code. Claude Code CLI sometimes exits non-zero
@@ -114,40 +138,27 @@ def _execute_finalization(
     # the work. Only treat non-zero exit as failure when result.json is
     # missing or also reports failure.
     result_status = _read_result_status(repo_root, manifest)
+    if returncode != 0 and result_status != "success":
+        logger.error(
+            "Worker %s exited non-zero (%d); result.json status=%s — "
+            "routing to failure path",
+            ticket_id,
+            returncode,
+            result_status if result_status is not None else "missing",
+        )
+        escalated = _record_failure_state(
+            worker,
+            linear,
+            escalate_reason="non-zero exit",
+        )
+        return "failure", escalated, False, None, [], None
     if returncode != 0:
-        if result_status == "success":
-            logger.warning(
-                "Worker %s exited non-zero (%d) but result.json reports "
-                "status=success — trusting in-band signal and proceeding "
-                "with checks.",
-                ticket_id,
-                returncode,
-            )
-            # Fall through to run_checks; treat as if returncode == 0.
-        else:
-            logger.error(
-                "Worker %s exited non-zero (%d); result.json status=%s — "
-                "routing to failure path",
-                ticket_id,
-                returncode,
-                result_status if result_status is not None else "missing",
-            )
-            escalated = bool(manifest.failure_policy.escalate_to_cloud)
-            if escalated:
-                logger.info("Escalating %s to cloud per failure policy", ticket_id)
-                safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
-                _try_post_comment(
-                    linear,
-                    linear_id,
-                    ticket_id,
-                    f"Local worker failed for `{ticket_id}` (non-zero exit). "
-                    f"Escalating to cloud per failure policy.",
-                )
-            else:
-                safe_set_state(
-                    linear, linear_id, manifest.ticket_state_map.failed, ticket_id
-                )
-            return "failure", escalated, False, None, [], None
+        logger.warning(
+            "Worker %s exited non-zero (%d) but result.json reports "
+            "status=success — trusting in-band signal and proceeding with checks.",
+            ticket_id,
+            returncode,
+        )
 
     checks_ok, failed_checks = run_checks(
         manifest,
@@ -159,21 +170,11 @@ def _execute_finalization(
     if not checks_ok:
         worker.attempt_count += 1
     if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
-        escalated = bool(manifest.failure_policy.escalate_to_cloud)
-        if escalated:
-            logger.info("Escalating %s to cloud after check failure", ticket_id)
-            safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
-            _try_post_comment(
-                linear,
-                linear_id,
-                ticket_id,
-                f"Local worker failed checks for `{ticket_id}`. "
-                f"Escalating to cloud per failure policy.",
-            )
-        else:
-            safe_set_state(
-                linear, linear_id, manifest.ticket_state_map.failed, ticket_id
-            )
+        escalated = _record_failure_state(
+            worker,
+            linear,
+            escalate_reason="failed checks",
+        )
         return "failure", escalated, False, None, failed_checks, None
 
     preserve_worker_artifacts(repo_root, worker)

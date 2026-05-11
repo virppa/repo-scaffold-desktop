@@ -466,170 +466,171 @@ class MetricsStore:
             conn.execute(_CREATE_RUN_LOG)
             self._migrate(conn)
 
+    # WOR-Sonar: columns added by ALTER TABLE ADD COLUMN over time.
+    # Data-driven migration; new columns just append to this list.
+    _TICKET_METRICS_ADDED_COLUMNS: list[tuple[str, str]] = [
+        # (column_name, full_alter_sql) — literal SQL keeps semgrep's
+        # SQL-injection rules happy (the f-string version trips
+        # python.lang.security.audit.formatted-sql-query even though
+        # every value is a hardcoded class attribute).
+        (
+            "local_input_tokens",
+            "ALTER TABLE ticket_metrics ADD COLUMN local_input_tokens INTEGER",
+        ),
+        (
+            "local_output_tokens",
+            "ALTER TABLE ticket_metrics ADD COLUMN local_output_tokens INTEGER",
+        ),
+        (
+            "output_tokens_per_wall_second",
+            "ALTER TABLE ticket_metrics ADD COLUMN output_tokens_per_wall_second REAL",
+        ),
+        ("change_type", "ALTER TABLE ticket_metrics ADD COLUMN change_type TEXT"),
+        (
+            "reasoning_demand",
+            "ALTER TABLE ticket_metrics ADD COLUMN reasoning_demand INTEGER",
+        ),
+        (
+            "scope_clarity",
+            "ALTER TABLE ticket_metrics ADD COLUMN scope_clarity INTEGER",
+        ),
+        (
+            "constraint_density",
+            "ALTER TABLE ticket_metrics ADD COLUMN constraint_density INTEGER",
+        ),
+        (
+            "ac_specificity",
+            "ALTER TABLE ticket_metrics ADD COLUMN ac_specificity INTEGER",
+        ),
+        ("tech_stack", "ALTER TABLE ticket_metrics ADD COLUMN tech_stack TEXT"),
+        ("raw_extensions", "ALTER TABLE ticket_metrics ADD COLUMN raw_extensions TEXT"),
+        ("waste_score", "ALTER TABLE ticket_metrics ADD COLUMN waste_score INTEGER"),
+        (
+            "waste_breakdown_json",
+            "ALTER TABLE ticket_metrics ADD COLUMN waste_breakdown_json TEXT",
+        ),
+        ("tags", "ALTER TABLE ticket_metrics ADD COLUMN tags TEXT"),
+        ("notes", "ALTER TABLE ticket_metrics ADD COLUMN notes TEXT"),
+        ("effort", "ALTER TABLE ticket_metrics ADD COLUMN effort TEXT"),
+        (
+            "compact_duration_ms",
+            "ALTER TABLE ticket_metrics ADD COLUMN compact_duration_ms INTEGER",
+        ),
+        (
+            "api_retry_count",
+            "ALTER TABLE ticket_metrics ADD COLUMN api_retry_count INTEGER",
+        ),
+        (
+            "subagent_spawns",
+            "ALTER TABLE ticket_metrics ADD COLUMN subagent_spawns INTEGER",
+        ),
+        (
+            "hook_trust_violations",
+            "ALTER TABLE ticket_metrics ADD COLUMN hook_trust_violations INTEGER",
+        ),
+        (
+            "dispatch_concurrency",
+            "ALTER TABLE ticket_metrics ADD COLUMN dispatch_concurrency INTEGER",
+        ),
+        (
+            "vllm_metrics_attributable",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_metrics_attributable INTEGER",
+        ),
+        (
+            "vllm_prefix_cache_hits",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hits INTEGER",
+        ),
+        (
+            "vllm_prefix_cache_queries",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_queries INTEGER",
+        ),
+        (
+            "vllm_prefix_cache_hit_ratio",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hit_ratio REAL",
+        ),
+        (
+            "vllm_prompt_tokens",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_prompt_tokens INTEGER",
+        ),
+        (
+            "vllm_generation_tokens",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_generation_tokens INTEGER",
+        ),
+        (
+            "vllm_ttft_seconds_sum",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_seconds_sum REAL",
+        ),
+        (
+            "vllm_ttft_count",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_count INTEGER",
+        ),
+        (
+            "vllm_ttft_mean_seconds",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_mean_seconds REAL",
+        ),
+        (
+            "vllm_preemptions",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_preemptions INTEGER",
+        ),
+        ("turn_count", "ALTER TABLE ticket_metrics ADD COLUMN turn_count INTEGER"),
+        (
+            "tool_calls_total",
+            "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_total INTEGER",
+        ),
+        (
+            "tool_calls_breakdown",
+            "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_breakdown TEXT",
+        ),
+        (
+            "thinking_blocks",
+            "ALTER TABLE ticket_metrics ADD COLUMN thinking_blocks INTEGER",
+        ),
+        (
+            "thinking_chars_total",
+            "ALTER TABLE ticket_metrics ADD COLUMN thinking_chars_total INTEGER",
+        ),
+        (
+            "input_tokens_max",
+            "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_max INTEGER",
+        ),
+        (
+            "input_tokens_first",
+            "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_first INTEGER",
+        ),
+        (
+            "input_tokens_last",
+            "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_last INTEGER",
+        ),
+        (
+            "redundant_reads_count",
+            "ALTER TABLE ticket_metrics ADD COLUMN redundant_reads_count INTEGER",
+        ),
+    ]
+
     def _migrate(self, conn: sqlite3.Connection) -> None:
-        """Add new columns to existing databases using PRAGMA table_info."""
+        """Add missing columns to ticket_metrics via PRAGMA table_info."""
         existing = {
             row[1]
             for row in conn.execute("PRAGMA table_info(ticket_metrics)").fetchall()
         }
-        if "local_input_tokens" not in existing:
+
+        # WOR-361: legacy → new name rename. Idempotent across DB ages.
+        if (
+            "output_tokens_per_wall_second" not in existing
+            and "local_output_tokens_per_second" in existing
+        ):
             conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN local_input_tokens INTEGER"
+                "ALTER TABLE ticket_metrics RENAME COLUMN "
+                "local_output_tokens_per_second TO output_tokens_per_wall_second"
             )
-        if "local_output_tokens" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN local_output_tokens INTEGER"
-            )
-        # WOR-361: rename misleading column. Idempotent across states:
-        # - fresh DB: CREATE TABLE already used the new name
-        # - already-migrated: new name exists, skip
-        # - pre-rename DB: rename old → new
-        # - very old DB without either: ADD COLUMN with new name
-        if "output_tokens_per_wall_second" not in existing:
-            if "local_output_tokens_per_second" in existing:
-                conn.execute(
-                    "ALTER TABLE ticket_metrics RENAME COLUMN "
-                    "local_output_tokens_per_second TO output_tokens_per_wall_second"
-                )
-            else:
-                conn.execute(
-                    "ALTER TABLE ticket_metrics "
-                    "ADD COLUMN output_tokens_per_wall_second REAL"
-                )
-        # WOR-262 taxonomy columns
-        if "change_type" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN change_type TEXT")
-        if "reasoning_demand" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN reasoning_demand INTEGER"
-            )
-        if "scope_clarity" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN scope_clarity INTEGER")
-        if "constraint_density" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN constraint_density INTEGER"
-            )
-        if "ac_specificity" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN ac_specificity INTEGER")
-        if "tech_stack" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN tech_stack TEXT")
-        if "raw_extensions" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN raw_extensions TEXT")
-        if "waste_score" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN waste_score INTEGER")
-        if "waste_breakdown_json" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN waste_breakdown_json TEXT"
-            )
-        if "tags" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN tags TEXT")
-        if "notes" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN notes TEXT")
-        if "effort" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN effort TEXT")
-        if "compact_duration_ms" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN compact_duration_ms INTEGER"
-            )
-        if "api_retry_count" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN api_retry_count INTEGER"
-            )
-        if "subagent_spawns" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN subagent_spawns INTEGER"
-            )
-        if "hook_trust_violations" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN hook_trust_violations INTEGER"
-            )
-        if "dispatch_concurrency" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN dispatch_concurrency INTEGER"
-            )
-        # WOR-370: vLLM /metrics delta capture (only populated when
-        # dispatch_concurrency==0 at dispatch AND no peer was launched
-        # during the session — otherwise the server-wide counters mix
-        # multiple workers' traffic and per-ticket attribution breaks).
-        if "vllm_metrics_attributable" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics "
-                "ADD COLUMN vllm_metrics_attributable INTEGER"
-            )
-        if "vllm_prefix_cache_hits" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hits INTEGER"
-            )
-        if "vllm_prefix_cache_queries" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics "
-                "ADD COLUMN vllm_prefix_cache_queries INTEGER"
-            )
-        if "vllm_prefix_cache_hit_ratio" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hit_ratio REAL"
-            )
-        if "vllm_prompt_tokens" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN vllm_prompt_tokens INTEGER"
-            )
-        if "vllm_generation_tokens" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN vllm_generation_tokens INTEGER"
-            )
-        if "vllm_ttft_seconds_sum" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_seconds_sum REAL"
-            )
-        if "vllm_ttft_count" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_count INTEGER"
-            )
-        if "vllm_ttft_mean_seconds" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_mean_seconds REAL"
-            )
-        if "vllm_preemptions" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN vllm_preemptions INTEGER"
-            )
-        # WOR-380: per-worker behavior telemetry from stream-json log.
-        # Concurrency-safe sibling to WOR-370 — all derived from the
-        # worker's own log file.
-        if "turn_count" not in existing:
-            conn.execute("ALTER TABLE ticket_metrics ADD COLUMN turn_count INTEGER")
-        if "tool_calls_total" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_total INTEGER"
-            )
-        if "tool_calls_breakdown" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_breakdown TEXT"
-            )
-        if "thinking_blocks" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN thinking_blocks INTEGER"
-            )
-        if "thinking_chars_total" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN thinking_chars_total INTEGER"
-            )
-        if "input_tokens_max" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_max INTEGER"
-            )
-        if "input_tokens_first" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_first INTEGER"
-            )
-        if "input_tokens_last" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_last INTEGER"
-            )
-        if "redundant_reads_count" not in existing:
-            conn.execute(
-                "ALTER TABLE ticket_metrics ADD COLUMN redundant_reads_count INTEGER"
-            )
+            existing = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(ticket_metrics)").fetchall()
+            }
+
+        for col, alter_sql in self._TICKET_METRICS_ADDED_COLUMNS:
+            if col not in existing:
+                conn.execute(alter_sql)
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
@@ -885,75 +886,65 @@ def compute_tags(
     Returns:
         A list of tag name strings.  May be empty.
     """
+    return [
+        *_anomaly_tags(ticket_metrics_row, result_json_status, tracked_prs),
+        *_category_tags(ticket_metrics_row, result_json_flags),
+    ]
+
+
+def _anomaly_tags(
+    m: TicketMetrics,
+    result_json_status: str,
+    tracked_prs: list[Any] | None,
+) -> list[str]:
+    """Anomaly-detection tags (2026-05-03 retro).
+
+    Type-strict isinstance guards keep the function robust to non-numeric inputs
+    leaking from MagicMocks in tests that mock metrics.get_by_ticket.
+    """
     tags: list[str] = []
-    outcome = ticket_metrics_row.outcome
-    lines_changed = ticket_metrics_row.lines_changed
-    waste_score = ticket_metrics_row.waste_score
-    retry_count = ticket_metrics_row.retry_count
-    local_tokens = ticket_metrics_row.local_tokens
-    local_wall_time = ticket_metrics_row.local_wall_time
-    api_retry_count = ticket_metrics_row.api_retry_count
-    context_compactions = ticket_metrics_row.context_compactions
-
-    # --- Anomaly detection rules (4) ---
-    # Type-strict guards (isinstance vs `is not None`) so the function is
-    # robust to non-numeric inputs (e.g. MagicMock leaking through tests that
-    # mock `metrics.get_by_ticket`). Without this guard, comparisons against
-    # non-numeric values raise TypeError and break unrelated tests.
-
-    # zero_tokens_high_wall_time: local worker burned wall time with almost no
-    # tokens — likely a failed run that still consumed time (2026-05-03 retro).
-    if isinstance(local_tokens, (int, float)) and isinstance(
-        local_wall_time, (int, float)
+    if (
+        isinstance(m.local_tokens, (int, float))
+        and isinstance(m.local_wall_time, (int, float))
+        and m.local_tokens < 100_000
+        and m.local_wall_time > 1_800
     ):
-        if local_tokens < 100_000 and local_wall_time > 1_800:
-            tags.append("zero_tokens_high_wall_time")
-
-    # no_diff_against_base: the worker reported failure but produced no diff —
-    # it never got far enough to write code (2026-05-03 retro).
-    if outcome == "failure" and isinstance(lines_changed, int) and lines_changed == 0:
+        tags.append("zero_tokens_high_wall_time")
+    if (
+        m.outcome == "failure"
+        and isinstance(m.lines_changed, int)
+        and m.lines_changed == 0
+    ):
         tags.append("no_diff_against_base")
-
-    # success_outcome_state_mismatch: result.json says success but metrics
-    # record captured failure — state machine inconsistency (2026-05-03 retro).
-    if result_json_status == "success" and outcome == "failure":
+    if result_json_status == "success" and m.outcome == "failure":
         tags.append("success_outcome_state_mismatch")
-
-    # success_pr_create_failed: the worker succeeded but the PR push failed —
-    # the PR is not visible in the repo (2026-05-03 retro).
-    if outcome == "success" and tracked_prs is not None and len(tracked_prs) == 0:
+    if m.outcome == "success" and tracked_prs is not None and len(tracked_prs) == 0:
         tags.append("success_pr_create_failed")
+    return tags
 
-    # --- Categorization rules (4) ---
 
-    # scope_drift: the worker itself flagged that it went beyond scope.
+def _category_tags(
+    m: TicketMetrics,
+    result_json_flags: dict[str, bool] | None,
+) -> list[str]:
+    """Categorization tags from result.json signals and metric thresholds.
+
+    backend_unstable threshold (6) calibrated 2026-05-04: Pearson r=0.665 vs
+    wall_time, 6+ bucket runs 4x slower than no-retry baseline (WOR-366).
+    """
+    tags: list[str] = []
     if result_json_flags and result_json_flags.get("scope_drift"):
         tags.append("scope_drift")
-
-    # escalated: the final outcome was an escalation to cloud.
-    if outcome == "escalated":
+    if m.outcome == "escalated":
         tags.append("escalated")
-
-    # high_waste: the waste score exceeds the 80 threshold.
-    if isinstance(waste_score, (int, float)) and waste_score > 80:
+    if isinstance(m.waste_score, (int, float)) and m.waste_score > 80:
         tags.append("high_waste")
-
-    # rework: the ticket required at least one retry.
-    if isinstance(retry_count, int) and retry_count > 0:
+    if isinstance(m.retry_count, int) and m.retry_count > 0:
         tags.append("rework")
-
-    # mid_session_compaction: the session performed at least one context
-    # compaction — the LLM context was truncated during the run.
-    if isinstance(context_compactions, int) and context_compactions > 0:
+    if isinstance(m.context_compactions, int) and m.context_compactions > 0:
         tags.append("mid_session_compaction")
-
-    # backend_unstable: high count of Claude Code internal api_retry events.
-    # Threshold 6 calibrated on 2026-05-04 backfill — Pearson r=0.665 vs
-    # wall_time, with the 6+ bucket running 4× slower than the no-retry
-    # baseline (28 min vs 121 min mean). WOR-366.
-    if isinstance(api_retry_count, int) and api_retry_count >= 6:
+    if isinstance(m.api_retry_count, int) and m.api_retry_count >= 6:
         tags.append("backend_unstable")
-
     return tags
 
 
