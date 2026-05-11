@@ -46,6 +46,16 @@ class TrackedPR:
 
 
 @dataclass
+class QueueState:
+    """Queue summary for the TUI queue panel."""
+
+    ready: int = 0
+    waiting: int = 0
+    in_progress: int = 0
+    blocked: int = 0
+
+
+@dataclass
 class WorkerState:
     """Runtime state of a single worker session."""
 
@@ -55,6 +65,7 @@ class WorkerState:
     elapsed_s: float = 0.0
     cloud_cost: float = 0.0  # only when mode == "cloud"
     local_saved: float = 0.0  # only when mode == "local"
+    last_action: str = ""
 
 
 @dataclass
@@ -70,6 +81,8 @@ class TUIState:
         }
     )
     tracked_prs: list[TrackedPR] = field(default_factory=list)
+    vllm_metrics: dict[str, float] | None = None
+    queue_state: QueueState = field(default_factory=QueueState)
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +149,13 @@ class WatcherDisplay:
             Layout(name="bottom", size=1),
         )
         layout["top"].split_row(self._cost_table(state), self._rollup_table(state))
-        layout["middle"].split_row(self._worker_table(state), self._pr_table(state))
+        # Middle row: workers+PR on left, vLLM+queue on right.
+        # Each half is a row of two panels stacked vertically.
+        left = Layout()
+        left.split_column(self._worker_table(state), self._pr_table(state))
+        right = Layout()
+        right.split_column(self._vllm_table(state), self._queue_table(state))
+        layout["middle"].split_row(left, right)
         layout["bottom"].update("Ctrl-C to exit  |  [dim]refresh every ~30s[/dim]")
         return layout
 
@@ -200,6 +219,7 @@ class WatcherDisplay:
         table.add_column("Status")
         table.add_column("Elapsed", justify="right")
         table.add_column("Cost", justify="right")
+        table.add_column("Last Action", style="dim")
         for w in state.workers:
             cost_str = ""
             if w.mode == "cloud":
@@ -212,9 +232,10 @@ class WatcherDisplay:
                 w.status,
                 WatcherDisplay._format_elapsed(w.elapsed_s),
                 cost_str,
+                w.last_action,
             )
         if not state.workers:
-            table.add_row("—", "—", "No active workers", "—", "—")
+            table.add_row("—", "—", "No active workers", "—", "—", "—")
         return table
 
     @staticmethod
@@ -247,6 +268,50 @@ class WatcherDisplay:
             table.add_row("—", "—", "No tracked PRs", "—")
         return table
 
+    @staticmethod
+    def _vllm_table(state: TUIState) -> Table:
+        table = Table(title="vLLM", show_header=True, expand=True)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", justify="right")
+        metrics = state.vllm_metrics
+        if metrics is None:
+            table.add_row("—", "No vLLM running")
+        else:
+            gen = metrics.get("vllm:generation_tokens_total") or 0
+            prompt = metrics.get("vllm:prompt_tokens_total") or 0
+            total_gen = gen + prompt
+            # Queue depth = num_preemptions (proxy for pending requests)
+            preempt = metrics.get("vllm:num_preemptions_total") or 0
+            hit_ratio = metrics.get("vllm:prefix_cache_hit_ratio")
+            # Show throughput if we have token data
+            if total_gen > 0:
+                table.add_row("Tokens", f"{total_gen:,.0f}")
+            else:
+                table.add_row("Tokens", "—")
+            table.add_row("Queue Depth", f"{int(preempt)}" if preempt else "—")
+            if hit_ratio is not None:
+                table.add_row("Cache Hit Ratio", f"{hit_ratio:.0%}")
+            else:
+                table.add_row("Cache Hit Ratio", "—")
+            ttft_mean = metrics.get("vllm:ttft_mean_seconds")
+            if ttft_mean is not None and ttft_mean > 0:
+                table.add_row("TTFT Mean", f"{ttft_mean:.3f}s")
+            else:
+                table.add_row("TTFT Mean", "—")
+        return table
+
+    @staticmethod
+    def _queue_table(state: TUIState) -> Table:
+        qs = state.queue_state
+        table = Table(title="Queue", show_header=True, expand=True)
+        table.add_column("State", style="cyan")
+        table.add_column("Count", justify="right")
+        table.add_row("ReadyForLocal", str(qs.ready))
+        table.add_row("WaitingForDeps", str(qs.waiting))
+        table.add_row("InProgressLocal", str(qs.in_progress))
+        table.add_row("Blocked", str(qs.blocked))
+        return table
+
     # ------------------------------------------------------------------
     # Line-based fallback
     # ------------------------------------------------------------------
@@ -260,9 +325,10 @@ class WatcherDisplay:
                 cost_info = f"  cost=${w.cloud_cost:.4f}"
             elif w.mode == "local":
                 cost_info = f"  saved=${w.local_saved:.4f}"
+            last_act = f" action={w.last_action}" if w.last_action else ""
             lines.append(
                 f"[WOR-{w.ticket_id}] {w.mode} {w.status} "
-                f"{self._format_elapsed(w.elapsed_s)}{cost_info}"
+                f"{self._format_elapsed(w.elapsed_s)}{cost_info}{last_act}"
             )
         # PR tracking
         for pr in state.tracked_prs:
