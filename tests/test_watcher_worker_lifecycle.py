@@ -22,6 +22,7 @@ from app.core.watcher.watcher import (
     _WORKER_HEARTBEAT_TIMEOUT_SECONDS,
     Watcher,
 )
+from app.core.watcher.watcher_heartbeat import emit_heartbeat
 from app.core.watcher.watcher_types import ActiveWorker
 
 # ---------------------------------------------------------------------------
@@ -457,7 +458,11 @@ def test_emit_heartbeat_no_active_workers() -> None:
     w._local_active.clear()
     w._cloud_active.clear()
 
-    w._emit_heartbeat()
+    emit_heartbeat(
+        w._local_active,
+        w._cloud_active,
+        w._heartbeat,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +479,11 @@ def test_emit_heartbeat_local_worker_emits_after_30s() -> None:
     worker.start_time = _time.monotonic() - 45
     w._local_active.append(worker)
 
-    w._emit_heartbeat()
+    emit_heartbeat(
+        w._local_active,
+        w._cloud_active,
+        w._heartbeat,
+    )
 
     # Should have populated the heartbeat dict
     assert "WOR-HEART" in w._heartbeat
@@ -494,7 +503,11 @@ def test_emit_heartbeat_tick_boundary_no_duplicate() -> None:
     w._local_active.append(worker)
     w._heartbeat["WOR-BND"] = (70, 2)  # already ticked at 30s boundary
 
-    w._emit_heartbeat()
+    emit_heartbeat(
+        w._local_active,
+        w._cloud_active,
+        w._heartbeat,
+    )
 
     # Heartbeat should still be at tick 2 (no crossing to 3 at 70s)
     assert w._heartbeat["WOR-BND"][1] == 2

@@ -8,11 +8,11 @@ Usage (via CLI):
     python -m app.cli watcher [--worker-mode cloud|local]
 
 Worker modes:
-    cloud   â€” spawn claude with clean env (no ANTHROPIC_BASE_URL); routes to
+    cloud   — spawn claude with clean env (no ANTHROPIC_BASE_URL); routes to
               Anthropic API unmodified.
-    local   â€” spawn claude --model claude-sonnet-4-6 via LiteLLM proxy on
+    local   — spawn claude --model claude-sonnet-4-6 via LiteLLM proxy on
               localhost:8082; auto-starts proxy if not already running.
-    default â€” respect manifest.implementation_mode per ticket.
+    default — respect manifest.implementation_mode per ticket.
 """
 
 from __future__ import annotations
@@ -29,9 +29,10 @@ from typing import Any, NamedTuple
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
-from app.core.metrics import CostRollup, MetricsStore
+from app.core.metrics import MetricsStore
 
 from .watcher_finalize import finalize_worker, safe_set_state
+from .watcher_heartbeat import build_tui_state, emit_heartbeat, emit_idle_line
 from .watcher_helpers import (
     check_allowed_paths_overlap,
     resolve_effective_mode,
@@ -51,7 +52,7 @@ from .watcher_signals import (
     write_pid_file,
 )
 from .watcher_subprocess import launch_worker
-from .watcher_tui import TrackedPR, TUIState, WatcherDisplay, WorkerState
+from .watcher_tui import TrackedPR, WatcherDisplay
 from .watcher_types import (
     _ARTIFACTS_DIR,
     _CLAUDE_DIR,
@@ -69,7 +70,7 @@ from .watcher_worktrees import (
 logger = logging.getLogger(__name__)
 
 # WOR-381 + WOR-388: heartbeat-based stuck-worker detection. The metric is
-# "time since the worker's stream-json log file was last written" â€” a stuck
+# "time since the worker's stream-json log file was last written" — a stuck
 # worker (network hang, deadlocked vLLM, infinite tool-result wait) does not
 # emit new lines, while a slow-but-progressing worker keeps writing.
 # Wall-time bounds proved unworkable: app.db's 33-session distribution shows
@@ -78,12 +79,12 @@ logger = logging.getLogger(__name__)
 #
 # WOR-388 post-mortem (2026-05-05): the original 15-min threshold killed
 # WOR-369 (23m wall, 1.3M input) and WOR-362 (26m wall, 2.7M input)
-# mid-decode after their last log event. Both were legitimately reasoning â€”
+# mid-decode after their last log event. Both were legitimately reasoning —
 # log tails ended mid-Read tool-result with no `"type":"result"` event, and
 # both artifacts ended up tagged `no_diff_against_base` because the kill
 # preceded the worker's edit phase. Single-decode silences of 15-30 min are
 # plausible for effort=high refactor sessions on qwen3-coder when extended-
-# thinking blocks run long. Threshold raised to 90 min â€” well above any
+# thinking blocks run long. Threshold raised to 90 min — well above any
 # legitimate single-event-gap we have forensic evidence for (the WOR-322
 # 76-min total run had no individual gap exceeding ~10 min). 90 min still
 # catches genuinely-stuck workers within a single overnight cycle. Override
@@ -233,7 +234,14 @@ class Watcher:
                 self._reap_pool(self._local_active)
                 self._reap_pool(self._cloud_active)
                 if self._display is not None:
-                    self._display.update_state(self._build_tui_state())
+                    self._display.update_state(
+                        build_tui_state(
+                            self._local_active,
+                            self._cloud_active,
+                            self._metrics,
+                            self._tracked_prs,
+                        )
+                    )
                 if not self._draining:
                     self._promote_waiting_tickets()
                 local_has_capacity = len(self._local_active) < self._max_local_workers
@@ -249,8 +257,21 @@ class Watcher:
                 if not self._running:
                     break
                 time.sleep(self._POLL_INTERVAL)
-                self._emit_idle_line()
-                self._emit_heartbeat()
+                new_idle = emit_idle_line(
+                    len(self._local_active),
+                    len(self._cloud_active),
+                    self._max_local_workers,
+                    self._max_cloud_workers,
+                    self._repo_root,
+                    self._last_idle_state,
+                )
+                if new_idle is not None:
+                    self._last_idle_state = new_idle
+                self._heartbeat = emit_heartbeat(
+                    self._local_active,
+                    self._cloud_active,
+                    self._heartbeat,
+                )
                 if maybe_warn_softstop_stuck(
                     self._draining,
                     self._draining_since,
@@ -266,108 +287,6 @@ class Watcher:
             if self._display is not None:
                 self._display.stop()
             logger.info("Watcher stopped cleanly")
-
-    def _emit_idle_line(self) -> None:
-        """Emit a single idle line when the watcher has nothing active to do.
-
-        Only re-emits when state changes (pool sizes / waiting count / capacity).
-        """
-        now_local = len(self._local_active)
-        now_cloud = len(self._cloud_active)
-        has_local = now_local < self._max_local_workers
-        has_cloud = now_cloud < self._max_cloud_workers
-        has_capacity = has_local or has_cloud
-
-        # Count WaitingForDeps manifests
-        artifacts_root = self._repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
-        waiting = 0
-        if artifacts_root.exists():
-            for mp in artifacts_root.glob(_MANIFEST_GLOB):
-                try:
-                    m = ExecutionManifest.from_json(mp)
-                except (OSError, ValueError):
-                    # Missing, unreadable, or invalid manifest â€” skip silently;
-                    # idle-line counter does not need to surface every malformed file.
-                    continue
-                if m.status == "WaitingForDeps":
-                    waiting += 1
-
-        state = (now_local, now_cloud, waiting, has_capacity)
-        if state == self._last_idle_state:
-            return
-        self._last_idle_state = state
-
-        logger.info(
-            "Watcher idle â€” %d/%d local, %d/%d cloud, %d waiting for blockers, "
-            "polling every %ds",
-            now_local,
-            self._max_local_workers,
-            now_cloud,
-            self._max_cloud_workers,
-            waiting,
-            self._POLL_INTERVAL,
-        )
-
-    def _emit_heartbeat(self) -> None:
-        """Emit a per-worker heartbeat every ~30s with elapsed time."""
-        all_active: list[ActiveWorker] = []
-        all_active.extend(self._local_active)
-        all_active.extend(self._cloud_active)
-
-        for worker in all_active:
-            elapsed = time.monotonic() - worker.start_time
-            key = worker.ticket_id
-
-            if key in self._heartbeat:
-                _, last_tick = self._heartbeat[key]
-                # Emit when we cross a new 30-second boundary
-                new_tick = int(elapsed / 30)
-                if new_tick <= last_tick:
-                    continue
-                self._heartbeat[key] = (elapsed, new_tick)
-            else:
-                # First emission â€” start at the first 30-second boundary
-                tick = int(elapsed / 30)
-                if tick < 1:
-                    continue
-                self._heartbeat[key] = (elapsed, tick)
-
-            elapsed_str = format_elapsed(elapsed)
-            logger.info("[%s] %s", worker.ticket_id, elapsed_str)
-
-    # ------------------------------------------------------------------
-    # TUI state
-    # ------------------------------------------------------------------
-
-    def _build_tui_state(self) -> TUIState:
-        """Build the current TUI snapshot for the display."""
-        workers: list[WorkerState] = []
-        for w in self._local_active:
-            elapsed = time.monotonic() - w.start_time
-            workers.append(
-                WorkerState(
-                    ticket_id=w.ticket_id,
-                    mode="local",
-                    status="running",
-                    elapsed_s=elapsed,
-                )
-            )
-        for w in self._cloud_active:
-            elapsed = time.monotonic() - w.start_time
-            workers.append(
-                WorkerState(
-                    ticket_id=w.ticket_id,
-                    mode="cloud",
-                    status="running",
-                    elapsed_s=elapsed,
-                )
-            )
-        rollups: dict[str, CostRollup] = {}
-        for period in ("today", "week", "all"):
-            rollups[period] = self._metrics.get_cost_rollup(period)
-        return TUIState(
-            workers=workers, cost_rollups=rollups, tracked_prs=self._tracked_prs
-        )
 
     # ------------------------------------------------------------------
     # WaitingForDeps promotion
@@ -431,7 +350,7 @@ class Watcher:
 
             if self._all_blockers_satisfied(manifest, states):
                 logger.info(
-                    "All blockers for %s satisfied â€” promoting to ReadyForLocal",
+                    "All blockers for %s satisfied - promoting to ReadyForLocal",
                     manifest.ticket_id,
                 )
                 self._transition_waiting_manifest(
@@ -475,7 +394,7 @@ class Watcher:
         state_type: str,
     ) -> None:
         logger.warning(
-            "Blocker %s for %s is %s â€” moving dependent to Backlog",
+            "Blocker %s for %s is %s - moving dependent to Backlog",
             blocker_id,
             manifest.ticket_id,
             state_type,
@@ -487,7 +406,7 @@ class Watcher:
         try:
             msg = (
                 f"Predecessor {blocker_id} moved to {state_type}"
-                " â€” manual intervention required."
+                " - manual intervention required."
             )
             self._linear.post_comment(manifest.linear_id, msg)
         except Exception as exc:
@@ -518,7 +437,7 @@ class Watcher:
             self._linear.post_comment(
                 manifest.linear_id,
                 f"All predecessors merged. `{manifest.ticket_id}` promoted to "
-                f"ReadyForLocal â€” watcher will pick up on next poll.",
+                f"ReadyForLocal - watcher will pick up on next poll.",
             )
         except Exception as exc:
             logger.warning(
@@ -549,7 +468,7 @@ class Watcher:
             ]
             if any(label.lower() == "spike" for label in labels):
                 logger.warning(
-                    "Skipping %s â€” Spike label detected; implement interactively",
+                    "Skipping %s - Spike label detected; implement interactively",
                     ticket_id,
                 )
                 continue
@@ -569,15 +488,15 @@ class Watcher:
         # Prerequisite checks
         open_blockers = self._linear.get_open_blockers(linear_id)
         if open_blockers:
-            logger.info("Skipping %s â€” open blockers: %s", ticket_id, open_blockers)
+            logger.info("Skipping %s - open blockers: %s", ticket_id, open_blockers)
             return
 
-        # Manifest-based blocker check â€” defense-in-depth alongside Linear check.
+        # Manifest-based blocker check - defense-in-depth alongside Linear check.
         for blocker_id in manifest.blocked_by_tickets:
             state_type = self._linear.get_issue_state_type(blocker_id)
             if state_type not in DONE_STATE_TYPES:
                 logger.info(
-                    "Skipping %s â€” manifest declares unmerged blocker %s (state=%s)",
+                    "Skipping %s - manifest declares unmerged blocker %s (state=%s)",
                     ticket_id,
                     blocker_id,
                     state_type,
@@ -627,7 +546,7 @@ class Watcher:
         if conflicts:
             reason = f"overlap:{','.join(conflicts)}"
             reason_msg = (
-                "Deferring %s â€” allowed_paths overlap with active workers: %s"
+                "Deferring %s - allowed_paths overlap with active workers: %s"
                 % (ticket_id, conflicts)
             )
             if suppress_dedup(ticket_id, reason, reason_msg, self._last_deferral_state):
@@ -640,7 +559,7 @@ class Watcher:
 
         if effective_mode == "local":
             if len(self._local_active) >= self._max_local_workers:
-                reason_msg = "Deferring %s â€” local pool full (%d/%d)" % (
+                reason_msg = "Deferring %s - local pool full (%d/%d)" % (
                     ticket_id,
                     len(self._local_active),
                     self._max_local_workers,
@@ -655,7 +574,7 @@ class Watcher:
                 return
         else:
             if len(self._cloud_active) >= self._max_cloud_workers:
-                reason_msg = "Deferring %s â€” cloud pool full (%d/%d)" % (
+                reason_msg = "Deferring %s - cloud pool full (%d/%d)" % (
                     ticket_id,
                     len(self._cloud_active),
                     self._max_cloud_workers,
@@ -671,7 +590,7 @@ class Watcher:
 
         if effective_mode == "local":
             if not self._services.probe_vllm_health():
-                reason_msg = "Deferring %s â€” vLLM not ready yet" % ticket_id
+                reason_msg = "Deferring %s - vLLM not ready yet" % ticket_id
                 if suppress_dedup(
                     ticket_id,
                     "vllm_not_ready",
@@ -692,7 +611,7 @@ class Watcher:
             manifest.ticket_state_map.in_progress_local,
             ticket_id,
         )
-        logger.info("Starting worker for %s â€” mode=%s", ticket_id, effective_mode)
+        logger.info("Starting worker for %s - mode=%s", ticket_id, effective_mode)
 
         backed_up_plans = backup_plan_files()
         process = launch_worker(
@@ -722,7 +641,7 @@ class Watcher:
     def _reap_pool(self, workers: list[ActiveWorker]) -> str:
         """Poll each worker; finalize completed ones in-place.
 
-        Mutates ``workers`` directly â€” finished workers are removed from the
+        Mutates ``workers`` directly - finished workers are removed from the
         list even if their ``finalize_worker`` call raises. This prevents
         ghost slots that would otherwise block future dispatch (WOR-334).
 
@@ -735,7 +654,7 @@ class Watcher:
             rc = worker.process.poll()
             if rc is None:
                 continue
-            # Worker finished â€” mark its slot for release BEFORE finalize so
+            # Worker finished - mark its slot for release BEFORE finalize so
             # an exception inside finalize cannot leak the slot.
             finished_indices.append(i)
             try:
@@ -744,7 +663,7 @@ class Watcher:
                 logger.error(
                     "finalize_worker raised for %s: %s. Worker slot freed; "
                     "result.json / last_failure.json may be incomplete and "
-                    "Linear state may not have been advanced â€” investigate "
+                    "Linear state may not have been advanced - investigate "
                     "manually.",
                     worker.ticket_id,
                     exc,
@@ -816,14 +735,14 @@ class Watcher:
 
         Each worker tees its stream-json log to
         ``<worktree>/.claude/worker_<ticket_lower>.log``. While the model is
-        making any progress â€” emitting tool calls, receiving tool results,
-        producing assistant text â€” the file's mtime advances. A genuinely
+        making any progress - emitting tool calls, receiving tool results,
+        producing assistant text - the file's mtime advances. A genuinely
         stuck worker (vLLM unresponsive, tool subprocess hung, infinite
         deadlock) stops writing.
 
         Two-stage shutdown:
 
-        1. Log idle (now âˆ’ mtime) exceeds ``_WORKER_HEARTBEAT_TIMEOUT_SECONDS``
+        1. Log idle (now - mtime) exceeds ``_WORKER_HEARTBEAT_TIMEOUT_SECONDS``
            and the process is still alive: send SIGTERM via
            ``process.terminate()``; set ``terminated_at`` to wall-clock now.
         2. ``terminated_at`` is set and the grace period has passed without
@@ -845,7 +764,7 @@ class Watcher:
             try:
                 last_write = log_path.stat().st_mtime
             except OSError:
-                # Log not yet written â€” let the worker warm up. Process
+                # Log not yet written - let the worker warm up. Process
                 # reap on later cycles handles the case where it never does.
                 continue
 
@@ -857,7 +776,7 @@ class Watcher:
                 and worker.process.poll() is None
             ):
                 logger.warning(
-                    "Worker %s heartbeat stalled â€” log idle for %.0fs "
+                    "Worker %s heartbeat stalled - log idle for %.0fs "
                     "(threshold %ds). Sending SIGTERM. SIGKILL grace: %ds.",
                     worker.ticket_id,
                     idle_seconds,
@@ -877,7 +796,7 @@ class Watcher:
                 and worker.process.poll() is None
             ):
                 logger.error(
-                    "Worker %s did not exit within %ds of SIGTERM â€” sending SIGKILL.",
+                    "Worker %s did not exit within %ds of SIGTERM - sending SIGKILL.",
                     worker.ticket_id,
                     _WORKER_KILL_GRACE_SECONDS,
                 )
@@ -945,12 +864,12 @@ class Watcher:
             succeeded = [t for t in self._processed_tickets if t.succeeded]
             if failed:
                 logger.warning(
-                    "All tickets processed — %d failed, %d succeeded",
+                    "All tickets processed - %d failed, %d succeeded",
                     len(failed),
                     len(succeeded),
                 )
             else:
-                logger.info("All sub-tickets processed — epic complete")
+                logger.info("All sub-tickets processed - epic complete")
             logger.info("%-15s  %-55s  %s", "Ticket", "PR URL", "Elapsed")
             for t in self._processed_tickets:
                 if not t.succeeded:
