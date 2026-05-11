@@ -18,6 +18,7 @@ from app.core.watcher.ticket_status import (
     fetch_ticket_status,
 )
 from app.core.watcher.watcher_daemon import (
+    _build_child_argv,
     launch_detached,
     launch_in_new_terminal,
     load_env_file,
@@ -45,10 +46,14 @@ def _run_watcher(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # Capture extra CLI flags (everything after the subcommand) and forward
+    # them to the spawned child, stripping --detach/--visible first.
+    extra = _build_child_argv(sys.argv[3:]) if len(sys.argv) > 3 else None
+
     if args.visible:
-        return launch_in_new_terminal()
+        return launch_in_new_terminal(extra_args=extra)
     if args.detach:
-        pid = launch_detached()
+        pid = launch_detached(extra_args=extra)
         log_path = Path.cwd() / _CLAUDE_DIR_NAME / "watcher.log"
         print(
             f"Watcher daemon started (PID {pid}). Logs: {log_path}",
