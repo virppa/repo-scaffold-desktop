@@ -79,7 +79,80 @@ Check whether this ticket has a parent epic (`parentId` from `get_issue` relatio
 - Warn: "This ticket has no parent epic — branch will target main instead of an epic branch."
 - Continue with the normal main-targeting flow (step 3 will branch off main)
 
-### 0.55. Epic-size charter check (run when parent epic exists)
+### 0.56. Cross-epic branch detection (WOR-419)
+
+The principle: **Linear parentId describes the ticket; git base_branch describes
+the shipping unit. They can diverge.** (WOR-419)
+
+Detect the active epic branch in flight and prefer it for the current ticket.
+This lets sub-tickets target whichever epic branch is active rather than always
+using their own Linear-parent epic branch — which may be a different epic in
+flight.
+
+Step — list all epic branches and check their Linear-parent status:
+```bash
+# 1. List epic branches on origin
+epic_branches=$(git ls-remote --heads origin 'epic/*' | sed 's|.*refs/heads/||' | sort)
+
+# 2. Determine which epic branches are "active"
+active_epics=""
+for branch in $epic_branches; do
+  # Extract the epic ticket ID from the branch (epic/wor-NNN-slug → WOR-NNN)
+  epic_id=$(echo "$branch" | sed 's|epic/wor-\([0-9]*\)-.*|\WOR-\1|')
+  # Fetch the parent epic issue via Linear MCP
+  parent_issue=$(get_issue "$epic_id")
+  # Check if parent is "In Review" → if so, this epic is NOT active
+  parent_state=$(echo "$parent_issue" | jq -r '.state.name')
+  if [ "$parent_state" = "In Review" ]; then
+    continue
+  fi
+  # Check if any direct child is InProgressLocal or MergedToEpic
+  children_count=$(list_issues(parentId: "$epic_id") | jq '[.[] | select(.state.type == "InProgressLocal" or .state.type == "MergedToEpic")] | length')
+  if [ "$children_count" -gt 0 ]; then
+    active_epics="$active_epics $branch"
+  fi
+done
+
+# 3. Apply the rule:
+#    - If exactly ONE active epic exists AND current ticket's Linear-parent
+#      epic is NOT itself active → default base_branch to the active epic
+#    - If MULTIPLE active epics exist → fall back to current behavior (use
+#      Linear-parent epic branch), surface note to architect
+#    - If NO active epic exists → use default branch resolution
+
+# Check if the current ticket's Linear-parent epic is in the active list
+parent_epic_base="${manifest.base_branch:-}"
+is_parent_active=false
+for active in $active_epics; do
+  if [ "$active" = "$parent_epic_base" ]; then
+    is_parent_active=true
+    break
+  fi
+done
+
+if [ "$is_parent_active" = "false" ] && [ -n "$active_epics" ]; then
+  active_count=$(echo "$active_epics" | wc -w)
+  if [ "$active_count" -eq 1 ]; then
+    echo "Preferring active epic branch $active_epics (parent epic $parent_epic_base is not in-flight)"
+    # Use this branch as base_branch instead of the Linear-parent epic
+    base_branch="$active_epics"
+  elif [ "$active_count" -gt 1 ]; then
+    echo "WARNING: Multiple active epic branches detected ($active_epics). Using Linear-parent epic branch. Manual intervention may be needed."
+  fi
+fi
+```
+
+Architect-facing: if `is_parent_active` is false and `active_count == 1`, explain:
+*"This ticket's Linear parent is epic <parent> but the active epic branch in-flight
+is <active>. Defaulting base_branch to <active> — the shipping unit diverges from
+the Linear-parent (WOR-419 principle)."*
+
+**Edge cases:**
+- If MULTIPLE active epic branches exist → fall back to current behavior; surface note
+- If NO active epic branch exists → use default branch resolution (Linear-parent)
+- If the ticket has no parent epic → skip this check entirely
+
+### 0.57. Epic-size charter check (run when parent epic exists)
 
 When the ticket has a parent epic, count the parent's sub-tickets via `list_issues(parentId: <epicId>)` and inspect the parent description for a `**Charter:** <sentence>` line and a `**Sub-ticket budget:** <N>` line.
 

@@ -10,6 +10,7 @@ plus the dedup-on-repeat-defer edge case.
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -496,3 +497,170 @@ def test_start_ticket_vllm_not_ready_dedup_logs_warning_once(
 
     vllm_warnings = [r for r in caplog.records if "vLLM not ready" in r.message]
     assert len(vllm_warnings) == 1  # second call is suppressed
+
+
+# ---------------------------------------------------------------------------
+# WOR-419 — epic-branch overlap defense gate at dispatch
+# ---------------------------------------------------------------------------
+
+
+def test_start_ticket_defers_when_another_epic_branch_already_in_flight(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Dispatch to a new epic/* branch is refused when another epic/* branch
+    is already in-flight on a local worker."""
+    manifest = make_manifest(
+        implementation_mode="local",
+        base_branch="epic/wor-419-new-epic",
+    )
+    # Create an active worker on a different epic branch
+    active_epic_manifest = make_manifest(
+        implementation_mode="local",
+        base_branch="epic/wor-335-active",
+    )
+    from app.core.watcher.watcher_types import ActiveWorker
+
+    local_active: list[ActiveWorker] = [
+        ActiveWorker(
+            ticket_id="WOR-335-A",
+            linear_id="fake-linear-id-335",
+            manifest=active_epic_manifest,
+            worktree_path=tmp_path / "worktree_335",
+            process=MagicMock(spec=subprocess.Popen),
+        )
+    ]
+    linear = MagicMock()
+    services = _services()
+    cloud_active: list = []
+
+    with (
+        patch("app.core.watcher.dispatch.create_worktree") as mock_create,
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
+    ):
+        start_ticket(
+            manifest=manifest,
+            linear=linear,
+            services=services,
+            worker_verbose=False,
+            _local_active=local_active,
+            _cloud_active=cloud_active,
+            max_cloud_workers=3,
+            _repo_root=tmp_path,
+            _processed_tickets=[],
+            linear_id="fake-linear-id-419",
+            ticket_id="WOR-419",
+            _escalation_policy=MagicMock(),
+            _dedup_state={},
+        )
+
+    mock_create.assert_not_called()
+    assert len(local_active) == 1  # no worker appended, original preserved
+    # Linear comment should have been posted
+    linear.post_comment.assert_called_once()
+    body = linear.post_comment.call_args[0][1]
+    assert "epic branch" in body.lower()
+    assert "epic/wor-335-active" in body
+    assert "epic/wor-419-new-epic" in body
+    assert any("epic branch" in r.message for r in caplog.records)
+
+
+def test_start_ticket_proceeds_for_same_epic_branch(
+    tmp_path: Path,
+) -> None:
+    """Dispatch within the SAME epic branch is unaffected — normal dispatch path."""
+    epic_manifest = make_manifest(
+        implementation_mode="local",
+        base_branch="epic/wor-335-active",
+    )
+    from app.core.watcher.watcher_types import ActiveWorker
+
+    existing_worker_manifest = make_manifest(
+        implementation_mode="local",
+        base_branch="epic/wor-335-active",
+    )
+    local_active: list[ActiveWorker] = [
+        ActiveWorker(
+            ticket_id="WOR-335-A",
+            linear_id="fake-linear-id-335",
+            manifest=existing_worker_manifest,
+            worktree_path=tmp_path / "worktree_335",
+            process=MagicMock(spec=subprocess.Popen),
+        )
+    ]
+    linear = MagicMock()
+    services = _services()
+    cloud_active: list = []
+
+    with (
+        patch(
+            "app.core.watcher.dispatch.create_worktree",
+            return_value=tmp_path / "worktree",
+        ),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.dispatch.launch_worker", return_value=MagicMock()),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+    ):
+        start_ticket(
+            manifest=epic_manifest,
+            linear=linear,
+            services=services,
+            worker_verbose=False,
+            _local_active=local_active,
+            _cloud_active=cloud_active,
+            max_cloud_workers=3,
+            _repo_root=tmp_path,
+            _processed_tickets=[],
+            linear_id="fake-linear-id-419",
+            ticket_id="WOR-419",
+            _escalation_policy=MagicMock(),
+            _dedup_state={},
+        )
+
+    assert len(local_active) == 2  # both the existing and new worker
+    linear.post_comment.assert_not_called()
+
+
+def test_start_ticket_unaffected_when_no_epic_workers_active(
+    tmp_path: Path,
+) -> None:
+    """A non-epic base_branch dispatches normally when no epic workers are active."""
+    manifest = make_manifest(
+        implementation_mode="local",
+        base_branch="main",
+    )
+    local_active: list = []  # no active workers at all
+    cloud_active: list = []
+    linear = MagicMock()
+    services = _services()
+
+    with (
+        patch(
+            "app.core.watcher.dispatch.create_worktree",
+            return_value=tmp_path / "worktree",
+        ),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.dispatch.launch_worker", return_value=MagicMock()),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+    ):
+        start_ticket(
+            manifest=manifest,
+            linear=linear,
+            services=services,
+            worker_verbose=False,
+            _local_active=local_active,
+            _cloud_active=cloud_active,
+            max_cloud_workers=3,
+            _repo_root=tmp_path,
+            _processed_tickets=[],
+            linear_id="fake-linear-id",
+            ticket_id="WOR-10",
+            _escalation_policy=MagicMock(),
+            _dedup_state={},
+        )
+
+    assert len(local_active) == 1
+    linear.post_comment.assert_not_called()
