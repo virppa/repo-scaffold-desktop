@@ -11,11 +11,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
 
 from .watcher_finalize import safe_set_state
 from .watcher_helpers import (
     capture_vllm_metrics,
+    check_allowed_paths_overlap,
     count_main_ahead_of_epic,
     resolve_effective_mode,
     suppress_dedup,
@@ -55,9 +57,23 @@ def start_ticket(
     _escalation_policy: object,
     _dedup_state: dict[str, str],
 ) -> None:
-    """Execute the full ticket-start flow extracted from Watcher._start_ticket."""
-    # Prerequisite checks (open_blockers + overlap) are handled by
-    # Watcher._start_ticket before calling this function.
+    """Run the full ticket-start flow (WOR-431: prereqs + dispatch)."""
+    # Prerequisite checks (WOR-431: moved here from Watcher._start_ticket
+    # so dispatch.start_ticket is fully self-contained).
+    open_blockers = linear.get_open_blockers(linear_id)
+    if open_blockers:
+        logger.info("Skipping %s - open blockers: %s", ticket_id, open_blockers)
+        return
+    for blocker_id in manifest.blocked_by_tickets:
+        state_type = linear.get_issue_state_type(blocker_id)
+        if state_type not in DONE_STATE_TYPES:
+            logger.info(
+                "Skipping %s - manifest declares unmerged blocker %s (state=%s)",
+                ticket_id,
+                blocker_id,
+                state_type,
+            )
+            return
 
     # WOR-419: defense-in-depth — refuse to spawn a worker on a new epic/*
     # branch when another epic/* branch is already in flight. This prevents
@@ -155,6 +171,21 @@ def start_ticket(
                 f"  git push"
             ),
         )
+        return
+
+    # WOR-431: path-overlap check (was in Watcher._start_ticket pre-#886).
+    # Runs AFTER the WOR-419 epic-branch gate, WOR-378 manifest gates,
+    # and WOR-373 stale-epic check to preserve original ordering.
+    all_active = _local_active + _cloud_active
+    conflicts = check_allowed_paths_overlap(all_active, manifest)
+    if conflicts:
+        reason = f"overlap:{','.join(conflicts)}"
+        reason_msg = "Deferring %s - allowed_paths overlap with active workers: %s" % (
+            ticket_id,
+            conflicts,
+        )
+        if suppress_dedup(ticket_id, reason, reason_msg, _dedup_state):
+            logger.info(reason_msg)
         return
 
     effective_mode = resolve_effective_mode(

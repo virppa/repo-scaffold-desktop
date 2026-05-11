@@ -46,6 +46,8 @@ def test_start_ticket_local_happy_path_appends_to_local_active(tmp_path: Path) -
     """Local-mode dispatch: worktree created, worker launched, appended to local."""
     manifest = make_manifest(implementation_mode="local")
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     local_active: list = []
     cloud_active: list = []
@@ -87,6 +89,8 @@ def test_start_ticket_cloud_happy_path_appends_to_cloud_active(tmp_path: Path) -
     """Cloud-mode dispatch: launches without vLLM probe, appends to cloud_active."""
     manifest = make_manifest(implementation_mode="cloud")
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     local_active: list = []
     cloud_active: list = []
@@ -130,6 +134,8 @@ def test_start_ticket_defers_when_vllm_not_ready(
     """Local dispatch with vLLM unhealthy → defers, logs warning, no worktree."""
     manifest = make_manifest(implementation_mode="local")
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services(vllm_healthy=False)
     local_active: list = []
     cloud_active: list = []
@@ -165,6 +171,8 @@ def test_start_ticket_defers_when_cloud_pool_full(
     """Cloud-mode dispatch with cloud_active at capacity → defers without launching."""
     manifest = make_manifest(implementation_mode="cloud")
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     # Cloud pool already at max
     cloud_active: list = [MagicMock(), MagicMock(), MagicMock()]
@@ -206,6 +214,8 @@ def test_start_ticket_refuses_local_manifest_with_empty_allowed_paths(
     """Local-mode manifest with allowed_paths=[] is refused, ticket sent to Backlog."""
     manifest = make_manifest(implementation_mode="local", allowed_paths=[])
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     local_active: list = []
     cloud_active: list = []
@@ -249,6 +259,8 @@ def test_start_ticket_refuses_manifest_with_empty_required_checks(
     """Manifest with required_checks=[] is refused regardless of mode."""
     manifest = make_manifest(implementation_mode="cloud", required_checks=[])
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     local_active: list = []
     cloud_active: list = []
@@ -300,6 +312,8 @@ def test_start_ticket_refuses_when_epic_too_far_behind_main(
         base_branch="epic/wor-100-stale",
     )
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     local_active: list = []
     cloud_active: list = []
@@ -351,6 +365,8 @@ def test_start_ticket_proceeds_when_epic_within_threshold(
         base_branch="epic/wor-100-fresh",
     )
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     local_active: list = []
     cloud_active: list = []
@@ -403,6 +419,8 @@ def test_start_ticket_does_not_refuse_main_target(
         base_branch="main",
     )
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     local_active: list = []
     cloud_active: list = []
@@ -456,6 +474,8 @@ def test_start_ticket_vllm_not_ready_dedup_logs_warning_once(
     """Two consecutive vLLM-not-ready deferrals log the warning only once."""
     manifest = make_manifest(implementation_mode="local")
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services(vllm_healthy=False)
     local_active: list = []
     cloud_active: list = []
@@ -530,6 +550,8 @@ def test_start_ticket_defers_when_another_epic_branch_already_in_flight(
         )
     ]
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     cloud_active: list = []
 
@@ -568,15 +590,20 @@ def test_start_ticket_proceeds_for_same_epic_branch(
     tmp_path: Path,
 ) -> None:
     """Dispatch within the SAME epic branch is unaffected — normal dispatch path."""
+    # WOR-431: dispatch.start_ticket now does path-overlap checking. Use
+    # distinct allowed_paths so the existing-worker fixture doesn't cause
+    # an unrelated overlap deferral.
     epic_manifest = make_manifest(
         implementation_mode="local",
         base_branch="epic/wor-335-active",
+        allowed_paths=["app/core/new_file.py"],
     )
     from app.core.watcher.watcher_types import ActiveWorker
 
     existing_worker_manifest = make_manifest(
         implementation_mode="local",
         base_branch="epic/wor-335-active",
+        allowed_paths=["app/core/other_file.py"],
     )
     local_active: list[ActiveWorker] = [
         ActiveWorker(
@@ -588,6 +615,8 @@ def test_start_ticket_proceeds_for_same_epic_branch(
         )
     ]
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     cloud_active: list = []
 
@@ -633,6 +662,8 @@ def test_start_ticket_unaffected_when_no_epic_workers_active(
     local_active: list = []  # no active workers at all
     cloud_active: list = []
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
 
     with (
