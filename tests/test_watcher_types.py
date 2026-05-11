@@ -50,7 +50,7 @@ def test_write_and_remove_pid_file(
     monkeypatch.setattr("app.core.watcher.watcher_types._PID_FILE", pid_file)
     monkeypatch.setattr("app.core.watcher.watcher_signals._PID_FILE", pid_file)
 
-    write_pid_file(tmp_path)
+    write_pid_file()
     assert pid_file.exists()
     assert pid_file.read_text(encoding="utf-8") == str(os.getpid())
 

@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover
     sys.exit(1)
 
 from app.core.manifest_builder import (  # noqa: E402
+    ManifestOptions,
     TaxonomyFields,
     build_manifest,
     write_manifest,
@@ -65,9 +66,11 @@ def main() -> int:
                 objective=t["objective"],
                 acceptance_criteria=t["acceptance_criteria"],
                 implementation_constraints=t["implementation_constraints"],
-                tech_stack=t["tech_stack"],
-                raw_extensions=t["raw_extensions"],
-                forbidden_paths_extra=t.get("forbidden_paths_extra", []),
+                options=ManifestOptions(
+                    tech_stack=t["tech_stack"],
+                    raw_extensions=t["raw_extensions"],
+                    forbidden_paths_extra=t.get("forbidden_paths_extra", []),
+                ),
             )
         except Exception as exc:  # noqa: BLE001
             failures.append(f"{ticket_id}: {exc}")

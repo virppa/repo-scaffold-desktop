@@ -398,7 +398,7 @@ def fetch_sonar_findings(branch: str) -> list[str] | None:
             with urllib.request.urlopen(  # nosec B310  # nosemgrep
                 req, timeout=10, context=ctx
             ) as resp:
-                all_severities, total, should_break = _parse_sonar_response(
+                all_severities, _total, should_break = _parse_sonar_response(
                     resp.read(), all_severities, page
                 )
             if should_break:

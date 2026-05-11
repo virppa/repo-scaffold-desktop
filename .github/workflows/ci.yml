@@ -18,6 +18,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # full history for SonarCloud SCM auto-assignment
 
       - name: Set up Python
         uses: actions/setup-python@v6
