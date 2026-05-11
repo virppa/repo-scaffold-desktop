@@ -110,10 +110,10 @@ def test_live_cost_estimate_scales_linearly() -> None:
 
 def test_build_local_worker_log_path_normalises_ticket_id(tmp_path: Path) -> None:
     """Hyphen in ticket_id → underscore in JSONL filename; lives under
-    <worktree>/.claude/logs/."""
+    <worktree>/.claude/logs/. Case is preserved."""
     w = _make_active_worker(ticket_id="WOR-123", worktree_path=tmp_path)
     p = _build_local_worker_log_path(w)
-    assert p == tmp_path / ".claude" / "logs" / "wor_123.jsonl"
+    assert p == tmp_path / ".claude" / "logs" / "WOR_123.jsonl"
 
 
 # ── emit_idle_line ──────────────────────────────────────────────────────────
