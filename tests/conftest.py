@@ -4,12 +4,59 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher.watcher_types import ActiveWorker
+
+# WOR-426: Block any test from spawning a real `claude` subprocess.
+#
+# WOR-312's retry-loop tests in tests/test_watcher_finalize.py mock run_checks
+# but several forgot to mock launch_worker too — the retry path fires for real,
+# spawning a real claude binary against vLLM and writing to production
+# .claude/artifacts/wor_*/ paths. CI passes because the claude binary doesn't
+# exist in CI runners; local devs paid the cost silently.
+#
+# Patch Popen.__init__ rather than the class itself so MagicMock(spec=...) still
+# resolves the real attribute list.
+_REAL_POPEN_INIT = subprocess.Popen.__init__
+
+
+def _extract_first_arg(args: Any) -> str:
+    if isinstance(args, (list, tuple)) and args:
+        return str(args[0])
+    if isinstance(args, str) and args:
+        return args.split()[0]
+    return ""
+
+
+@pytest.fixture(autouse=True)
+def _block_real_claude_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refuse to spawn a real `claude` binary from any test."""
+
+    def _guarded_init(
+        self: subprocess.Popen[Any],
+        args: Any,
+        *rest: Any,
+        **kwargs: Any,
+    ) -> None:
+        first = _extract_first_arg(args)
+        binary = Path(first).name.lower() if first else ""
+        if binary in ("claude", "claude.exe"):
+            raise AssertionError(
+                "Test attempted to spawn real `claude` binary "
+                f"(argv[0]={first!r}). Mock launch_worker via "
+                "patch('app.core.watcher.watcher_finalize.launch_worker', "
+                "return_value=MagicMock()) inside the test's with-block."
+            )
+        _REAL_POPEN_INIT(self, args, *rest, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", _guarded_init)
 
 
 # Session-scoped QApplication fixture (pytest-qt)
