@@ -201,8 +201,9 @@ def test_watch_loop_exits_on_terminal_state(capsys: CapSys) -> None:
     """If status is already in a terminal state, loop exits immediately (no poll)."""
     status = _make_status(state="Done")
     client = MagicMock()
-    rc = _run_ticket_status_watch_loop(client, "WOR-10", status)
-    assert rc is None
+    # _run_ticket_status_watch_loop returns None; assert on side effects
+    # rather than the return value (Sonar S3699 — don't capture a None return).
+    _run_ticket_status_watch_loop(client, "WOR-10", status)
     assert "terminal state: Done" in capsys.readouterr().out
     client.assert_not_called()
 
@@ -219,17 +220,16 @@ def test_watch_loop_polls_then_exits_on_state_change(capsys: CapSys) -> None:
             side_effect=[next_status],
         ),
     ):
-        rc = _run_ticket_status_watch_loop(client, "WOR-10", initial)
-    assert rc is None
+        _run_ticket_status_watch_loop(client, "WOR-10", initial)
     out = capsys.readouterr().out
     assert "polled" in out
     assert "terminal state: MergedToEpic" in out
 
 
-def test_watch_loop_keyboard_interrupt_returns_zero(capsys: CapSys) -> None:
-    """KeyboardInterrupt during sleep cleanly returns 0."""
+def test_watch_loop_keyboard_interrupt_returns_zero() -> None:
+    """KeyboardInterrupt during sleep cleanly returns from the loop."""
     status = _make_status(state="InProgressLocal")
     client = MagicMock()
     with patch("app.cli.operator.time.sleep", side_effect=KeyboardInterrupt):
-        rc = _run_ticket_status_watch_loop(client, "WOR-10", status)
-    assert rc is None
+        # No return value to inspect — assert the call completes cleanly.
+        _run_ticket_status_watch_loop(client, "WOR-10", status)
