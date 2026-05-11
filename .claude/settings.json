@@ -92,6 +92,15 @@
             "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */tests/* ]]; then pytest \"$FILE\" --no-cov --tb=short -q; fi"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/check_patch_paths_post_tool_use.py"
+          }
+        ]
       }
     ],
     "Stop": [
@@ -133,7 +142,8 @@
       "Bash(ls -la *)",
       "Bash(git stash*)",
       "Bash(git stash show*)",
-      "Bash(git stash list)"
+      "Bash(git stash list)",
+      "Bash(python .claude/hooks/check_patch_paths_post_tool_use.py*)"
     ]
   }
 }

@@ -59,39 +59,29 @@ class LinearClient:
 
     def list_ready_for_local(self) -> list[dict[str, Any]]:
         """Return issues whose workflow state is 'ReadyForLocal'."""
+        return self.list_issues_by_state("ReadyForLocal")
+
+    def list_issues_by_state(self, state_name: str) -> list[dict[str, Any]]:
+        """Return issues whose workflow state matches *state_name*."""
         data = self._query(
             """
-            query ListReadyForLocal($teamName: String!, $stateName: String!) {
+            query ListByState($teamName: String!, $stateName: String!) {
               issues(
                 filter: {
                   team: { name: { eq: $teamName } }
                   state: { name: { eq: $stateName } }
                 }
-                first: 50
+                first: 100
               ) {
                 nodes {
                   id
                   identifier
                   title
-                  labels {
-                    nodes {
-                      name
-                    }
-                  }
-                  relations {
-                    nodes {
-                      type
-                      relatedIssue {
-                        identifier
-                        state { type }
-                      }
-                    }
-                  }
                 }
               }
             }
             """,
-            {"teamName": self._team, "stateName": "ReadyForLocal"},
+            {"teamName": self._team, "stateName": state_name},
         )
         return cast(list[dict[str, Any]], data["issues"]["nodes"])
 

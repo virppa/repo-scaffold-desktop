@@ -261,6 +261,43 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # WOR-352: daemon-control gestures.
+    sub.add_parser(
+        "watcher-forcestop",
+        help=(
+            "Signal the watcher daemon to terminate all active workers. "
+            "Commits WIP for each worker, then terminates. Pauses dispatcher."
+        ),
+    )
+    sub.add_parser(
+        "watcher-pause",
+        help=(
+            "Signal the watcher daemon to pause dispatch. Stops accepting "
+            "new dispatches, promotions, and epic completions. Keeps "
+            "reaping and health checks running."
+        ),
+    )
+    sub.add_parser(
+        "watcher-resume",
+        help=(
+            "Remove the pause sentinel so the watcher daemon resumes "
+            "dispatching tickets."
+        ),
+    )
+    kill_p = sub.add_parser(
+        "watcher-kill",
+        help=(
+            "Terminate one or more specific active workers by ticket ID. "
+            "Each line is a ticket ID (e.g. WOR-123). Silently skips "
+            "IDs not found among active workers."
+        ),
+    )
+    kill_p.add_argument(
+        "ticket_ids",
+        nargs="+",
+        help="One or more ticket IDs to kill (e.g. WOR-123 WOR-456).",
+    )
+
     # WOR-337: ticket-status subcommand — structured ticket snapshot.
     ts = sub.add_parser(
         "ticket-status",

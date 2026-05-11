@@ -14,12 +14,20 @@ from typing import TYPE_CHECKING
 
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import CostRollup
-from app.core.watcher.watcher_log_parsing import format_elapsed
-from app.core.watcher.watcher_tui import TrackedPR, TUIState, WorkerState
+from app.core.watcher.watcher_log_parsing import (
+    _parse_worker_usage,
+    format_elapsed,
+    last_tool_call,
+)
+from app.core.watcher.watcher_tui import QueueState, TrackedPR, TUIState, WorkerState
 
 if TYPE_CHECKING:
     from app.core.metrics import MetricsStore
-    from app.core.watcher.watcher_types import ActiveWorker
+    from app.core.watcher.watcher_types import ActiveWorker, LinearClientProtocol
+
+# Estimated cost per output token for local workers (rough vLLM hardware cost).
+# Used to produce a live cost estimate from output_token count during running.
+_LOCAL_COST_PER_TOKEN = 15e-6  # $15 per million output tokens
 
 
 logger = logging.getLogger(__name__)
@@ -136,22 +144,91 @@ def emit_heartbeat(
 # ---------------------------------------------------------------------------
 
 
+def _build_local_worker_log_path(worker: "ActiveWorker") -> Path:
+    """Construct the log path for a local worker's session."""
+    return (
+        worker.worktree_path
+        / _CLAUDE_DIR
+        / "logs"
+        / f"{worker.ticket_id.replace('-', '_')}.jsonl"
+    )
+
+
+def _live_cost_estimate(output_tokens: int | None) -> float:
+    """Estimate dollar cost from output token count."""
+    if output_tokens is None or output_tokens == 0:
+        return 0.0
+    return output_tokens * _LOCAL_COST_PER_TOKEN
+
+
+def _count_queue_items(
+    linear: "LinearClientProtocol",
+    repo_root: Path,
+) -> QueueState:
+    """Count tickets in each queue bucket.
+
+    ReadyForLocal and InProgressLocal come from Linear state queries.
+    WaitingForDeps and Blocked come from manifest status scans.
+    """
+    try:
+        ready = len(linear.list_issues_by_state("ReadyForLocal"))
+    except Exception:
+        ready = 0
+
+    try:
+        in_progress = len(linear.list_issues_by_state("InProgressLocal"))
+    except Exception:
+        in_progress = 0
+
+    # Manifest-sourced: WaitingForDeps and Blocked.
+    waiting = 0
+    blocked = 0
+    artifacts_root = repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
+    if artifacts_root.exists():
+        for mp in artifacts_root.glob(_MANIFEST_GLOB):
+            try:
+                m = ExecutionManifest.from_json(mp)
+            except (OSError, ValueError):
+                continue
+            if m.status == "WaitingForDeps":
+                waiting += 1
+            # Blocked manifests are rare (manual intervention); but check.
+            if m.status == "Blocked":
+                blocked += 1
+
+    return QueueState(
+        ready=ready,
+        waiting=waiting,
+        in_progress=in_progress,
+        blocked=blocked,
+    )
+
+
 def build_tui_state(
     local_active: list["ActiveWorker"],
     cloud_active: list["ActiveWorker"],
     metrics: MetricsStore,
     tracked_prs: list[TrackedPR],
+    *,
+    vllm_metrics: dict[str, float] | None = None,
+    queue_state: QueueState | None = None,
 ) -> TUIState:
     """Build the current TUI snapshot for the display."""
     workers: list[WorkerState] = []
     for w in local_active:
         elapsed = time.monotonic() - w.start_time
+        log_path = _build_local_worker_log_path(w)
+        in_tok, out_tok, _, _ = _parse_worker_usage(log_path)
+        cost = _live_cost_estimate(out_tok)
+        last_act = last_tool_call(log_path)
         workers.append(
             WorkerState(
                 ticket_id=w.ticket_id,
                 mode="local",
                 status="running",
                 elapsed_s=elapsed,
+                local_saved=cost,
+                last_action=last_act,
             )
         )
     for w in cloud_active:
@@ -167,4 +244,10 @@ def build_tui_state(
     rollups: dict[str, CostRollup] = {}
     for period in ("today", "week", "all"):
         rollups[period] = metrics.get_cost_rollup(period)
-    return TUIState(workers=workers, cost_rollups=rollups, tracked_prs=tracked_prs)
+    return TUIState(
+        workers=workers,
+        cost_rollups=rollups,
+        tracked_prs=tracked_prs,
+        vllm_metrics=vllm_metrics,
+        queue_state=queue_state or QueueState(),
+    )

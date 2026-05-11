@@ -115,6 +115,138 @@ def _run_watcher_softstop(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_watcher_forcestop(_args: argparse.Namespace) -> int:
+    """Write the force-stop sentinel to terminate all active workers (WOR-352).
+
+    The daemon polls .claude/watcher.forcestop each cycle: if present, it
+    commits WIP for every active worker, terminates them, and pauses
+    the dispatcher.
+    """
+    claude_dir = Path.cwd() / ".claude"
+    pid_file = claude_dir / "watcher.pid"
+    sentinel = claude_dir / "watcher.forcestop"
+    if not pid_file.exists():
+        print(
+            "Error: watcher daemon not running (no .claude/watcher.pid). "
+            "Force-stop is a no-op when no daemon is active.",
+            file=sys.stderr,
+        )
+        return 1
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+    try:
+        pid_str = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        pid_str = "unknown"
+    print(
+        f"Force-stop requested. Daemon (PID {pid_str}) will terminate "
+        f"all active workers. Sentinel: {sentinel}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _run_watcher_pause(_args: argparse.Namespace) -> int:
+    """Write the pause sentinel to stop dispatch (WOR-352).
+
+    The daemon polls .claude/watcher.pause each cycle: if present, it
+    stops accepting new dispatches, promotions, and epic completions,
+    but keeps reaping workers and health checks running.
+    """
+    claude_dir = Path.cwd() / ".claude"
+    pid_file = claude_dir / "watcher.pid"
+    sentinel = claude_dir / "watcher.pause"
+    if not pid_file.exists():
+        print(
+            "Error: watcher daemon not running (no .claude/watcher.pid). "
+            "Pause is a no-op when no daemon is active.",
+            file=sys.stderr,
+        )
+        return 1
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    sentinel.touch()
+    try:
+        pid_str = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        pid_str = "unknown"
+    print(
+        f"Pause requested. Daemon (PID {pid_str}) will stop dispatching. "
+        f"Sentinel: {sentinel}",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _run_watcher_resume(_args: argparse.Namespace) -> int:
+    """Remove the pause sentinel to resume dispatch (WOR-352)."""
+    claude_dir = Path.cwd() / ".claude"
+    pid_file = claude_dir / "watcher.pid"
+    sentinel = claude_dir / "watcher.pause"
+    if not pid_file.exists():
+        print("Watcher is already running — pause is not active.", file=sys.stderr)
+        return 0
+    if not pid_file.exists():
+        print(
+            "Error: watcher daemon not running (no .claude/watcher.pid). "
+            "Resume is a no-op when no daemon is active.",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        sentinel.unlink()
+        pid_str = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        pid_str = "unknown"
+    print(
+        f"Pause removed. Daemon (PID {pid_str}) will resume dispatching "
+        f"on its next poll cycle.",
+        file=sys.stderr,
+    )
+    return 0
+
+
+def _run_watcher_kill(args: argparse.Namespace) -> int:
+    """Write ticket IDs to the kill sentinel to target specific workers (WOR-352).
+
+    Each line in the sentinel file is a ticket ID (e.g. WOR-123).
+    The daemon terminates matching workers after committing their WIP.
+    """
+    claude_dir = Path.cwd() / ".claude"
+    pid_file = claude_dir / "watcher.pid"
+    sentinel = claude_dir / "watcher.kill"
+    if not pid_file.exists():
+        print(
+            "Error: watcher daemon not running (no .claude/watcher.pid). "
+            "Kill is a no-op when no daemon is active.",
+            file=sys.stderr,
+        )
+        return 1
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    # args.ticket_ids is populated by the parser as nargs="+".
+    ticket_ids = getattr(args, "ticket_ids", None)
+    if not ticket_ids:
+        print(
+            "Error: no ticket IDs specified.",
+            file=sys.stderr,
+        )
+        return 1
+    sentinel.write_text(
+        "\n".join(t.strip().upper() for t in ticket_ids if t.strip()),
+        encoding="utf-8",
+    )
+    try:
+        pid_str = pid_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        pid_str = "unknown"
+    print(
+        f"Kill requested for {len(ticket_ids)} ticket(s): "
+        f"{', '.join(t.upper() for t in ticket_ids)}. "
+        f"Daemon (PID {pid_str}) will process on next poll. Sentinel: {sentinel}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _run_metrics(args: argparse.Namespace) -> int:
     if args.metrics_cmd == "browse":
         db_path = MetricsStore.get_db_path()

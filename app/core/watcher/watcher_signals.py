@@ -17,6 +17,9 @@ from typing import TYPE_CHECKING, Any, Callable
 from app.core.watcher.watcher_types import (
     _CLAUDE_DIR,
     _PID_FILE,
+    _WATCHER_FORCESTOP_SENTINEL_NAME,
+    _WATCHER_KILL_SENTINEL_NAME,
+    _WATCHER_PAUSE_SENTINEL_NAME,
     _WORKTREE_BASE,
     LinearClientProtocol,
 )
@@ -159,7 +162,7 @@ def maybe_warn_softstop_stuck(
     """Log a one-shot WARNING if drain has been pending too long.
 
     Returns ``True`` if the warning was logged (i.e. ``softstop_warned_stuck``
-    should be set afterwards), ``False`` otherwise.
+    should be afterwards), ``False`` otherwise.
     """
     if not draining:
         return False
@@ -306,3 +309,95 @@ def terminate_overrun_workers(
         if send_sigterm_if_stalled(worker, idle_seconds, now_wall):
             continue
         send_sigkill_if_grace_expired(worker, idle_seconds, now_wall, linear)
+
+
+# ---------------------------------------------------------------------------
+# Force-stop sentinel path
+# ---------------------------------------------------------------------------
+
+
+def forcestop_sentinel_path(repo_root: Path) -> Path:
+    """Return the path of the force-stop sentinel file."""
+    return repo_root / _PID_FILE.parent / _WATCHER_FORCESTOP_SENTINEL_NAME
+
+
+def remove_stale_forcestop_sentinel(repo_root: Path) -> None:
+    """Delete any sentinel left over from a prior daemon run."""
+    sentinel = forcestop_sentinel_path(repo_root)
+    if sentinel.exists():
+        try:
+            sentinel.unlink()
+            logger.info(
+                "Removed stale force-stop sentinel from prior run: %s", sentinel
+            )
+        except OSError as exc:
+            logger.warning("Could not remove stale sentinel %s: %s", sentinel, exc)
+
+
+# ---------------------------------------------------------------------------
+# Pause sentinel path
+# ---------------------------------------------------------------------------
+
+
+def pause_sentinel_path(repo_root: Path) -> Path:
+    """Return the path of the pause sentinel file."""
+    return repo_root / _PID_FILE.parent / _WATCHER_PAUSE_SENTINEL_NAME
+
+
+def remove_stale_pause_sentinel(repo_root: Path) -> None:
+    """Delete any sentinel left over from a prior daemon run."""
+    sentinel = pause_sentinel_path(repo_root)
+    if sentinel.exists():
+        try:
+            sentinel.unlink()
+            logger.info("Removed stale pause sentinel from prior run: %s", sentinel)
+        except OSError as exc:
+            logger.warning("Could not remove stale sentinel %s: %s", sentinel, exc)
+
+
+# ---------------------------------------------------------------------------
+# Kill sentinel path
+# ---------------------------------------------------------------------------
+
+
+def kill_sentinel_path(repo_root: Path) -> Path:
+    """Return the path of the kill sentinel file."""
+    return repo_root / _PID_FILE.parent / _WATCHER_KILL_SENTINEL_NAME
+
+
+def remove_stale_kill_sentinel(repo_root: Path) -> None:
+    """Delete any sentinel left over from a prior daemon run."""
+    sentinel = kill_sentinel_path(repo_root)
+    if sentinel.exists():
+        try:
+            sentinel.unlink()
+            logger.info("Removed stale kill sentinel from prior run: %s", sentinel)
+        except OSError as exc:
+            logger.warning("Could not remove stale sentinel %s: %s", sentinel, exc)
+
+
+def read_kill_sentinel(repo_root: Path) -> list[str]:
+    """Read ticket IDs from the kill sentinel file.
+
+    Returns an empty list when the file does not exist or is empty.
+    Ticket IDs are uppercased and blank lines are stripped.
+    """
+    sentinel = kill_sentinel_path(repo_root)
+    if not sentinel.exists():
+        return []
+    try:
+        content = sentinel.read_text(encoding="utf-8").strip()
+        if not content:
+            return []
+        return [line.strip().upper() for line in content.splitlines() if line.strip()]
+    except OSError:
+        return []
+
+
+def remove_kill_sentinel(repo_root: Path) -> None:
+    """Remove the kill sentinel after it has been processed."""
+    sentinel = kill_sentinel_path(repo_root)
+    try:
+        sentinel.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Could not remove kill sentinel %s: %s", sentinel, exc)
