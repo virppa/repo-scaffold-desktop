@@ -1,4 +1,5 @@
 repos:
+  # ── fast checks: run at pre-commit (all < 0.5s on a clean tree) ──
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -31,31 +32,44 @@ repos:
         pass_filenames: false
         types: [python]
 
-      - id: semgrep
-        name: semgrep
-        language: python
-        entry: python scripts/semgrep_run.py
-        args: ["--config", "auto", "--error"]
-        types: [python]
-        pass_filenames: false
-        additional_dependencies: ["semgrep>=1.159.0"]
-
       - id: check-file-sizes
         name: check-file-sizes
         language: system
         entry: python scripts/check_file_sizes.py
         types: [python]
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.20.2
-    hooks:
-      - id: mypy
-        args: ["app/", "--config-file", "pyproject.toml"]
+      - id: lint-imports
+        name: lint-imports
+        language: python
+        entry: lint-imports --config .importlinter
         pass_filenames: false
-        additional_dependencies: ["pydantic>=2.0"]
+        always_run: true
+        stages: [pre-commit]
 
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:
       - id: detect-secrets
         args: ["--baseline", ".secrets.baseline"]
+
+  # ── slow checks: run at pre-push (or CI) — mypy 1.35s, semgrep 7.5s ──
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.20.2
+    hooks:
+      - id: mypy
+        stages: [pre-push]
+        args: ["app/", "--config-file", "pyproject.toml"]
+        pass_filenames: false
+        additional_dependencies: ["pydantic>=2.0"]
+
+  - repo: local
+    hooks:
+      - id: semgrep
+        name: semgrep
+        stages: [pre-push]
+        language: python
+        entry: python scripts/semgrep_run.py
+        args: ["--config", "auto", "--error"]
+        types: [python]
+        pass_filenames: false
+        additional_dependencies: ["semgrep>=1.159.0"]

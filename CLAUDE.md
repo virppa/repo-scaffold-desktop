@@ -109,6 +109,7 @@ Module responsibilities:
   - `watcher_types.py` — constants, `LinearClientProtocol`, `ActiveWorker` dataclass, `is_watcher_running`, `_to_metrics_mode`
   - `watcher_worktrees.py` — git worktree lifecycle: `create_worktree`, `rebase_worktree_from_base`, `copy_manifest_to_worktree`, `preserve_worker_artifacts`, `cleanup_worktree`, `cleanup_orphaned_worktrees`, `backup_plan_files`, `restore_plan_files`, `write_worker_pytest_config`
   - `worker_waste.py` — post-hoc waste-score analysis on worker JSONL logs; `compute_waste_score` flags redundant reads, suppressed loops, and tool-gap patterns; surfaced in `ticket_metrics.waste_score` for retro analysis
+- `watcher.py` dispatch loop: multi-dispatch-per-cycle — on each poll cycle the watcher dispatches up to `MAX_DISPATCHES_PER_CYCLE=4` eligible tickets with a `DISPATCH_DELAY_SECONDS=2.5` inter-dispatch gap, saturating the local pool faster than the prior single-dispatch model. Epic-branch overlap gate (WOR-419) blocks dispatch to a new epic/* branch when another is already in-flight.
 - `bench_store.py` — `BenchRun` Pydantic model + `BenchStore`: SQLite-backed append-only store for benchmark run records; shares the same `app.db` file as `metrics.py` (separate `bench_run` table); stores hardware/timing/quality columns per run
 - `main.py` — PySide6 `QApplication` entry point
 
@@ -231,6 +232,8 @@ Linear workflow states for the hybrid execution model. The watcher daemon uses t
 | `MainPRReady` | `/close-epic` | Epic → main PR is open awaiting human review |
 | `Done` | human merge | Merged to main |
 
+**In-dispatch retry:** When a local worker fails quality checks, the watcher retries the same dispatch cycle by re-launching the worker with a RETRY hint — avoiding the slower Blocked → ReadyForLocal Linear state transition. Maximum 1 retry per dispatch (hard-capped), controlled by the manifest's `failure_policy.max_retries` (0 = no retry).
+
 **`local-ready` label:** A tag on the ticket indicating it is safe for local LLM execution — bounded scope, no cloud-only dependencies, no sensitive credentials needed. The watcher checks for this label as a secondary signal alongside `ReadyForLocal` state. A ticket can carry `local-ready` before `/start-ticket` runs to pre-declare it as a local candidate.
 
 **Escalation:** If the local worker fails beyond the configured retry budget, the watcher moves the ticket back to `In Progress` (cloud) and attaches an escalation artifact. See `app/core/escalation_policy.py` for the rules.
@@ -243,6 +246,12 @@ main
     ├── wor-45-add-yaml-preset      ← sub-ticket branch → auto-merges to epic when CI passes
     └── wor-47-jinja-context-fix    ← parallel sub-ticket → its own worktree, isolated
 ```
+
+**Cross-epic principle:** Linear parentId describes the ticket; git base_branch
+describes the shipping unit. They can diverge (WOR-419). A ticket whose Linear
+parent is epic A can ship on epic B's branch when epic B is the one currently
+active in-flight. The `/start-ticket` architect detects this via Linear status
+queries and defaults base_branch to the active epic branch.
 
 ### Parallel work
 
@@ -274,13 +283,13 @@ The informational scan runs on `github.base_ref != 'main'`; the blocking scan ru
 - **PostToolUse** — pytest (no coverage) on the edited test file after changes to `tests/` files only
 - **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)
 
-`.pre-commit-config.yaml` adds repo-level checks (run on `git commit`):
+`.pre-commit-config.yaml` uses a **tiered split** — fast checks at `pre-commit`, slow checks at `pre-push` — to keep local commit latency under 3 seconds. The latency investigation (WOR-242) measured per-hook durations on a clean tree: semgrep 7.5s, mypy 1.35s, detect-secrets 1.12s, bandit 0.41s, the rest <0.5s. CI runs the full set plus pytest, deptry, and SonarCloud.
 
-- **trailing-whitespace / end-of-file-fixer / check-yaml / check-toml / check-merge-conflict**
-- **ruff** + **ruff-format** + **bandit** + **mypy** + **semgrep** + **detect-secrets**
-- **check-patch-paths** — local hook (`scripts/check_patch_paths.py`) that validates `unittest.mock.patch("app...")` strings against the actual module structure (catches stale paths after package reorganization before commit)
+**Fast tier (pre-commit, total ~1.5s on clean tree):** trailing-whitespace, end-of-file-fixer, check-yaml, check-toml, check-merge-conflict, ruff, ruff-format, bandit, check-patch-paths, lint-imports, detect-secrets, check-file-sizes.
 
-No setup needed — hooks activate as soon as Claude Code loads the project.
+**Slow tier (pre-push):** mypy 1.35s, semgrep 7.5s.
+
+**PostToolUse hooks** (Claude Code only): ruff, mypy, bandit, lint-imports after any Python file edit; pytest on edited test files. These are separate from the pre-commit config — they run per-tool-use to give immediate feedback during implementation.
 
 ---
 

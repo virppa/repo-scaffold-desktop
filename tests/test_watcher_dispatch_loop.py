@@ -858,3 +858,151 @@ def test_epic_completion_partial_failure_skips_comment(
         "failed" in msg.lower() and "succeeded" in msg.lower()
         for msg in caplog.messages
     )
+
+
+# ---------------------------------------------------------------------------
+# WOR-419 — epic-branch overlap gate in _start_ticket
+# ---------------------------------------------------------------------------
+
+
+def test_start_ticket_blocks_when_another_epic_branch_in_flight(
+    tmp_path: Path, caplog: pytest.LogCaptureContext
+) -> None:
+    """Dispatch to a new epic/* branch is refused when another epic/* is
+    already in-flight on a local worker. A Linear comment is posted."""
+
+    new_epic_manifest = _make_manifest(
+        ticket_id="WOR-419",
+        worker_branch="wor-419-epic-branch",
+        base_branch="epic/wor-419-new-epic",
+        allowed_paths=["app/core/new.py"],
+    )
+    active_epic_manifest = _make_manifest(
+        ticket_id="WOR-335-A",
+        worker_branch="wor-335-active",
+        base_branch="epic/wor-335-active",
+        allowed_paths=["app/core/active.py"],
+    )
+
+    w = Watcher(
+        linear_client=MagicMock(),
+        repo_root=tmp_path,
+    )
+    w._linear.get_open_blockers.return_value = []
+
+    # Add an active worker on a different epic branch
+    w._local_active.append(
+        ActiveWorker(
+            ticket_id="WOR-335-A",
+            linear_id="fake-335",
+            manifest=active_epic_manifest,
+            worktree_path=tmp_path / "worktree_335",
+            process=MagicMock(spec=subprocess.Popen),
+        )
+    )
+
+    with (
+        patch.object(w, "_load_manifest", return_value=new_epic_manifest),
+        patch("app.core.watcher.watcher.create_worktree"),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        w._start_ticket("WOR-419", "fake-419")
+
+    assert len(w._local_active) == 1  # original worker preserved, no new one
+    assert w._local_active[0].ticket_id == "WOR-335-A"
+    # Gate should have logged and posted a Linear comment
+    assert any("epic branch" in m and "already in-flight" in m for m in caplog.messages)
+    w._linear.post_comment.assert_called_once()
+
+
+def test_start_ticket_proceeds_for_same_epic_branch(
+    tmp_path: Path,
+) -> None:
+    """Dispatch within the SAME epic branch proceeds normally — the gate
+    only blocks DIFFERENT epic branches."""
+
+    same_epic_manifest = _make_manifest(
+        ticket_id="WOR-419",
+        worker_branch="wor-419-same-epic",
+        base_branch="epic/wor-335-active",
+        allowed_paths=["app/core/new.py"],
+    )
+    active_epic_manifest = _make_manifest(
+        ticket_id="WOR-335-A",
+        worker_branch="wor-335-active",
+        base_branch="epic/wor-335-active",
+        allowed_paths=["app/core/active.py"],
+    )
+
+    w = Watcher(
+        linear_client=MagicMock(),
+        repo_root=tmp_path,
+    )
+    w._linear.get_open_blockers.return_value = []
+
+    w._local_active.append(
+        ActiveWorker(
+            ticket_id="WOR-335-A",
+            linear_id="fake-335",
+            manifest=active_epic_manifest,
+            worktree_path=tmp_path / "worktree_335",
+            process=MagicMock(spec=subprocess.Popen),
+        )
+    )
+
+    with (
+        patch.object(w, "_load_manifest", return_value=same_epic_manifest),
+        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher.safe_set_state"),
+        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.watcher.launch_worker",
+            return_value=MagicMock(spec=subprocess.Popen),
+        ),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
+        patch.object(w._services, "probe_vllm_health", return_value=True),
+    ):
+        w._start_ticket("WOR-419", "fake-419")
+
+    assert len(w._local_active) == 2  # both workers
+    linear_mock = w._linear
+    linear_mock.post_comment.assert_not_called()
+
+
+def test_start_ticket_unaffected_when_no_epic_workers(
+    tmp_path: Path,
+) -> None:
+    """A non-epic base_branch dispatches normally when no epic workers are active."""
+    main_manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-main",
+        base_branch="main",
+        allowed_paths=["app/core/foo.py"],
+    )
+
+    w = Watcher(
+        linear_client=MagicMock(),
+        repo_root=tmp_path,
+    )
+    w._linear.get_open_blockers.return_value = []
+
+    with (
+        patch.object(w, "_load_manifest", return_value=main_manifest),
+        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.watcher.safe_set_state"),
+        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.watcher.launch_worker",
+            return_value=MagicMock(spec=subprocess.Popen),
+        ),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
+        patch.object(w._services, "probe_vllm_health", return_value=True),
+    ):
+        w._start_ticket("WOR-10", "fake-10")
+
+    assert len(w._local_active) == 1
+    w._linear.post_comment.assert_not_called()

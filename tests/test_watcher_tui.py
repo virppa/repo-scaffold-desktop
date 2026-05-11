@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.live import Live
 
 from app.core.metrics import CostRollup
+from app.core.watcher.watcher_heartbeat import build_tui_state
 from app.core.watcher.watcher_tui import (
     TrackedPR,
     TUIState,
@@ -492,7 +493,12 @@ def test_build_tui_state_empty_workers(tmp_path: Path) -> None:
         no_epic_shutdown=True,
     )
 
-    state = w._build_tui_state()
+    state = build_tui_state(
+        w._local_active,
+        w._cloud_active,
+        w._metrics,
+        w._tracked_prs,
+    )
 
     assert isinstance(state, TUIState)
     assert len(state.workers) == 0
@@ -525,7 +531,12 @@ def test_build_tui_state_single_local_worker(tmp_path: Path) -> None:
     worker.start_time = _time.monotonic() - 60  # 60s ago
     w._local_active.append(worker)
 
-    state = w._build_tui_state()
+    state = build_tui_state(
+        w._local_active,
+        w._cloud_active,
+        w._metrics,
+        w._tracked_prs,
+    )
 
     assert len(state.workers) == 1
     ws = state.workers[0]

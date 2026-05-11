@@ -40,7 +40,7 @@ _VLLM_SERVED_MODEL = "qwen3-coder"
 # Claude Code routes by tier via ANTHROPIC_DEFAULT_*_MODEL, so the on-the-wire
 # request reaches vLLM as "qwen3-coder" but Claude Code's accounting still says
 # this. A "served_model_name" column would be the cleaner long-term fix.
-_LOCAL_MODEL = "claude-sonnet-4-6"
+_LOCAL_MODEL = "qwen3-coder"  # matches --served-model-name in vLLM CLI (CLAUDE.md)
 _WORKTREE_BASE = Path("worktrees")
 
 _ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(
@@ -79,7 +79,7 @@ class ActiveWorker:
     process: subprocess.Popen[bytes]
     start_time: float = field(default_factory=time.monotonic)
     backed_up_plans: list[Path] = field(default_factory=list)
-    retry_count: int = 0
+    attempt_count: int = 0
     # WOR-363: count of OTHER active workers at the moment this one launched.
     # Captured by dispatch.start_ticket BEFORE adding self to the active pool.
     dispatch_concurrency: int = 0

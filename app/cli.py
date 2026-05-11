@@ -264,6 +264,31 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # WOR-337: ticket-status subcommand — structured ticket snapshot.
+    ts = sub.add_parser(
+        "ticket-status",
+        help="Show a structured snapshot of a ticket's state.",
+    )
+    ts.add_argument("ticket_id", help="Linear ticket ID, e.g. WOR-123")
+    ts.add_argument(
+        "--watch",
+        action="store_true",
+        default=False,
+        help="Re-poll every 30s until the ticket reaches a terminal state.",
+    )
+    ts.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit machine-readable JSON output.",
+    )
+    ts.add_argument(
+        "--brief",
+        action="store_true",
+        default=False,
+        help="Emit a single-line summary suitable for status bars.",
+    )
+
     return parser
 
 
@@ -728,6 +753,176 @@ def _run_waste_score(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_ticket_status(args: argparse.Namespace) -> int:
+    """Show a structured snapshot of a Linear ticket's state."""
+    import os
+    import time
+
+    ticket_id = args.ticket_id.upper()
+
+    # Require LINEAR_API_KEY for the Linear client.
+    api_key = os.environ.get("LINEAR_API_KEY")
+    if not api_key:
+        print(
+            "Error: LINEAR_API_KEY environment variable not set.",
+            file=sys.stderr,
+        )
+        return 1
+
+    from app.core.linear_client import LinearClient
+
+    client = LinearClient(api_key=api_key)
+
+    from app.core.watcher.ticket_status import (
+        _format_age,
+        _format_size,
+        fetch_ticket_status,
+    )
+
+    status = fetch_ticket_status(client, ticket_id)
+
+    if args.json:
+        import json as json_mod
+
+        print(json_mod.dumps(status.to_dict(), indent=2))
+        return 0
+
+    if args.brief:
+        # One-line: WOR-NNN — Title (State) — age
+        ts = status.ticket_id
+        title = status.title
+        st = status.state
+        age_str = (
+            _format_age(status.state_age_seconds) if status.state_age_seconds else "?"
+        )
+        print(f"{ts} — {title} ({st}) — {age_str}")
+        return 0
+
+    # Default: human-readable structured output.
+    print(f"Ticket: {status.ticket_id} — {status.title}")
+    age_str = _format_age(status.state_age_seconds) if status.state_age_seconds else "?"
+    print(f"State (Linear): {status.state} (age: {age_str})")
+
+    # Worker process info
+    if status.worker_log is not None:
+        wl = status.worker_log
+        size_str = _format_size(wl.size_bytes)
+        last_ago = (
+            _format_age(wl.last_activity_ago_seconds)
+            if wl.last_activity_ago_seconds
+            else "?"
+        )
+        print("Worker process:")
+        print(f"  Log: {size_str}, last activity {last_ago}")
+        if wl.last_tool_calls:
+            print(f"  Recent actions (last {min(3, len(wl.last_tool_calls))}):")
+            for tc in wl.last_tool_calls[:3]:
+                print(f"    {tc.name} {tc.display}")
+        else:
+            print("  Recent actions: ?")
+    else:
+        print("Worker process: no log file found")
+
+    # Artifacts
+    if status.artifacts is not None:
+        print(f"Artifacts ({status.artifacts.path}):")
+        for name, info in status.artifacts.entries.items():
+            print(f"  {name}    {info}")
+    else:
+        print("Artifacts: none")
+
+    # Worktree
+    if status.worktree_exists is True:
+        print(f"Worktree: {status.worktree_path}  exists")
+    elif status.worktree_exists is False:
+        print("Worktree: none")
+    else:
+        print("Worktree: ?")
+
+    # Health flags
+    if status.health_flags:
+        parts = []
+        if "api_retries" in status.health_flags:
+            retries = status.health_flags["api_retries"]
+            parts.append(f"{retries} api_retry events")
+        if "subagent_spawns" in status.health_flags:
+            spawns = status.health_flags["subagent_spawns"]
+            parts.append(f"{spawns} subagent spawns")
+        if "no_result_artifact" in status.health_flags:
+            parts.append("no result artifact yet")
+        print(f"Health flags: {'; '.join(parts)}")
+
+    # Watch mode: keep polling until terminal state or Ctrl+C
+    if args.watch:
+        terminal_states = {
+            "Done",
+            "MergedToEpic",
+            "Cancelled",
+            "Duplicate",
+            "Blocked",
+        }
+        while status.state not in terminal_states:
+            print(f"\n── polled {_format_age(status.state_age_seconds)} ──")
+            try:
+                time.sleep(30)
+            except KeyboardInterrupt:
+                return 0
+            status = fetch_ticket_status(client, ticket_id)
+            # Re-render output (strip ANSI from above)
+            print(f"\nTicket: {status.ticket_id} — {status.title}")
+            age_str = (
+                _format_age(status.state_age_seconds)
+                if status.state_age_seconds
+                else "?"
+            )
+            print(f"State (Linear): {status.state} (age: {age_str})")
+            if status.worker_log is not None:
+                wl = status.worker_log
+                size_str = _format_size(wl.size_bytes)
+                last_ago = (
+                    _format_age(wl.last_activity_ago_seconds)
+                    if wl.last_activity_ago_seconds
+                    else "?"
+                )
+                print("Worker process:")
+                print(f"  Log: {size_str}, last activity {last_ago}")
+                if wl.last_tool_calls:
+                    print(f"  Recent actions (last {min(3, len(wl.last_tool_calls))}):")
+                    for tc in wl.last_tool_calls[:3]:
+                        print(f"    {tc.name} {tc.display}")
+                else:
+                    print("  Recent actions: ?")
+            else:
+                print("Worker process: no log file found")
+            if status.artifacts is not None:
+                print(f"Artifacts ({status.artifacts.path}):")
+                for name, info in status.artifacts.entries.items():
+                    print(f"  {name}    {info}")
+            else:
+                print("Artifacts: none")
+            if status.worktree_exists is True:
+                print(f"Worktree: {status.worktree_path}  exists")
+            elif status.worktree_exists is False:
+                print("Worktree: none")
+            else:
+                print("Worktree: ?")
+            if status.health_flags:
+                parts = []
+                if "api_retries" in status.health_flags:
+                    retries = status.health_flags["api_retries"]
+                    parts.append(f"{retries} api_retry events")
+                if "subagent_spawns" in status.health_flags:
+                    spawns = status.health_flags["subagent_spawns"]
+                    parts.append(f"{spawns} subagent spawns")
+                if "no_result_artifact" in status.health_flags:
+                    parts.append("no result artifact yet")
+                print(f"Health flags: {'; '.join(parts)}")
+        print(f"\nTicket reached terminal state: {status.state}")
+        return 0
+
+    return 0
+
+
 def _dispatch_command(args: argparse.Namespace) -> int:
     """Route parsed args to the appropriate command handler.
 
@@ -743,6 +938,8 @@ def _dispatch_command(args: argparse.Namespace) -> int:
         return _run_watcher_softstop(args)
     if args.command == "waste-score":
         return _run_waste_score(args)
+    if args.command == "ticket-status":
+        return _run_ticket_status(args)
     if args.command == "generate":
         return _run_generate(args)
     return 1

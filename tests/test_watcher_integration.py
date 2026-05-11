@@ -58,7 +58,7 @@ def test_finalize_worker_happy_path_all_enriched_fields(
     Asserts all six enriched fields populated together:
     - local_tokens > 0 (from stream-json log usage)
     - context_compactions > 0 (from compact_boundary events)
-    - retry_count == 0 (first attempt, no check failures)
+    - attempt_count == 0 (first attempt, no check failures)
     - sonar_findings_count == 4 (fetch_sonar_findings returns 4 items)
     - outcome == 'success'
     - pr_url set (attempt_pr returns a URL)

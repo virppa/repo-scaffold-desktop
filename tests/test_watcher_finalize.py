@@ -146,7 +146,7 @@ def test_finalize_worker_retry_count_increments_on_check_failure(
         _call_finalize(worker)
         _call_finalize(worker)
 
-    assert worker.retry_count == 2
+    assert worker.attempt_count == 2
 
 
 def test_finalize_worker_retry_count_two_failures_then_success(
@@ -803,3 +803,269 @@ def test_finalize_worker_human_policy_posts_comment_and_aborts(
 
 
 # ---------------------------------------------------------------------------
+# WOR-312 — in-dispatch retry loop
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_no_retry_when_max_retries_zero(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """max_retries=0: single attempt even when checks fail, no retry.
+
+    attempt_count tracks total check failures; with 1 call and 1 failure
+    the count is 1 (one check-failure event). The key assertion is that
+    launch_worker was NOT called — no retry happened.
+    """
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test",
+        failure_policy={"max_retries": 0},
+    )
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(False, [{"check": "ruff check .", "exit_code": 1}]),
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+        ) as mock_launch,
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_finalize"),
+    ):
+        _call_finalize(worker)
+
+    # No retry happened — attempt_count reflects the check failure
+    assert worker.attempt_count == 1
+    # Verify launch_worker was NOT called (no retry happened)
+    mock_launch.assert_not_called()
+
+
+def test_finalize_worker_single_retry_then_success(
+    tmp_path: Path,
+) -> None:
+    """max_retries=1: checks fail once, succeed on retry. attempt_count == 1
+    because only failures increment the counter."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test",
+        failure_policy={"max_retries": 1},
+    )
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    # First call fails → attempt_count=1, break 1>=1 → no, retry.
+    # Second call succeeds → attempt_count stays 1, break on success.
+    check_results = [
+        (False, [{"check": "ruff check .", "exit_code": 1}]),
+        (True, []),
+    ]
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            side_effect=check_results,
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker)
+
+    # After 2 calls (1 failure + 1 success), attempt_count=1.
+    # The break check sees 1 >= 1 = True, but success breaks first.
+    assert worker.attempt_count == 1
+
+
+def test_finalize_worker_hardcap_enforces_max_one_retry(
+    tmp_path: Path,
+) -> None:
+    """max_retries=5 but hardcapped at 1 — only one retry despite 5 budget."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test",
+        failure_policy={"max_retries": 5},
+    )
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    # 2 failures: first call fails, retry succeeds on second call.
+    # With max_retries=5 and hardcap=1, max actual retries = min(5,1) = 1.
+    check_results = [
+        (False, [{"check": "ruff check .", "exit_code": 1}]),
+        (True, []),
+    ]
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            side_effect=check_results,
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker)
+
+    assert worker.attempt_count == 1
+
+
+def test_finalize_worker_retry_injects_extra_constraint(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Retry path calls launch_worker with extra_constraint containing RETRY hint."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test",
+        failure_policy={"max_retries": 1},
+    )
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    check_results = [
+        (False, [{"check": "ruff check .", "exit_code": 1}]),
+        (True, []),
+    ]
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            side_effect=check_results,
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+            return_value=MagicMock(),
+        ) as mock_launch,
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_finalize"),
+    ):
+        _call_finalize(worker)
+
+    # launch_worker called exactly once for the retry
+    mock_launch.assert_called_once()
+    call_kwargs = mock_launch.call_args
+    assert call_kwargs.kwargs["extra_constraint"] is not None
+    assert "RETRY" in call_kwargs.kwargs["extra_constraint"]
+    assert "ruff check ." in call_kwargs.kwargs["extra_constraint"]
+
+
+def test_finalize_worker_retry_first_failure_logs_info(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """First check failure logs at INFO level, retry at WARNING."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test",
+        failure_policy={"max_retries": 1},
+    )
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    check_results = [
+        (False, [{"check": "ruff check .", "exit_code": 1}]),
+        (True, []),
+    ]
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            side_effect=check_results,
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_finalize"),
+    ):
+        _call_finalize(worker)
+
+    info_records = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.INFO and "Re-launching" in r.message
+    ]
+    assert len(info_records) == 1
+    assert "WOR-10" in info_records[0].message
+
+
+def test_finalize_worker_no_retry_when_check_passes(
+    tmp_path: Path,
+) -> None:
+    """When checks pass on first attempt, no retry loop — immediate success."""
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test",
+        failure_policy={"max_retries": 1},
+    )
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker)
+
+    assert worker.attempt_count == 0

@@ -1,0 +1,170 @@
+"""Heartbeat, idle-line, and TUI state functions extracted from watcher.py.
+
+Extracted from ``watcher.py`` (WOR-414). Module-level functions replace the
+corresponding ``Watcher`` instance methods. Each function takes only the state
+it needs as arguments — no ``self`` references, no class imports.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from app.core.manifest import ExecutionManifest
+from app.core.metrics import CostRollup
+from app.core.watcher.watcher_log_parsing import format_elapsed
+from app.core.watcher.watcher_tui import TrackedPR, TUIState, WorkerState
+
+if TYPE_CHECKING:
+    from app.core.metrics import MetricsStore
+    from app.core.watcher.watcher_types import ActiveWorker
+
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+_CLAUDE_DIR = ".claude"
+_ARTIFACTS_DIR = "artifacts"
+_MANIFEST_GLOB = "*/manifest.json"
+
+
+# ---------------------------------------------------------------------------
+# Idle-line emission
+# ---------------------------------------------------------------------------
+
+
+def emit_idle_line(
+    now_local: int,
+    now_cloud: int,
+    max_local_workers: int,
+    max_cloud_workers: int,
+    repo_root: Path,
+    last_idle_state: tuple[int, int, int, bool] | None,
+) -> tuple[int, int, int, bool] | None:
+    """Emit a single idle line when the watcher has nothing active to do.
+
+    Only re-emits when state changes (pool sizes / waiting count / capacity).
+
+    Returns the new idle state, or ``None`` if no emission occurred (state
+    unchanged from previous call).
+    """
+    has_local = now_local < max_local_workers
+    has_cloud = now_cloud < max_cloud_workers
+    has_capacity = has_local or has_cloud
+
+    # Count WaitingForDeps manifests
+    artifacts_root = repo_root / _CLAUDE_DIR / _ARTIFACTS_DIR
+    waiting = 0
+    if artifacts_root.exists():
+        for mp in artifacts_root.glob(_MANIFEST_GLOB):
+            try:
+                m = ExecutionManifest.from_json(mp)
+            except (OSError, ValueError):
+                continue
+            if m.status == "WaitingForDeps":
+                waiting += 1
+
+    state = (now_local, now_cloud, waiting, has_capacity)
+    if state == last_idle_state:
+        return None
+
+    logger.info(
+        "Watcher idle — %d/%d local, %d/%d cloud, %d waiting for blockers, "
+        "polling every %ds",
+        now_local,
+        max_local_workers,
+        now_cloud,
+        max_cloud_workers,
+        waiting,
+        10,  # POLL_INTERVAL
+    )
+    return state
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat emission
+# ---------------------------------------------------------------------------
+
+
+def emit_heartbeat(
+    local_active: list["ActiveWorker"],
+    cloud_active: list["ActiveWorker"],
+    heartbeat: dict[str, tuple[float, int]],
+) -> dict[str, tuple[float, int]]:
+    """Emit a per-worker heartbeat every ~30s with elapsed time.
+
+    Updates the ``heartbeat`` dict in-place and logs elapsed time for each
+    worker that crosses a 30-second boundary.
+
+    Returns the (possibly mutated) heartbeat dict.
+    """
+    all_active: list["ActiveWorker"] = []
+    all_active.extend(local_active)
+    all_active.extend(cloud_active)
+
+    for worker in all_active:
+        elapsed = time.monotonic() - worker.start_time
+        key = worker.ticket_id
+
+        if key in heartbeat:
+            _, last_tick = heartbeat[key]
+            # Emit when we cross a new 30-second boundary
+            new_tick = int(elapsed / 30)
+            if new_tick <= last_tick:
+                continue
+            heartbeat[key] = (elapsed, new_tick)
+        else:
+            # First emission — start at the first 30-second boundary
+            tick = int(elapsed / 30)
+            if tick < 1:
+                continue
+            heartbeat[key] = (elapsed, tick)
+
+        elapsed_str = format_elapsed(elapsed)
+        logger.info("[%s] %s", worker.ticket_id, elapsed_str)
+
+    return heartbeat
+
+
+# ---------------------------------------------------------------------------
+# TUI state
+# ---------------------------------------------------------------------------
+
+
+def build_tui_state(
+    local_active: list["ActiveWorker"],
+    cloud_active: list["ActiveWorker"],
+    metrics: MetricsStore,
+    tracked_prs: list[TrackedPR],
+) -> TUIState:
+    """Build the current TUI snapshot for the display."""
+    workers: list[WorkerState] = []
+    for w in local_active:
+        elapsed = time.monotonic() - w.start_time
+        workers.append(
+            WorkerState(
+                ticket_id=w.ticket_id,
+                mode="local",
+                status="running",
+                elapsed_s=elapsed,
+            )
+        )
+    for w in cloud_active:
+        elapsed = time.monotonic() - w.start_time
+        workers.append(
+            WorkerState(
+                ticket_id=w.ticket_id,
+                mode="cloud",
+                status="running",
+                elapsed_s=elapsed,
+            )
+        )
+    rollups: dict[str, CostRollup] = {}
+    for period in ("today", "week", "all"):
+        rollups[period] = metrics.get_cost_rollup(period)
+    return TUIState(workers=workers, cost_rollups=rollups, tracked_prs=tracked_prs)

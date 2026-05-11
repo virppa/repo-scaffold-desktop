@@ -196,7 +196,7 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
   "done_definition": "<plain-English done criteria>",
   "failure_policy": {
     "on_check_failure": "abort",
-    "max_retries": 0,
+    "max_retries": 1,
     "escalate_to_cloud": false
   },
   "ticket_state_map": {
