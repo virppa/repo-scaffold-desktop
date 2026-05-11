@@ -28,6 +28,7 @@ from .watcher_finalize_helpers import (
     _read_result_status,
     _try_post_comment,
     _write_wip_sha_to_last_failure,
+    _write_wip_state_to_last_failure,
     safe_set_state,
 )
 from .watcher_helpers import (
@@ -553,8 +554,26 @@ def finalize_worker(
         worker.manifest.worker_branch,
         backup_root=backup_root,
     )
+    # Surface silent commit_wip_state failures for operator visibility (WOR-309).
+    if wip_result.status == "backup":
+        logger.warning(
+            "WIP backup for %s — commit or push failed, dirty worktree saved to %s",
+            worker.ticket_id,
+            wip_result.backup_path,
+        )
+    elif wip_result.status == "failed":
+        logger.error(
+            "WIP preservation failed for %s — leaving worktree in place at %s "
+            "(error: %s). Run `git -C <path> status` to inspect, then commit + push "
+            "to %s manually.",
+            worker.ticket_id,
+            worker.worktree_path,
+            wip_result.error or "unknown",
+            worker.manifest.worker_branch,
+        )
     if wip_result.sha is not None:
         _write_wip_sha_to_last_failure(worker, wip_result.sha)
+    _write_wip_state_to_last_failure(worker, wip_result.status, wip_result.backup_path)
 
     if not artifacts_preserved:
         # Failure path: also preserve full worker artifacts (logs, last_failure,
@@ -564,19 +583,8 @@ def finalize_worker(
 
     if wip_result.status in ("clean", "pushed", "backup"):
         cleanup_worktree(repo_root, worker.worktree_path)
-    else:
-        # WOR-288: WIP preservation failed (commit_wip_state could not push
-        # AND could not back up the dirty tree). Removing the worktree now
-        # would destroy uncommitted work — leave it in place for human
-        # salvage. The worktree path appears in the ERROR log so the
-        # operator can git status / commit / push manually.
-        logger.error(
-            "WIP preservation failed for %s — leaving worktree in place at %s "
-            "for manual recovery (error: %s). Run `git -C <path> status` to "
-            "inspect, then commit + push to %s manually.",
-            worker.ticket_id,
-            worker.worktree_path,
-            wip_result.error or "unknown",
-            worker.manifest.worker_branch,
-        )
+    # else: status == "failed" — WOR-288: WIP preservation failed (commit
+    # could neither push nor back up). Leaving the worktree in place for
+    # human salvage. The ERROR log at the call site above already surfaces
+    # the path and error for manual recovery.
     return outcome

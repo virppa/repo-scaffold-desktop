@@ -278,6 +278,42 @@ def _sonar_requires_escalation(
     return False
 
 
+def _write_wip_state_to_last_failure(
+    worker: ActiveWorker,
+    status: str,
+    backup_path: Path | None = None,
+) -> None:
+    """Write wip_status (and optionally wip_backup_path) to last_failure.json.
+
+    Called on *every* commit_wip_state result so that last_failure.json always
+    carries the latest WIP state.  wip_backup_path is written only when
+    status=='backup'.
+    """
+    artifact_dir = (
+        worker.worktree_path / worker.manifest.artifact_paths.result_json
+    ).parent
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    failure_file = artifact_dir / "last_failure.json"
+    try:
+        data: dict[str, object] = {}
+        if failure_file.exists():
+            data.update(json.loads(failure_file.read_text(encoding="utf-8")))
+        data["wip_status"] = status
+        if status == "backup" and backup_path is not None:
+            data["wip_backup_path"] = str(backup_path)
+        failure_file.write_text(
+            json.dumps(data, indent=2),
+            encoding="utf-8",
+        )
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning(
+            "Could not write wip_state to %s for %s: %s",
+            failure_file,
+            worker.ticket_id,
+            exc,
+        )
+
+
 def _write_wip_sha_to_last_failure(
     worker: ActiveWorker,
     wip_sha: str,
