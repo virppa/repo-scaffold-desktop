@@ -736,8 +736,8 @@ class TestInteractiveWizard:
             patch.object(PrefsStore, "get_path", return_value=prefs_path),
             patch("app.cli.generate.generate") as mock_gen,
             patch(
-                "app.core.wizard.input",
-                side_effect=["myrepo", "python_basic", str(output_dir)],
+                "builtins.input",
+                side_effect=["myrepo", "python_basic", str(output_dir), "y"],
             ),
         ):
             mock_gen.return_value = [".gitignore", "pyproject.toml", "README.md"]
@@ -758,8 +758,8 @@ class TestInteractiveWizard:
             patch("app.cli.generate.generate") as mock_gen,
             patch("app.cli.generate.run_git_init") as mock_git,
             patch(
-                "app.core.wizard.input",
-                side_effect=["myrepo", "python_basic", str(output_dir)],
+                "builtins.input",
+                side_effect=["myrepo", "python_basic", str(output_dir), "y"],
             ),
         ):
             mock_gen.return_value = [".gitignore"]
@@ -787,11 +787,12 @@ class TestInteractiveWizard:
             "yes",
             "yes",
             "yes",  # 6 toggles
+            "y",  # save prompt
         ]
         with (
             patch.object(PrefsStore, "get_path", return_value=prefs_path),
             patch("app.cli.generate.generate") as mock_gen,
-            patch("app.core.wizard.input", side_effect=side_effect),
+            patch("builtins.input", side_effect=side_effect),
         ):
             mock_gen.return_value = [
                 ".gitignore",
@@ -826,7 +827,7 @@ class TestInteractiveWizard:
         with (
             patch.object(PrefsStore, "get_path", return_value=prefs_path),
             patch("app.cli.generate.generate") as mock_gen,
-            patch("app.core.wizard.input", side_effect=["", "", ""]),
+            patch("builtins.input", side_effect=["", "", "", "y"]),
         ):
             mock_gen.return_value = [".gitignore"]
             rc = main(
@@ -858,8 +859,8 @@ class TestInteractiveWizard:
             patch("app.cli.generate.generate") as mock_gen,
             patch.object(PrefsStore, "save", side_effect=capture_save) as mock_save,
             patch(
-                "app.core.wizard.input",
-                side_effect=["myrepo", "python_basic", str(output_dir)],
+                "builtins.input",
+                side_effect=["myrepo", "python_basic", str(output_dir), "n"],
             ),
         ):
             mock_gen.return_value = [".gitignore"]
@@ -921,13 +922,123 @@ class TestInteractiveWizard:
         with (
             patch.object(PrefsStore, "get_path", return_value=prefs_path),
             patch("app.cli.generate.generate") as mock_gen,
-            patch("app.core.wizard.input") as mock_input,
+            patch("builtins.input") as mock_input,
         ):
             mock_gen.return_value = [".gitignore"]
-            mock_input.side_effect = ["myrepo", "python_basic", str(output_dir)]
+            mock_input.side_effect = ["myrepo", "python_basic", str(output_dir), "y"]
             rc = main(["generate", "--interactive"])
         assert rc == 0
         # Second call is for preset prompt which shows choices
         preset_call = mock_input.call_args_list[1][0][0]
         assert "python_basic" in preset_call
         assert "full_agentic" in preset_call
+
+    def test_interactive_save_prompt_appears_after_success(self, output_dir, tmp_path):
+        """A 'Save these as your defaults?' prompt appears after wizard completion."""
+        prefs_path = tmp_path / "prefs.json"
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate.generate") as mock_gen,
+            patch("builtins.input") as mock_input,
+        ):
+            mock_gen.return_value = [".gitignore"]
+            mock_input.side_effect = ["myrepo", "python_basic", str(output_dir), "y"]
+            rc = main(["generate", "--interactive"])
+        assert rc == 0
+        # Three wizard inputs + one save prompt
+        assert mock_input.call_count == 4
+        save_prompt = mock_input.call_args_list[3][0][0]
+        assert "defaults" in save_prompt.lower()
+
+    def test_interactive_skip_save_on_no(self, output_dir, tmp_path):
+        """Declining the save prompt skips silently — rc=0, no crash."""
+        prefs_path = tmp_path / "prefs.json"
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate.generate") as mock_gen,
+            patch("builtins.input") as mock_input,
+        ):
+            mock_gen.return_value = [".gitignore"]
+            mock_input.side_effect = ["myrepo", "python_basic", str(output_dir), "n"]
+            rc = main(["generate", "--interactive"])
+        assert rc == 0
+        assert mock_input.call_count == 4
+
+    def test_interactive_save_on_eof(self, output_dir, tmp_path):
+        """EOFError during save prompt is treated as skip (rc=0)."""
+        prefs_path = tmp_path / "prefs.json"
+        inputs = ["myrepo", "python_basic", str(output_dir), EOFError()]
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate.generate") as mock_gen,
+            patch("builtins.input", side_effect=inputs),
+        ):
+            mock_gen.return_value = [".gitignore"]
+            rc = main(["generate", "--interactive"])
+        assert rc == 0
+
+    def test_interactive_git_repo_guard_no_crash(self, output_dir, tmp_path, capsys):
+        """RuntimeError from PrefsStore.save is handled — no crash."""
+        prefs_path = tmp_path / "prefs.json"
+        inputs = ["myrepo", "python_basic", str(output_dir), "y"]
+        save_err = RuntimeError("inside git repo")
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate.generate") as mock_gen,
+            patch.object(PrefsStore, "save", side_effect=save_err),
+            patch("builtins.input", side_effect=inputs),
+        ):
+            mock_gen.return_value = [".gitignore"]
+            rc = main(["generate", "--interactive"])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "git" in err.lower()
+
+    def test_interactive_save_e2e_prefill(self, output_dir, tmp_path):
+        """Saved prefs pre-fill the wizard on the next run — end-to-end."""
+        import json
+
+        prefs_path = tmp_path / "prefs.json"
+        prefs_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # First run: save via capture, then manually write so second run can load
+        first_inputs = ["myrepo", "python_basic", str(output_dir), "y"]
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate.generate") as mock_gen1,
+            patch.object(PrefsStore, "save") as mock_save,
+            patch("builtins.input", side_effect=first_inputs),
+        ):
+            mock_gen1.return_value = [".gitignore"]
+            main(["generate", "--interactive"])
+        assert mock_save.call_count == 1
+
+        # Simulate what PrefsStore.save() would write
+        data = {
+            "author_name": "myrepo",
+            "default_preset": "python_basic",
+            "default_output_dir": str(output_dir),
+        }
+        prefs_path.write_text(
+            json.dumps(data, indent=2),
+            encoding="utf-8",
+        )
+
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+        ):
+            prefs = PrefsStore.load()
+            assert prefs.default_output_dir == output_dir
+            assert prefs.default_preset == "python_basic"
+
+        # Second run with --prefill: verify saved prefs are used
+        second_inputs = ["", "", "", "n"]
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate.generate") as mock_gen2,
+            patch("builtins.input", side_effect=second_inputs),
+        ):
+            mock_gen2.return_value = [".gitignore"]
+            rc = main(["generate", "--interactive", "--prefill"])
+        assert rc == 0
+        mock_gen2.assert_called_once()
