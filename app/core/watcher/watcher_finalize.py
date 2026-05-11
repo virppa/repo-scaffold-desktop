@@ -248,6 +248,7 @@ def finalize_worker(
                 linear,
                 escalation_policy,
                 repo_root,
+                attempt_pr,
                 tracked_prs=tracked_prs,
                 metrics=metrics,
                 project_id=project_id,

@@ -78,3 +78,18 @@ source_modules =
     app.core.watcher.watcher_types
 forbidden_modules =
     app.core.bench_store
+
+[importlinter:contract:finalize-helpers-below-finalize]
+name = watcher_finalize_helpers must not import watcher_finalize (no tangle)
+type = forbidden
+# watcher_finalize_helpers contains internal helpers extracted from
+# watcher_finalize.py. By definition it sits BELOW finalize in the layer
+# graph — if it imports back into finalize, we get a cycle that has to be
+# worked around with lazy in-function imports (SonarCloud's Architecture
+# view flagged exactly this on 2026-05-11).
+# Inject dependencies via callback parameters instead.
+# CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
+source_modules =
+    app.core.watcher.watcher_finalize_helpers
+forbidden_modules =
+    app.core.watcher.watcher_finalize

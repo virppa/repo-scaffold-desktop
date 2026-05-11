@@ -105,7 +105,7 @@ def test_execute_finalization_nonzero_returncode_returns_failure(
     )
 
     outcome, escalated, preserved, findings, _, _ = _execute_finalization(
-        worker, 1, linear_mock, EscalationPolicy.from_toml(), tmp_path
+        worker, 1, linear_mock, EscalationPolicy.from_toml(), tmp_path, MagicMock()
     )
 
     assert outcome == "failure"
@@ -136,7 +136,7 @@ def test_execute_finalization_check_failure_abort_returns_failure(
         return_value=(False, []),
     ):
         outcome, escalated, preserved, findings, _, _ = _execute_finalization(
-            worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path
+            worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path, MagicMock()
         )
 
     assert outcome == "failure"
@@ -172,7 +172,7 @@ def test_execute_finalization_check_failure_escalates_to_cloud(tmp_path: Path) -
         patch("app.core.watcher.watcher_worktrees.cleanup_worktree"),
     ):
         _execute_finalization(
-            worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path
+            worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path, MagicMock()
         )
 
     linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
@@ -202,7 +202,7 @@ def test_execute_finalization_check_failure_blocked_when_no_escalate(
         patch("app.core.watcher.watcher_worktrees.cleanup_worktree"),
     ):
         _execute_finalization(
-            worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path
+            worker, 0, linear_mock, EscalationPolicy.from_toml(), tmp_path, MagicMock()
         )
 
     linear_mock.set_state.assert_called_with("fake-linear-id", "Blocked")
@@ -224,7 +224,7 @@ def test_execute_finalization_nonzero_exit_escalates_to_cloud(tmp_path: Path) ->
     )
     with patch("app.core.watcher.watcher_worktrees.cleanup_worktree"):
         _execute_finalization(
-            worker, 1, linear_mock, EscalationPolicy.from_toml(), tmp_path
+            worker, 1, linear_mock, EscalationPolicy.from_toml(), tmp_path, MagicMock()
         )
 
     linear_mock.set_state.assert_called_with("fake-linear-id", "In Progress")
@@ -256,6 +256,7 @@ def test_handle_policy_outcome_escalate_returns_escalated(
         worker,
         linear_mock,
         EscalationPolicy.from_toml(),
+        MagicMock(),
     )
 
     assert outcome == "escalated"
@@ -282,6 +283,7 @@ def test_handle_policy_outcome_human_returns_aborted(tmp_path: Path) -> None:
         worker,
         linear_mock,
         EscalationPolicy.from_toml(),
+        MagicMock(),
     )
 
     assert outcome == "aborted"
