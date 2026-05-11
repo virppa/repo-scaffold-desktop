@@ -117,3 +117,16 @@ source_modules =
     app.core.watcher.watcher_finalize_helpers
 forbidden_modules =
     app.core.watcher.watcher_finalize
+
+[importlinter:contract:metrics-models-no-store]
+name = metrics_models must not import metrics_store
+type = forbidden
+# Row dataclasses must stay independent of their store so that reporting /
+# analytics callers can import the models without pulling in SQLite and the
+# write-path machinery. WOR-433 split app.core.metrics into three siblings;
+# this contract prevents the back-edge that would defeat the split.
+# CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
+source_modules =
+    app.core.metrics_models
+forbidden_modules =
+    app.core.metrics_store
