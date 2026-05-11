@@ -10,7 +10,7 @@ import json
 import logging
 import subprocess  # nosec B404
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 from app.core.manifest import ExecutionManifest
 
@@ -372,34 +372,13 @@ _VLLM_COUNTERS = (
 )
 
 
-def capture_vllm_metrics(timeout: float = 5.0) -> dict[str, float] | None:
-    """Snapshot the small subset of vLLM Prometheus metrics needed for
-    per-ticket attribution.
-
-    Returns a dict keyed by metric name (without label suffixes) mapping to
-    the most recent value, or ``None`` if the endpoint is unreachable or
-    returns malformed text. Failure is non-fatal — callers treat ``None``
-    as "no snapshot, skip attribution."
-
-    Prometheus text format lines look like:
-        vllm:prefix_cache_hits_total{model="qwen3-coder",engine="0"} 12345.0
-
-    We strip everything after the metric name, sum across labels (there's
-    typically just one model/engine combo, but be safe), and emit a flat dict.
-
-    Uses ``http.client`` (matching ``watcher_services.probe_vllm_health``)
-    rather than ``urllib.request`` — the latter accepts ``file://`` URLs
-    so semgrep flags any urlopen call. This API only speaks HTTP to a
-    fixed localhost host:port pair so there is no SSRF surface.
-    """
+def _fetch_vllm_metrics_body(timeout: float) -> str | None:
+    """Fetch raw vLLM /metrics body via http.client; returns None on failure."""
     import http.client
 
-    # _VLLM_BASE_URL has the form "http://localhost:8000"; strip the scheme
-    # and split host:port for http.client.HTTPConnection.
     netloc = _VLLM_BASE_URL.split("://", 1)[1]
     host, _, port_str = netloc.partition(":")
     port = int(port_str) if port_str else 80
-
     try:
         conn = http.client.HTTPConnection(host, port, timeout=timeout)
         try:
@@ -407,10 +386,40 @@ def capture_vllm_metrics(timeout: float = 5.0) -> dict[str, float] | None:
             resp = conn.getresponse()
             if resp.status != 200:
                 return None
-            body = resp.read().decode("utf-8", errors="replace")
+            return resp.read().decode("utf-8", errors="replace")
         finally:
             conn.close()
     except (OSError, http.client.HTTPException):
+        return None
+
+
+def _parse_metric_line(line: str, targets: set[str]) -> tuple[str | None, float | None]:
+    """Parse one Prometheus text line; return (name, value) or (None, None)."""
+    for ch_idx, ch in enumerate(line):
+        if ch == "{" or ch.isspace():
+            metric_name = line[:ch_idx]
+            rest = line[ch_idx:]
+            break
+    else:
+        return None, None
+    if metric_name not in targets:
+        return None, None
+    try:
+        value = float(rest.rsplit(maxsplit=1)[-1])
+    except (ValueError, IndexError):
+        return None, None
+    return metric_name, value
+
+
+def capture_vllm_metrics(timeout: float = 5.0) -> dict[str, float] | None:
+    """Snapshot vLLM Prometheus metrics for per-ticket attribution.
+
+    Returns a dict {metric_name: aggregated_value} or None if the endpoint
+    is unreachable / malformed / not a vLLM /metrics surface. Aggregates
+    values across label combinations (typically one model/engine combo).
+    """
+    body = _fetch_vllm_metrics_body(timeout)
+    if body is None:
         return None
 
     targets = set(_VLLM_COUNTERS)
@@ -421,26 +430,12 @@ def capture_vllm_metrics(timeout: float = 5.0) -> dict[str, float] | None:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        # Metric name extends from start to first '{' or whitespace
-        for ch_idx, ch in enumerate(line):
-            if ch == "{" or ch.isspace():
-                metric_name = line[:ch_idx]
-                rest = line[ch_idx:]
-                break
-        else:
+        name, value = _parse_metric_line(line, targets)
+        if name is None or value is None:
             continue
-        if metric_name not in targets:
-            continue
-        # Value is the LAST whitespace-separated token
-        try:
-            value = float(rest.rsplit(maxsplit=1)[-1])
-        except (ValueError, IndexError):
-            continue
-        aggregated[metric_name] += value
-        seen[metric_name] = True
+        aggregated[name] += value
+        seen[name] = True
 
-    # If we saw none of the target metrics, treat as failure — endpoint
-    # responded but probably isn't a vLLM /metrics endpoint.
     if not any(seen.values()):
         return None
     return aggregated
@@ -577,25 +572,62 @@ class WorkerBehavior:
         return cls(0, 0, {}, 0, 0, None, None, None, 0)
 
 
+def _update_input_tokens(
+    inp: object,
+    first: int | None,
+    last: int | None,
+    cur_max: int | None,
+) -> tuple[int | None, int | None, int | None]:
+    """Fold a single usage.input_tokens value into the running (first, last, max)."""
+    if not isinstance(inp, int):
+        return first, last, cur_max
+    new_first = inp if first is None else first
+    new_last = inp
+    new_max = inp if cur_max is None else max(cur_max, inp)
+    return new_first, new_last, new_max
+
+
+def _accumulate_content_block(
+    block: dict[str, Any],
+    behavior_accum: dict[str, int],
+    tool_breakdown: dict[str, int],
+    read_counts: dict[str, int],
+) -> None:
+    """Update accumulators for one content block (thinking or tool_use)."""
+    btype = block.get("type")
+    if btype == "thinking":
+        behavior_accum["thinking_blocks"] += 1
+        text = block.get("thinking") or block.get("text") or ""
+        if isinstance(text, str):
+            behavior_accum["thinking_chars"] += len(text)
+    elif btype == "tool_use":
+        behavior_accum["tool_calls_total"] += 1
+        name = block.get("name") or "?"
+        tool_breakdown[name] = tool_breakdown.get(name, 0) + 1
+        if name == "Read":
+            fp = (block.get("input") or {}).get("file_path")
+            if isinstance(fp, str) and fp:
+                key = fp.replace("\\", "/")
+                read_counts[key] = read_counts.get(key, 0) + 1
+
+
 def _parse_worker_behavior(log_path: Path) -> WorkerBehavior:
     """Extract per-session behavior signals from the stream-json worker log.
 
-    Counts assistant turns, tool-call totals + breakdown by name, thinking
-    blocks + their text length, and per-file Read counts to derive a
-    redundant-reads count. Also captures the input_tokens trajectory
-    (first / last / max) which is a proxy for context-window pressure.
-
-    Returns a WorkerBehavior with None fields if the log is missing or
-    cannot be opened. Returns zero-valued fields if the log is parseable
-    but has no assistant turns.
+    Counts turns, tool calls + breakdown, thinking blocks + chars, and the
+    input_tokens trajectory (first/last/max). Derives redundant_reads_count
+    from per-file Read counts. Returns ``empty_unparseable()`` on read/parse
+    failure; ``empty_readable()`` if parsed but no assistant turns.
     """
     try:
         with log_path.open(encoding="utf-8") as f:
             turn_count = 0
-            tool_calls_total = 0
+            behavior_accum = {
+                "thinking_blocks": 0,
+                "thinking_chars": 0,
+                "tool_calls_total": 0,
+            }
             tool_breakdown: dict[str, int] = {}
-            thinking_blocks = 0
-            thinking_chars = 0
             input_tokens_first: int | None = None
             input_tokens_last: int | None = None
             input_tokens_max: int | None = None
@@ -613,42 +645,28 @@ def _parse_worker_behavior(log_path: Path) -> WorkerBehavior:
                 turn_count += 1
                 msg = obj.get("message") or {}
                 usage = msg.get("usage") or {}
-                inp = usage.get("input_tokens")
-                if isinstance(inp, int):
-                    if input_tokens_first is None:
-                        input_tokens_first = inp
-                    input_tokens_last = inp
-                    input_tokens_max = (
-                        inp if input_tokens_max is None else max(input_tokens_max, inp)
+                input_tokens_first, input_tokens_last, input_tokens_max = (
+                    _update_input_tokens(
+                        usage.get("input_tokens"),
+                        input_tokens_first,
+                        input_tokens_last,
+                        input_tokens_max,
                     )
+                )
                 for blk in msg.get("content") or []:
-                    if not isinstance(blk, dict):
-                        continue
-                    btype = blk.get("type")
-                    if btype == "thinking":
-                        thinking_blocks += 1
-                        text = blk.get("thinking") or blk.get("text") or ""
-                        if isinstance(text, str):
-                            thinking_chars += len(text)
-                    elif btype == "tool_use":
-                        tool_calls_total += 1
-                        name = blk.get("name") or "?"
-                        tool_breakdown[name] = tool_breakdown.get(name, 0) + 1
-                        if name == "Read":
-                            fp = (blk.get("input") or {}).get("file_path")
-                            if isinstance(fp, str) and fp:
-                                # Normalize Windows back-slashes for grouping
-                                key = fp.replace("\\", "/")
-                                read_counts[key] = read_counts.get(key, 0) + 1
+                    if isinstance(blk, dict):
+                        _accumulate_content_block(
+                            blk, behavior_accum, tool_breakdown, read_counts
+                        )
             if turn_count == 0:
                 return WorkerBehavior.empty_readable()
             redundant = sum(1 for n in read_counts.values() if n > 2)
             return WorkerBehavior(
                 turn_count=turn_count,
-                tool_calls_total=tool_calls_total,
+                tool_calls_total=behavior_accum["tool_calls_total"],
                 tool_calls_breakdown=tool_breakdown,
-                thinking_blocks=thinking_blocks,
-                thinking_chars_total=thinking_chars,
+                thinking_blocks=behavior_accum["thinking_blocks"],
+                thinking_chars_total=behavior_accum["thinking_chars"],
                 input_tokens_max=input_tokens_max,
                 input_tokens_first=input_tokens_first,
                 input_tokens_last=input_tokens_last,
