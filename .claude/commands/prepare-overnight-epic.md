@@ -199,7 +199,7 @@ After 'go':
 save_issue(
     team: "Work",
     title: "Overnight cleanup wave N",
-    description: "**Charter:** Mechanical Sonar + backlog cleanup, fire-and-forget. Single-ticket failures are accepted losses. Morning workflow: /close-epic → epic→main PR with whatever shipped.\n\n**Sub-ticket budget:** 30",
+    description: "**Charter:** Mechanical Sonar + backlog cleanup, fire-and-forget. Single-ticket failures are accepted losses. Morning workflow: /close-epic → epic→main PR with whatever shipped.\n\n**Shipping pattern:** Sub-ticket PRs target the epic branch `<EPIC_BRANCH>` and auto-merge when CI passes. The epic→main PR is the single human review surface. Do NOT alter this pattern in any sub-ticket manifest — `base_branch` is always the epic branch, never `main` directly (WOR-438).\n\n**Sub-ticket budget:** 30",
     labels: ["Refactor", "Infra"],
     state: "In Progress",
     priority: 3,

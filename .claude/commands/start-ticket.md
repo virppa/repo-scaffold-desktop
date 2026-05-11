@@ -216,7 +216,45 @@ If no siblings are In Progress, skip this block silently.
 - Note the milestone this ticket belongs to and how it fits the current milestone's goal
 - Flag any active blockers from Linear — if this ticket is blocked by an open issue, warn before proceeding
 
-### 2. As Architect — plan the implementation
+### 2.5. Routing assessment
+
+Before computing implementation_mode, determine the routing for this ticket.
+Routing answers: **"Where should this ticket run?"** — local worker vs cloud API.
+
+The manifest's `routing` field defaults to `"local"`. Override to `"cloud_preferred"`
+or `"cloud_only"` when justified. The local worker is the default because the
+hybrid engine is optimised for local execution — cloud is the fallback, not the
+default.
+
+**Routing values:**
+
+- **`local`** (default) — run on the local worker. Suitable when:
+  - Scope is bounded (≤3 small/medium files, or clearly defined multi-file scope)
+  - No external API keys / credentials are required
+  - No cloud-only dependencies (e.g. Anthropic API, GitHub API)
+  - Examples: bug fixes, config changes, new presets, template edits, docs-only tickets
+
+- **`cloud_preferred`** — local worker will attempt, but cloud is a natural fallback.
+  Suitable when the task has meaningful cross-file reasoning or touches complex
+  modules. The local worker will try first (per failure_policy), but a 1st-failure
+  escalation to cloud is expected.
+  - Examples: watcher lifecycle changes, metrics DB schema evolution, benchmark
+    runner improvements, multi-module refactors
+
+- **`cloud_only`** — must run in the cloud. Required when the ticket fundamentally
+  depends on services unavailable locally, or the scope exceeds the local worker's
+  practical limits. Justification is required.
+  - Examples: full epic integration review, cross-repo dependency analysis,
+    production model fine-tuning, security audit of external integrations
+
+**Classification rule:** assess scope, complexity, and dependencies. If in doubt,
+default to `local`. The failure_policy escalation paths handle the cloud fallback
+without needing to pre-declare every ticket as cloud.
+
+Record your routing choice in the manifest at `routing` (string: `"local"` |
+`"cloud_preferred"` | `"cloud_only"`).
+
+### 3. As Architect — plan the implementation
 
 <!-- WOR-276: Successor to WOR-214's effort field — moved from a raw enum into a strict 3-tier gate with a verb-default override. -->
 - List which files need to change and what changes are needed
@@ -245,7 +283,7 @@ If no siblings are In Progress, skip this block silently.
   - `tech_stack` — comma-separated tags of the technologies involved, e.g. `python,sqlite,pydantic` or `markdown,yaml`
   - `raw_extensions` — JSON array string of file extensions touched, e.g. `[".py",".md"]`
 
-### 3. Create the branch and update Linear
+### 4. Create the branch and update Linear
 Using the branch name from Linear's "Copy branch name" format (usually `WOR-NNN-short-description`):
 
 **If this ticket has a parent epic with an epic branch:**
@@ -273,13 +311,13 @@ list_issues(project: "{{ linear_project }}", parentId: <epicId>, state: "Backlog
 ```
 "Todo" signals "actively queued in this epic, not yet started" — distinguishes from Backlog items that aren't in scope yet. Skip this step if the epic was already In Progress.
 
-### 4. Present the plan
+### 5. Present the plan
 Summarize as:
 ```
 Branch: <branch-name> (off <epic-branch | main>)
 Milestone: <milestone name> (<progress>%)
 Epic: <parent issue title or "none">
-Implementation mode: <local|cloud> — local-ready label <present → local / absent → cloud>
+Routing: <local|cloud_preferred|cloud_only> — default local; cloud_preferred for high reasoning_demand cross-file work; cloud_only requires routing_reason justification
 Files to change:
   - path/to/file.py — what changes
 Tests to write:
@@ -295,7 +333,7 @@ To work in parallel: open a new Claude Code session in this repo and run
 ```
 
 **Interactive implementation recommended** if ALL four conditions hold:
-- `implementation_mode: cloud` (watcher would spawn another cloud session — no local-model benefit)
+- `routing: cloud_only` (watcher would spawn a cloud session — no local-model benefit)
 - `allowed_paths` contains only `.claude/commands/`, `CLAUDE.md`, `docs/`, or `schemas/` (no production Python)
 - No parallel siblings currently In Progress (no worktree isolation needed)
 - Small scope (≤ 3 files, no complex logic)
@@ -306,7 +344,7 @@ If all four apply, note it explicitly: *"This ticket is a good candidate for int
 
 ---
 
-### 2.5. Populate context_snippets from related_files_hint
+### 5.7. Populate context_snippets from related_files_hint
 
 Before writing the manifest (step 4.6), populate the `context_snippets` field so the
 local worker can read file headers without round-trip Read calls.
@@ -323,7 +361,7 @@ If `related_files_hint` is empty, leave `context_snippets` as null (omit it from
 Write the populated `context_snippets` object into the manifest at `context_snippets` key
 (see step 4.6 for the full manifest structure).
 
-### 2.6. Expand test allowed_paths to capture sibling test files (WOR-353)
+### 5.8. Expand test allowed_paths to capture sibling test files (WOR-353)
 
 Before writing the manifest, glob-expand every `tests/test_<stem>.py` entry in
 `allowed_paths` to `tests/test_<stem>*.py` so the worker has explicit permission
@@ -350,7 +388,7 @@ unchanged. Non-test paths (e.g. `app/core/metrics.py`) are left unchanged.
 The architect does NOT need to enumerate sibling tests manually — this step
 handles it mechanically before the manifest is written.
 
-### 4.6. After human approves the plan — generate the execution manifest
+### 5.6. After human approves the plan — generate the execution manifest
 
 Once the human says to proceed, generate and write an `ExecutionManifest` JSON to disk. This is the handoff artifact the local worker reads — it must not require re-reading Linear or re-planning.
 
@@ -367,7 +405,7 @@ Construct the manifest from the planning context gathered in steps 1–4:
   "parallel_safe": <true if no file conflicts with In-Progress siblings>,
   "risk_level": "<low|medium|high — from security surface assessment>",
   "risk_flags": ["<any specific risk notes>"],
-  "implementation_mode": "<local if ticket has local-ready label, otherwise cloud>",
+  "routing": "<local|cloud_preferred|cloud_only> — default local; override when justified (see §2.5 Routing assessment)",
   "effort": "<high|xhigh|max — effort classification from architect phase>",
   "change_type": "<additive|modification|refactor|removal|docs — taxonomy>",
   "reasoning_demand": <1-5: cross-file reasoning depth>,
@@ -466,7 +504,7 @@ cat .claude/artifacts/<ticket_id_lower>/result.json
 
 ---
 
-### 5. Opportunistic issue capture (after plan is shown — do not delay the plan for this)
+### 6. Opportunistic issue capture (after plan is shown — do not delay the plan for this)
 
 While reading the codebase to plan this ticket you may have noticed things outside the current scope. Surface anything that looks like:
 - An apparent bug in code you read (not in scope for this ticket)

@@ -68,9 +68,22 @@ class TestTicketStatusNotFound:
             patch("app.cli.operator.LinearClient", return_value=client),
         ):
             rc = main(["ticket-status", "WOR-999"])
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "issue not found" in out
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "error fetching" in err
+
+    def test_unknown_ticket_id_exits_with_error(self, capsys: CapSys) -> None:
+        """A valid LinearClient that returns None for an unknown ticket id."""
+        client = MagicMock()
+        client.get_issue.return_value = None
+        with (
+            patch.dict("os.environ", {"LINEAR_API_KEY": FAKE_API_KEY}, clear=True),
+            patch("app.cli.operator.LinearClient", return_value=client),
+        ):
+            rc = main(["ticket-status", "WOR-999"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "ticket not found" in err
 
 
 # ── --json flag tests ──────────────────────────────────────────────────────────

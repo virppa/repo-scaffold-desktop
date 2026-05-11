@@ -278,6 +278,19 @@ def _run_ticket_status(args: argparse.Namespace) -> int:
     client = LinearClient(api_key=api_key)
     status = fetch_ticket_status(client, ticket_id)
 
+    if status.state == "Unknown":
+        if "error fetching" in status.title:
+            print(
+                f"Error: {status.title}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"Error: {status.title} (fetching full status)",
+                file=sys.stderr,
+            )
+        return 1
+
     if args.json:
         import json as json_mod
 
