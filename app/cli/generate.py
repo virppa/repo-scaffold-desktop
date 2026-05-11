@@ -168,6 +168,33 @@ def _run_interactive(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    # Ask user if they want to save wizard answers as defaults
+    output_path = Path(str(results.get("output", "")))
+    try:
+        prompt = "Save these as your defaults for next time? [y/N]: "
+        answer = input(prompt).strip().lower()
+    except EOFError:
+        answer = "n"
+    if answer == "y":
+        prefs = prefs if prefs is not None else PrefsStore.load()
+        gh_username = results.get("github_username", prefs.github_username)
+        updated = prefs.model_copy(
+            update={
+                "author_name": results.get("author_name", prefs.author_name),
+                "github_username": gh_username,
+                "default_output_dir": output_path,
+                "default_preset": results.get("preset", prefs.default_preset),
+            },
+        )
+        try:
+            PrefsStore.save(updated)
+            print("Defaults saved.", file=sys.stderr)
+        except RuntimeError:
+            print(
+                "Defaults not saved — output directory is inside a git repository.",
+                file=sys.stderr,
+            )
+
     return 0
 
 
