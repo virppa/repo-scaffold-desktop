@@ -322,6 +322,12 @@ If the commit is rejected by a pre-commit hook, fix the issue and retry the comm
 
 Write a JSON result file to `artifact_paths.result_json`. Create parent dirs as needed.
 
+**Field semantics:** `summary` holds the ticket-scope summary (what was implemented).
+`notes` holds side-discoveries — bugs, quirks, or improvements observed during this
+worker session that fall outside this ticket's scope. The watcher auto-posts `notes`
+to the WOR-254 improvement log when it exceeds ~50 characters. Do not duplicate the
+ticket summary in `notes`; keep it focused on unexpected findings.
+
 **On success:**
 ```json
 {
@@ -330,7 +336,7 @@ Write a JSON result file to `artifact_paths.result_json`. Create parent dirs as 
   "summary": "<one-paragraph description of what was implemented>",
   "checks_passed": ["<check1>", "<check2>"],
   "checks_failed": [],
-  "notes": "<any surprising findings or edge cases encountered>"
+  "notes": "<side-discoveries (bugs/quirks/improvements outside this ticket's scope); auto-posted to WOR-254 if >50 chars — do not duplicate ticket-scope summary here>"
 }
 ```
 

@@ -67,6 +67,11 @@ __all__ = ["attempt_pr", "finalize_worker", "safe_set_state"]
 
 logger = logging.getLogger(__name__)
 
+# Minimum character threshold for result.json `notes` to qualify for
+# auto-posting to the WOR-254 improvement log. Tune here before adding a
+# config knob (WOR-303).
+NOTES_MIN_CHARS: int = 50
+
 # ---------------------------------------------------------------------------
 # Cloud pricing — per million tokens, keyed on model name
 # ---------------------------------------------------------------------------
@@ -511,6 +516,37 @@ def finalize_worker(
             redundant_reads_count=behavior.redundant_reads_count,
         )
     )
+
+    # -----------------------------------------------------------------------
+    # WOR-303 — improvement-log: auto-post worker side-discoveries to WOR-254
+    # -----------------------------------------------------------------------
+    result_path = worker.worktree_path / worker.manifest.artifact_paths.result_json
+    try:
+        if result_path.exists():
+            result_data = json.loads(result_path.read_text(encoding="utf-8"))
+            notes = (result_data.get("notes") or "").strip()
+            if len(notes) > NOTES_MIN_CHARS:
+                try:
+                    linear.post_comment(
+                        "WOR-254",
+                        f"## Side-discovery from {worker.ticket_id}\n\n"
+                        f"From the {worker.ticket_id} worker session "
+                        f"({worker.manifest.title}):\n\n"
+                        f"{notes}\n\n"
+                        f"Ref: {worker.ticket_id}, branch "
+                        f"`{worker.manifest.worker_branch}`.",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not post improvement-log comment for %s: %s",
+                        worker.ticket_id,
+                        exc,
+                    )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning(
+            "Could not read result.json for improvement-log harvest: %s", exc
+        )
+
     metrics.record_run(
         TicketRunLog(
             ticket_id=worker.ticket_id,
