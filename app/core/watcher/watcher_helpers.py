@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess  # nosec B404
+from collections.abc import Iterable
 from pathlib import Path
 from typing import IO, Any
 
@@ -621,57 +622,7 @@ def _parse_worker_behavior(log_path: Path) -> WorkerBehavior:
     """
     try:
         with log_path.open(encoding="utf-8") as f:
-            turn_count = 0
-            behavior_accum = {
-                "thinking_blocks": 0,
-                "thinking_chars": 0,
-                "tool_calls_total": 0,
-            }
-            tool_breakdown: dict[str, int] = {}
-            input_tokens_first: int | None = None
-            input_tokens_last: int | None = None
-            input_tokens_max: int | None = None
-            read_counts: dict[str, int] = {}
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") != "assistant":
-                    continue
-                turn_count += 1
-                msg = obj.get("message") or {}
-                usage = msg.get("usage") or {}
-                input_tokens_first, input_tokens_last, input_tokens_max = (
-                    _update_input_tokens(
-                        usage.get("input_tokens"),
-                        input_tokens_first,
-                        input_tokens_last,
-                        input_tokens_max,
-                    )
-                )
-                for blk in msg.get("content") or []:
-                    if isinstance(blk, dict):
-                        _accumulate_content_block(
-                            blk, behavior_accum, tool_breakdown, read_counts
-                        )
-            if turn_count == 0:
-                return WorkerBehavior.empty_readable()
-            redundant = sum(1 for n in read_counts.values() if n > 2)
-            return WorkerBehavior(
-                turn_count=turn_count,
-                tool_calls_total=behavior_accum["tool_calls_total"],
-                tool_calls_breakdown=tool_breakdown,
-                thinking_blocks=behavior_accum["thinking_blocks"],
-                thinking_chars_total=behavior_accum["thinking_chars"],
-                input_tokens_max=input_tokens_max,
-                input_tokens_first=input_tokens_first,
-                input_tokens_last=input_tokens_last,
-                redundant_reads_count=redundant,
-            )
+            return _walk_behavior_log(f)
     except (OSError, ValueError) as exc:
         logger.warning(
             "Failed to read %s — behaviour telemetry columns will be NULL; %s",
@@ -680,3 +631,64 @@ def _parse_worker_behavior(log_path: Path) -> WorkerBehavior:
             exc_info=True,
         )
         return WorkerBehavior.empty_unparseable()
+
+
+def _load_assistant_event(line: str) -> dict[str, Any] | None:
+    """Parse one JSONL line; return dict only if it is an assistant event."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+    try:
+        obj = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+        return None
+    return obj
+
+
+def _walk_behavior_log(lines: Iterable[str]) -> WorkerBehavior:
+    """Aggregate per-session behavior signals from a stream of JSONL lines."""
+    turn_count = 0
+    behavior_accum = {
+        "thinking_blocks": 0,
+        "thinking_chars": 0,
+        "tool_calls_total": 0,
+    }
+    tool_breakdown: dict[str, int] = {}
+    input_tokens_first: int | None = None
+    input_tokens_last: int | None = None
+    input_tokens_max: int | None = None
+    read_counts: dict[str, int] = {}
+    for raw in lines:
+        obj = _load_assistant_event(raw)
+        if obj is None:
+            continue
+        turn_count += 1
+        msg = obj.get("message") or {}
+        usage = msg.get("usage") or {}
+        input_tokens_first, input_tokens_last, input_tokens_max = _update_input_tokens(
+            usage.get("input_tokens"),
+            input_tokens_first,
+            input_tokens_last,
+            input_tokens_max,
+        )
+        for blk in msg.get("content") or []:
+            if isinstance(blk, dict):
+                _accumulate_content_block(
+                    blk, behavior_accum, tool_breakdown, read_counts
+                )
+    if turn_count == 0:
+        return WorkerBehavior.empty_readable()
+    redundant = sum(1 for n in read_counts.values() if n > 2)
+    return WorkerBehavior(
+        turn_count=turn_count,
+        tool_calls_total=behavior_accum["tool_calls_total"],
+        tool_calls_breakdown=tool_breakdown,
+        thinking_blocks=behavior_accum["thinking_blocks"],
+        thinking_chars_total=behavior_accum["thinking_chars"],
+        input_tokens_max=input_tokens_max,
+        input_tokens_first=input_tokens_first,
+        input_tokens_last=input_tokens_last,
+        redundant_reads_count=redundant,
+    )
