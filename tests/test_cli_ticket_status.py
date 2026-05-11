@@ -37,7 +37,7 @@ class TestTicketStatusMissingEnv:
         # Patch load_dotenv to a no-op so the test isolates the env state.
         with (
             patch.dict("os.environ", env, clear=True),
-            patch("app.cli.load_dotenv"),
+            patch("app.cli.main.load_dotenv"),
         ):
             rc = main(["ticket-status", "WOR-999"])
 
