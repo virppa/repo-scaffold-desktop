@@ -162,6 +162,35 @@ class LinearClient:
             return None
         return cast(str, issue["state"]["type"])
 
+    def get_issue(self, identifier: str) -> dict[str, Any]:
+        """Return full issue data for a ticket by its human identifier.
+
+        Returns a dict with `id`, `identifier`, `title`, and `state` (with
+        nested `name`, `type`, `createdAt`). Raises LinearError if the
+        issue is not found.
+        """
+        data = self._query(
+            """
+            query GetIssueByIdentifier($identifier: String!) {
+              issue(id: $identifier) {
+                id
+                identifier
+                title
+                state {
+                  name
+                  type
+                  createdAt
+                }
+              }
+            }
+            """,
+            {"identifier": identifier},
+        )
+        issue = data.get("issue")
+        if issue is None:
+            raise LinearError(f"Issue {identifier!r} not found")
+        return cast(dict[str, Any], issue)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
