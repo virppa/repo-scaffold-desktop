@@ -285,20 +285,8 @@ def _run_github_phase(
     return 0, clone_url, repo_full_name
 
 
-def _run_generate(args: argparse.Namespace) -> int:
-    """Top-level dispatcher for `generate` subcommand."""
-    if args.interactive:
-        return _run_interactive(args)
-
-    if not _validate_generate_args(args):
-        return 1
-
-    try:
-        config = _build_config(args)
-    except ValidationError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
+def _execute_generation_pipeline(config: RepoConfig, args: argparse.Namespace) -> int:
+    """Run render → fetch skills → post-setup → GitHub phase. Returns rc."""
     try:
         _render_and_report(config, args.output)
     except ValueError as exc:
@@ -319,3 +307,20 @@ def _run_generate(args: argparse.Namespace) -> int:
 
     exit_code, _clone_url, _repo_full_name = _run_github_phase(args, config)
     return exit_code
+
+
+def _run_generate(args: argparse.Namespace) -> int:
+    """Top-level dispatcher for `generate` subcommand."""
+    if args.interactive:
+        return _run_interactive(args)
+
+    if not _validate_generate_args(args):
+        return 1
+
+    try:
+        config = _build_config(args)
+    except ValidationError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    return _execute_generation_pipeline(config, args)

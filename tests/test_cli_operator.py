@@ -202,7 +202,7 @@ def test_watch_loop_exits_on_terminal_state(capsys: CapSys) -> None:
     status = _make_status(state="Done")
     client = MagicMock()
     rc = _run_ticket_status_watch_loop(client, "WOR-10", status)
-    assert rc == 0
+    assert rc is None
     assert "terminal state: Done" in capsys.readouterr().out
     client.assert_not_called()
 
@@ -220,7 +220,7 @@ def test_watch_loop_polls_then_exits_on_state_change(capsys: CapSys) -> None:
         ),
     ):
         rc = _run_ticket_status_watch_loop(client, "WOR-10", initial)
-    assert rc == 0
+    assert rc is None
     out = capsys.readouterr().out
     assert "polled" in out
     assert "terminal state: MergedToEpic" in out
@@ -232,4 +232,4 @@ def test_watch_loop_keyboard_interrupt_returns_zero(capsys: CapSys) -> None:
     client = MagicMock()
     with patch("app.cli.operator.time.sleep", side_effect=KeyboardInterrupt):
         rc = _run_ticket_status_watch_loop(client, "WOR-10", status)
-    assert rc == 0
+    assert rc is None
