@@ -237,14 +237,134 @@ def run_checks(
     return (len(failed_checks) == 0, failed_checks)
 
 
+def _rebase_onto_base(manifest: ExecutionManifest, worktree_path: Path) -> None:
+    """Fetch origin/<base_branch> and rebase the worker branch onto it (WOR-445).
+
+    On clean rebase: returns silently.
+    On conflict or fetch failure: aborts any in-progress rebase, then raises
+    CalledProcessError with a descriptive stderr — finalize_worker catches
+    it and marks the ticket Blocked with the reason.
+    """
+    base = manifest.base_branch
+    try:
+        subprocess.run(  # nosec B603 B607
+            ["git", "fetch", "origin", base],
+            cwd=str(worktree_path),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(  # nosec B603 B607
+            ["git", "rebase", f"origin/{base}"],
+            cwd=str(worktree_path),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        # Best-effort cleanup so the worktree isn't left mid-rebase.
+        subprocess.run(  # nosec B603 B607
+            ["git", "rebase", "--abort"],
+            cwd=str(worktree_path),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        stderr = (exc.stderr or exc.stdout or "").strip()
+        raise subprocess.CalledProcessError(
+            exc.returncode,
+            exc.cmd,
+            output=exc.output,
+            stderr=(
+                f"Rebase of {manifest.worker_branch} onto origin/{base} "
+                f"failed (WOR-445): {stderr}. Resolve manually: "
+                f"`cd <worktree>; git rebase origin/{base}` and push."
+            ),
+        ) from exc
+
+
+def _find_existing_pr_url(
+    exc: subprocess.CalledProcessError,
+    manifest: ExecutionManifest,
+    worktree_path: Path,
+) -> str | None:
+    """Recover from 'PR already exists' (WOR-444).
+
+    Returns the existing PR's URL if the failure was a duplicate-PR error
+    and we successfully looked up the existing PR. Returns None otherwise
+    (caller should re-raise).
+    """
+    stderr = (exc.stderr or "").lower()
+    if "already exists" not in stderr:
+        return None
+    try:
+        listing = subprocess.run(  # nosec B603 B607
+            [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                manifest.worker_branch,
+                "--state",
+                "open",
+                "--json",
+                "url",
+                "--jq",
+                ".[0].url",
+            ],
+            cwd=str(worktree_path),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        return None
+    url = listing.stdout.strip()
+    if not url:
+        return None
+    logger.info(
+        "PR already exists for %s — using existing %s (WOR-444 recovery)",
+        manifest.worker_branch,
+        url,
+    )
+    return url
+
+
 def create_pr(manifest: ExecutionManifest, worktree_path: Path) -> str:
     """Push the worker branch and open a GitHub PR.
+
+    Two safety steps run before `gh pr create`:
+
+    - **WOR-445 — rebase off origin/<base_branch>.** Catches main-side changes
+      that landed during the worker session so the PR opens against an
+      up-to-date base. Avoids merge conflicts at PR-merge time (which
+      otherwise force manual resolution per the WOR-132 incident).
+      Rebase conflicts raise CalledProcessError → finalize_worker marks
+      the ticket Blocked with a descriptive reason.
+
+    - **WOR-444 — PR-already-exists recovery.** If `gh pr create` fails with
+      "a pull request for branch ... already exists", re-fetch the
+      existing PR's URL via `gh pr list --head` and treat it as success.
+      The duplicate-PR error is downgraded from finalize failure (Blocked
+      in Linear) to an INFO log. Defense in depth alongside the worker
+      hook that blocks worker-side `gh pr create` in the first place.
 
     Auto-merge is enabled only when targeting an epic branch. PRs targeting
     main are left open for human review — auto-merging to main is forbidden.
     """
+    _rebase_onto_base(manifest, worktree_path)
+    # Force-with-lease handles the post-rebase case where the worker may
+    # have already pushed an earlier head (pre-WOR-444 behaviour). Safe on
+    # first push too: missing remote ref is a no-op for the lease check.
     subprocess.run(  # nosec B603 B607
-        ["git", "push", "-u", "origin", manifest.worker_branch],
+        [
+            "git",
+            "push",
+            "-u",
+            "--force-with-lease",
+            "origin",
+            manifest.worker_branch,
+        ],
         cwd=str(worktree_path),
         check=True,
         capture_output=True,
@@ -271,26 +391,35 @@ def create_pr(manifest: ExecutionManifest, worktree_path: Path) -> str:
                 f"{manifest.base_branch} — worker did not commit any changes"
             ),
         )
-    result = subprocess.run(  # nosec B603 B607
-        [
-            "gh",
-            "pr",
-            "create",
-            "--base",
-            manifest.base_branch,
-            "--head",
-            manifest.worker_branch,
-            "--title",
-            f"{manifest.ticket_id} {manifest.title}",
-            "--body",
-            f"Closes {manifest.ticket_id}\n\n{manifest.done_definition}",
-        ],
-        cwd=str(worktree_path),
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    pr_url = result.stdout.strip()
+    try:
+        result = subprocess.run(  # nosec B603 B607
+            [
+                "gh",
+                "pr",
+                "create",
+                "--base",
+                manifest.base_branch,
+                "--head",
+                manifest.worker_branch,
+                "--title",
+                f"{manifest.ticket_id} {manifest.title}",
+                "--body",
+                f"Closes {manifest.ticket_id}\n\n{manifest.done_definition}",
+            ],
+            cwd=str(worktree_path),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        pr_url = result.stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        # WOR-444 recovery: worker (or earlier finalize attempt) already
+        # opened a PR for this branch — re-fetch and proceed as if we
+        # created it ourselves.
+        existing = _find_existing_pr_url(exc, manifest, worktree_path)
+        if existing is None:
+            raise
+        pr_url = existing
 
     if manifest.base_branch == "main":
         logger.info(

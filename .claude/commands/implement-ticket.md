@@ -383,3 +383,5 @@ Exit cleanly after writing the result artifact. The watcher will:
 4. Advance the Linear ticket state to `in_review`, then `merged_to_epic` once CI passes
 
 **Do NOT run `/finalize-ticket`** — calling it from a watcher-spawned session creates a duplicate PR and bypasses the correct state machine.
+
+**Do NOT call `gh pr create`, `gh pr edit`, `gh pr merge`, or `git push origin`** — the PreToolUse hook `check_no_worker_pr.py` (WOR-444) will block these in worker sessions. The watcher rebases the worker branch onto the latest base and opens the PR itself at finalize time (WOR-445). The WOR-67 incident on 2026-05-11 — where a worker opened its own PR and the watcher's later `attempt_pr` returned "already exists", marking the ticket Blocked despite an open PR — is the exact failure this hook prevents.
