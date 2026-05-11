@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -240,6 +241,11 @@ def _handle_policy_outcome(
 
     # fix_locally — check Sonar findings before creating PR
     sonar_findings = fetch_sonar_findings(manifest.worker_branch)
+    if sonar_findings is None:
+        # Immediate fetch failed — mark for async retry in the poll loop
+        worker.pending_sonar_fetch = True
+        worker.sonar_fetch_attempts = 1
+        worker.sonar_first_attempted_at = time.monotonic()
     if _sonar_requires_escalation(sonar_findings, ticket_id, escalation_policy):
         safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
         _try_post_comment(

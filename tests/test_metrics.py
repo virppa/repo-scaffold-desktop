@@ -1051,3 +1051,44 @@ class TestComputeTags:
         assert result is not None
         assert result.tags is None
         assert result.notes is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-132: update_sonar_count — targeted backfill
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateSonarCount:
+    def test_backfills_null_count(self, tmp_path):
+        """update_sonar_count writes when the row's count is NULL."""
+        store = _store(tmp_path)
+        store.record(_ticket())
+        store.update_sonar_count("WOR-1", "proj-a", 42)
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.sonar_findings_count == 42
+
+    def test_noop_when_count_already_set(self, tmp_path):
+        """Does not overwrite a non-NULL sonar_findings_count."""
+        store = _store(tmp_path)
+        store.record(_ticket(sonar_findings_count=7))
+        store.update_sonar_count("WOR-1", "proj-a", 42)
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.sonar_findings_count == 7
+
+    def test_backfill_zero_distinct_from_none(self, tmp_path):
+        """Zero findings is a valid value that should be stored."""
+        store = _store(tmp_path)
+        store.record(_ticket())
+        store.update_sonar_count("WOR-1", "proj-a", 0)
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.sonar_findings_count == 0
+
+    def test_no_row_idempotent_noop(self, tmp_path):
+        """Calling on a missing ticket does not raise."""
+        store = _store(tmp_path)
+        store.update_sonar_count("WOR-99", "proj-a", 5)
+        # Should complete without error
+        store.get_by_ticket("WOR-99", "proj-a") is None

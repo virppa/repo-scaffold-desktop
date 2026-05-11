@@ -514,3 +514,79 @@ def test_emit_heartbeat_tick_boundary_no_duplicate() -> None:
 
     # Heartbeat should still be at tick 2 (no crossing to 3 at 70s)
     assert w._heartbeat["WOR-BND"][1] == 2
+
+
+# ---------------------------------------------------------------------------
+# WOR-132: _retry_pending_sonar — deferred SonarCloud fetch retry
+# ---------------------------------------------------------------------------
+
+
+def test_retry_pending_sonar_success_on_first_poll(tmp_path: Path) -> None:
+    """When the pending worker is found, findings are fetched and metrics
+    are backfilled, then the worker is removed from the pending set."""
+    w = Watcher(
+        repo_root=tmp_path, metrics_store=MagicMock(), linear_client=MagicMock()
+    )
+    w._project_id = "test-proj"
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-branch")
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    worker.pending_sonar_fetch = True
+    worker.sonar_fetch_attempts = 1
+    w._pending_sonar_workers["WOR-10"] = worker
+    w._metrics.get_by_ticket = MagicMock(return_value=None)
+
+    with patch(
+        "app.core.watcher.watcher.fetch_sonar_findings",
+        return_value=["BLOCKER", "CRITICAL"],
+    ):
+        w._retry_pending_sonar()
+
+    w._metrics.update_sonar_count.assert_called_once_with("WOR-10", "test-proj", 2)
+    assert "WOR-10" not in w._pending_sonar_workers
+
+
+def test_retry_pending_sonar_exhausts_budget(tmp_path: Path) -> None:
+    """After 3 attempts the worker is removed from the pending set without
+    updating metrics."""
+    w = Watcher(
+        repo_root=tmp_path, metrics_store=MagicMock(), linear_client=MagicMock()
+    )
+    w._project_id = "test-proj"
+    manifest = _make_manifest(ticket_id="WOR-10", worker_branch="wor-10-branch")
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+    worker.pending_sonar_fetch = True
+    worker.sonar_fetch_attempts = 3  # already at budget
+    w._pending_sonar_workers["WOR-10"] = worker
+    w._metrics.get_by_ticket = MagicMock(return_value=None)
+
+    with patch(
+        "app.core.watcher.watcher.fetch_sonar_findings",
+        return_value=None,
+    ):
+        w._retry_pending_sonar()
+
+    w._metrics.update_sonar_count.assert_not_called()
+    assert "WOR-10" not in w._pending_sonar_workers
+
+
+def test_retry_pending_sonar_empty_set_noop(tmp_path: Path) -> None:
+    """When there are no pending workers, the method returns without error."""
+    w = Watcher(
+        repo_root=tmp_path, metrics_store=MagicMock(), linear_client=MagicMock()
+    )
+    w._project_id = "test-proj"
+    assert w._pending_sonar_workers == {}
+    w._retry_pending_sonar()  # Should not raise
+    w._metrics.update_sonar_count.assert_not_called()

@@ -348,3 +348,60 @@ def test_try_post_comment_swallows_exception(
         _try_post_comment(linear_mock, "lin-id", "WOR-10", "some comment body")
 
     assert any("Could not post comment" in msg for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# WOR-132: deferred SonarCloud fetch sets pending_sonar_fetch flag
+# ---------------------------------------------------------------------------
+
+
+def test_execute_finalization_sonar_none_sets_pending_flag(
+    tmp_path: Path,
+) -> None:
+    """When fetch_sonar_findings returns None in the fix_locally path,
+    the worker gets pending_sonar_fetch=True so the poll loop can retry."""
+    manifest = make_manifest(ticket_id="WOR-10", worker_branch="wor-10-test-ticket")
+    linear_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=__import__("subprocess").Popen),
+    )
+    # result.json reports success so we enter the fix_locally path
+    result_path = tmp_path / ".claude" / "artifacts" / "wor_10" / "result.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text('{"status": "success"}', encoding="utf-8")
+
+    with patch(
+        "app.core.watcher.watcher_finalize_helpers.run_checks",
+        return_value=(True, []),
+    ):
+        with patch(
+            "app.core.watcher.watcher_finalize_helpers.fetch_sonar_findings",
+            return_value=None,
+        ):
+            with patch(
+                "app.core.watcher.watcher_finalize_helpers.preserve_worker_artifacts",
+            ):
+                with patch(
+                    "app.core.watcher.watcher_finalize_helpers.squash_wip_commits",
+                ):
+                    attempt_fn = MagicMock(return_value=("success", "https://pr.url"))
+                    outcome, escalated, preserved, findings, _, _ = (
+                        _execute_finalization(
+                            worker,
+                            0,
+                            linear_mock,
+                            EscalationPolicy.from_toml(),
+                            tmp_path,
+                            attempt_fn,
+                        )
+                    )
+
+    assert outcome == "success"
+    assert findings is None
+    assert worker.pending_sonar_fetch is True
+    assert worker.sonar_fetch_attempts == 1
+    assert worker.sonar_first_attempted_at is not None
