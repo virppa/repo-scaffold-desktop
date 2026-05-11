@@ -70,6 +70,20 @@ forbidden_modules =
     app.core.watcher.watcher_worktrees
     app.core.watcher.watcher_services
 
+[importlinter:contract:cli-layers]
+name = cli sub-modules form a strict dependency layer
+type = layers
+# Layered dependency stack for the app.cli subpackage (split from cli.py
+# in PR #889). `main` is the entry-point orchestrator; parser/generate/
+# config/operator are sibling command handlers and must NOT import each
+# other — a generate command has no business calling config or operator
+# helpers, and that would defeat the point of the split. Verified against
+# the actual import graph on 2026-05-11; only `main` imports siblings.
+# CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
+layers =
+    app.cli.main
+    app.cli.parser : app.cli.generate : app.cli.config : app.cli.operator
+
 [importlinter:contract:bench-store-not-in-watcher]
 name = bench_store must not be imported by watcher modules
 type = forbidden
