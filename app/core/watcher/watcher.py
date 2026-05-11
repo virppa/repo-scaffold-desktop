@@ -466,7 +466,7 @@ class Watcher:
                     break
                 time.sleep(DISPATCH_DELAY_SECONDS)
             except Exception as exc:
-                logger.error("Failed to start %s: %s", ticket_id, exc)
+                logger.exception("Failed to start %s: %s", ticket_id, exc)
 
     def _start_ticket(self, ticket_id: str, linear_id: str) -> None:
         """Load + enrich the manifest, then delegate to dispatch.start_ticket.
@@ -520,14 +520,13 @@ class Watcher:
             try:
                 outcome = self._finalize_one_worker(worker, rc)
             except Exception as exc:
-                logger.error(
+                logger.exception(
                     "finalize_worker raised for %s: %s. Worker slot freed; "
                     "result.json / last_failure.json may be incomplete and "
                     "Linear state may not have been advanced - investigate "
                     "manually.",
                     worker.ticket_id,
                     exc,
-                    exc_info=True,
                 )
                 outcome = "failure"
         # Remove in reverse so earlier indices stay valid.

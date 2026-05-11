@@ -202,7 +202,7 @@ def _save_dirty_worktree_to_backup(
             ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"),
         )
     except OSError as exc:
-        logger.error(
+        logger.exception(
             "Failed to back up dirty worktree for %s to %s: %s",
             ticket_id,
             target,

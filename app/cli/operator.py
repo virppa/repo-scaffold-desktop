@@ -10,6 +10,8 @@ from pathlib import Path
 from app.core.linear_client import LinearClient
 from app.core.metrics import MetricsStore
 from app.core.watcher.ticket_status import (
+    ArtifactInfo,
+    LogInfo,
     TicketStatus,
     _format_age,
     _format_size,
@@ -145,38 +147,33 @@ def _check_ticket_status_api_key() -> str | None:
     return api_key
 
 
-def _emit_ticket_status_full(status: TicketStatus) -> None:
-    """Print the default human-readable status block."""
-    print(f"Ticket: {status.ticket_id} — {status.title}")
-    age_str = _format_age(status.state_age_seconds) if status.state_age_seconds else "?"
-    print(f"State (Linear): {status.state} (age: {age_str})")
-
-    if status.worker_log is not None:
-        wl = status.worker_log
-        size_str = _format_size(wl.size_bytes)
-        last_ago = (
-            _format_age(wl.last_activity_ago_seconds)
-            if wl.last_activity_ago_seconds
-            else "?"
-        )
-        print("Worker process:")
-        print(f"  Log: {size_str}, last activity {last_ago}")
-        if wl.last_tool_calls:
-            print(f"  Recent actions (last {min(3, len(wl.last_tool_calls))}):")
-            for tc in wl.last_tool_calls[:3]:
-                print(f"    {tc.name} {tc.display}")
-        else:
-            print("  Recent actions: ?")
+def _emit_worker_log_block(wl: LogInfo) -> None:
+    """Print the worker-log section of the full status block."""
+    size_str = _format_size(wl.size_bytes)
+    last_ago = (
+        _format_age(wl.last_activity_ago_seconds)
+        if wl.last_activity_ago_seconds
+        else "?"
+    )
+    print("Worker process:")
+    print(f"  Log: {size_str}, last activity {last_ago}")
+    if wl.last_tool_calls:
+        print(f"  Recent actions (last {min(3, len(wl.last_tool_calls))}):")
+        for tc in wl.last_tool_calls[:3]:
+            print(f"    {tc.name} {tc.display}")
     else:
-        print("Worker process: no log file found")
+        print("  Recent actions: ?")
 
-    if status.artifacts is not None:
-        print(f"Artifacts ({status.artifacts.path}):")
-        for name, info in status.artifacts.entries.items():
-            print(f"  {name}    {info}")
-    else:
-        print("Artifacts: none")
 
+def _emit_artifacts_block(artifacts: ArtifactInfo) -> None:
+    """Print the artifacts section of the full status block."""
+    print(f"Artifacts ({artifacts.path}):")
+    for name, info in artifacts.entries.items():
+        print(f"  {name}    {info}")
+
+
+def _emit_worktree_block(status: TicketStatus) -> None:
+    """Print the worktree section of the full status block."""
     if status.worktree_exists is True:
         print(f"Worktree: {status.worktree_path}  exists")
     elif status.worktree_exists is False:
@@ -184,33 +181,60 @@ def _emit_ticket_status_full(status: TicketStatus) -> None:
     else:
         print("Worktree: ?")
 
+
+def _emit_health_flags_block(flags: dict[str, object]) -> None:
+    """Print the health-flags section (only when at least one flag is present)."""
+    parts = []
+    if "api_retries" in flags:
+        parts.append(f"{flags['api_retries']} api_retry events")
+    if "subagent_spawns" in flags:
+        parts.append(f"{flags['subagent_spawns']} subagent spawns")
+    if "no_result_artifact" in flags:
+        parts.append("no result artifact yet")
+    print(f"Health flags: {'; '.join(parts)}")
+
+
+def _emit_ticket_status_full(status: TicketStatus) -> None:
+    """Print the default human-readable status block."""
+    print(f"Ticket: {status.ticket_id} — {status.title}")
+    age_str = _format_age(status.state_age_seconds) if status.state_age_seconds else "?"
+    print(f"State (Linear): {status.state} (age: {age_str})")
+
+    if status.worker_log is not None:
+        _emit_worker_log_block(status.worker_log)
+    else:
+        print("Worker process: no log file found")
+
+    if status.artifacts is not None:
+        _emit_artifacts_block(status.artifacts)
+    else:
+        print("Artifacts: none")
+
+    _emit_worktree_block(status)
+
     if status.health_flags:
-        parts = []
-        if "api_retries" in status.health_flags:
-            parts.append(f"{status.health_flags['api_retries']} api_retry events")
-        if "subagent_spawns" in status.health_flags:
-            parts.append(f"{status.health_flags['subagent_spawns']} subagent spawns")
-        if "no_result_artifact" in status.health_flags:
-            parts.append("no result artifact yet")
-        print(f"Health flags: {'; '.join(parts)}")
+        _emit_health_flags_block(status.health_flags)
 
 
 def _run_ticket_status_watch_loop(
     client: LinearClient, ticket_id: str, status: TicketStatus
-) -> int:
-    """Poll the ticket every 30s until it reaches a terminal state."""
+) -> None:
+    """Poll the ticket every 30s until it reaches a terminal state.
+
+    Sonar S3516: the earlier int return had two identical `return 0`
+    paths; the caller now wraps this in `return 0` itself.
+    """
     terminal_states = {"Done", "MergedToEpic", "Cancelled", "Duplicate", "Blocked"}
     while status.state not in terminal_states:
         print(f"\n── polled {_format_age(status.state_age_seconds)} ──")
         try:
             time.sleep(30)
         except KeyboardInterrupt:
-            return 0
+            return
         status = fetch_ticket_status(client, ticket_id)
         print()
         _emit_ticket_status_full(status)
     print(f"\nTicket reached terminal state: {status.state}")
-    return 0
 
 
 def _run_ticket_status(args: argparse.Namespace) -> int:
@@ -240,6 +264,7 @@ def _run_ticket_status(args: argparse.Namespace) -> int:
     _emit_ticket_status_full(status)
 
     if args.watch:
-        return _run_ticket_status_watch_loop(client, ticket_id, status)
+        _run_ticket_status_watch_loop(client, ticket_id, status)
+        return 0
 
     return 0
