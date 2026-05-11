@@ -96,7 +96,11 @@ def collect_wizard_input(
     and the user supplied no value (and no default is configured).
     """
     default_val = _resolve_default_value(step, prefs)
-    display = f" [{default_val}]" if default_val is not None else ""
+    display = ""
+    if step.choices:
+        display += f" ({', '.join(step.choices)})"
+    if default_val is not None:
+        display += f" [{default_val}]"
 
     while True:
         if inputs is not None:
