@@ -956,3 +956,173 @@ def test_create_pr_warns_when_immediate_merge_also_fails(
 
     assert returned_url == pr_url
     assert any("gh pr merge --squash also failed" in msg for msg in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# WOR-444 + WOR-445 — PR-already-exists recovery + rebase-before-PR
+# ---------------------------------------------------------------------------
+
+
+def test_create_pr_rebases_before_push(tmp_path: Path) -> None:
+    """WOR-445: fetch + rebase run before git push + gh pr create."""
+    manifest = _make_manifest()
+    call_order: list[str] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            call_order.append("fetch")
+        elif cmd[:2] == ["git", "rebase"]:
+            call_order.append("rebase")
+        elif cmd[:2] == ["git", "push"]:
+            call_order.append("push")
+        elif cmd[:3] == ["gh", "pr", "create"]:
+            call_order.append("gh_pr")
+        result = MagicMock()
+        result.stdout = "https://github.com/example/pr/2"
+        result.stderr = ""
+        result.returncode = 0
+        return result
+
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
+        create_pr(manifest, tmp_path)
+
+    assert call_order[:4] == ["fetch", "rebase", "push", "gh_pr"]
+
+
+def test_create_pr_rebase_conflict_aborts_and_raises(tmp_path: Path) -> None:
+    """WOR-445: a rebase conflict triggers `git rebase --abort` and raises
+    with a descriptive stderr (finalize_worker catches it and marks Blocked)."""
+    import subprocess as sp
+
+    manifest = _make_manifest()
+    abort_called: list[bool] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            result = MagicMock(returncode=0, stdout="", stderr="")
+            return result
+        if cmd[:2] == ["git", "rebase"] and cmd[-1] != "--abort":
+            raise sp.CalledProcessError(1, cmd, output="", stderr="CONFLICT in foo.py")
+        if cmd[:3] == ["git", "rebase", "--abort"]:
+            abort_called.append(True)
+            return MagicMock(returncode=0, stdout="", stderr="")
+        # Should not reach here — rebase failure should short-circuit
+        raise AssertionError(f"unexpected call: {cmd}")
+
+    with (
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
+        pytest.raises(sp.CalledProcessError) as exc_info,
+    ):
+        create_pr(manifest, tmp_path)
+
+    assert abort_called == [True]
+    assert "Rebase" in (exc_info.value.stderr or "")
+    assert "WOR-445" in (exc_info.value.stderr or "")
+    assert "CONFLICT in foo.py" in (exc_info.value.stderr or "")
+
+
+def test_create_pr_recovers_from_pr_already_exists(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """WOR-444: when gh pr create says 'already exists', look up the existing
+    PR via gh pr list and return its URL."""
+    import subprocess as sp
+
+    manifest = _make_manifest()
+    existing_url = "https://github.com/example/pr/916"
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        if cmd[:3] == ["gh", "pr", "create"]:
+            raise sp.CalledProcessError(
+                1,
+                cmd,
+                output="",
+                stderr=(
+                    'a pull request for branch "wor-67-foo" into branch "main" '
+                    "already exists:"
+                ),
+            )
+        if cmd[:3] == ["gh", "pr", "list"]:
+            return MagicMock(returncode=0, stdout=existing_url + "\n", stderr="")
+        # default success for fetch/rebase/push/log/etc.
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = "abc1234 commit" if cmd[:2] == ["git", "log"] else ""
+        result.stderr = ""
+        return result
+
+    with (
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_subprocess"),
+    ):
+        url = create_pr(manifest, tmp_path)
+
+    assert url == existing_url
+    assert any(
+        "PR already exists" in msg and "WOR-444" in msg for msg in caplog.messages
+    )
+
+
+def test_create_pr_propagates_unrelated_gh_failure(tmp_path: Path) -> None:
+    """gh pr create failures that AREN'T 'already exists' still raise."""
+    import subprocess as sp
+
+    manifest = _make_manifest()
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        if cmd[:3] == ["gh", "pr", "create"]:
+            raise sp.CalledProcessError(
+                1, cmd, output="", stderr="HTTP 401: bad credentials"
+            )
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["git", "log"]:
+            result.stdout = "abc1234 commit"
+        return result
+
+    with (
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
+        pytest.raises(sp.CalledProcessError) as exc_info,
+    ):
+        create_pr(manifest, tmp_path)
+
+    assert "bad credentials" in (exc_info.value.stderr or "")
+
+
+def test_create_pr_gh_pr_list_lookup_failure_re_raises(tmp_path: Path) -> None:
+    """If `gh pr list` fails to find the existing PR, fall back to re-raising
+    the original 'already exists' CalledProcessError (don't silently lose
+    the signal)."""
+    import subprocess as sp
+
+    manifest = _make_manifest()
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> MagicMock:
+        if cmd[:3] == ["gh", "pr", "create"]:
+            raise sp.CalledProcessError(
+                1, cmd, output="", stderr="a pull request ... already exists:"
+            )
+        if cmd[:3] == ["gh", "pr", "list"]:
+            raise sp.CalledProcessError(1, cmd, output="", stderr="gh CLI offline")
+        result = MagicMock(returncode=0, stdout="", stderr="")
+        if cmd[:2] == ["git", "log"]:
+            result.stdout = "abc1234 commit"
+        return result
+
+    with (
+        patch(
+            "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+        ),
+        pytest.raises(sp.CalledProcessError) as exc_info,
+    ):
+        create_pr(manifest, tmp_path)
+
+    # The re-raised exception is the original "already exists" one.
+    assert "already exists" in (exc_info.value.stderr or "")
