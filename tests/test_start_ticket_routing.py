@@ -125,3 +125,62 @@ class TestCanonicalCases:
         text = _read_skill()
         # modification should be mentioned as a cell with low failure rate
         assert "modification" in text
+
+
+# ---------------------------------------------------------------------------
+# WOR-419 — cross-epic branch detection in start-ticket.md
+# ---------------------------------------------------------------------------
+
+
+class TestCrossEpicBranchDetection:
+    """File-content assertions for cross-epic detection logic in start-ticket.md."""
+
+    def test_cross_epic_section_header_exists(self):
+        text = _read_skill()
+        assert "Cross-epic branch detection" in text or "cross-epic" in text.lower()
+
+    def test_principle_prose_present(self):
+        """The cross-epic principle is stated: Linear parentId describes,
+        base_branch is the shipping unit; they can diverge."""
+        text = _read_skill()
+        assert "parentId" in text
+        assert "base_branch" in text
+        assert "diverge" in text or "diverges" in text
+
+    def test_epic_branch_listing_present(self):
+        """Cross-epic detection includes listing epic branches via git."""
+        text = _read_skill()
+        assert "epic/*" in text or "epic/" in text
+        assert "ls-remote" in text
+
+    def test_active_epic_check_logic_present(self):
+        """Detection checks: parent NOT 'In Review' AND at least one child
+        in InProgressLocal or MergedToEpic."""
+        text = _read_skill()
+        assert "InProgressLocal" in text or "In Progress" in text
+        assert "In Review" in text
+        assert "MergedToEpic" in text
+
+    def test_single_active_epic_rule(self):
+        """Exactly one active epic → default to it."""
+        text = _read_skill()
+        assert (
+            "exactly one" in text
+            or "active_count" in text
+            or "active epic" in text.lower()
+        )
+
+    def test_multiple_active_fallback(self):
+        """Multiple active epics → fall back to current behavior."""
+        text = _read_skill()
+        assert (
+            "multiple" in text
+            or "MULTIPLE" in text
+            or "fallback" in text
+            or "fall back" in text
+        )
+
+    def test_no_active_fallback(self):
+        """No active epic → use default resolution."""
+        text = _read_skill()
+        assert "default" in text or "default resolution" in text.lower()
