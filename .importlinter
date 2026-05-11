@@ -29,20 +29,30 @@ forbidden_modules =
 [importlinter:contract:watcher-layers]
 name = watcher sub-modules form a strict dependency layer
 type = layers
-# watcher (orchestrator) imports all sub-modules.
-# watcher_finalize sits between watcher and the subprocess/worktrees/services tier
-# because it imports from all three of those modules.
-# watcher_subprocess, watcher_worktrees, watcher_services may import from
-# watcher_types and watcher_helpers — not from each other or from watcher.
-# watcher_helpers may import from watcher_types only.
-# watcher_types is a leaf: imports nothing from watcher siblings.
+# Layered dependency stack for the watcher subpackage (16 modules).
+# Higher layers may import from lower layers; siblings at the same level
+# (separated by `:`) are independent — they may NOT import each other.
+# Verified against the actual import graph on 2026-05-11; structure prevents
+# tangles like the watcher_finalize ↔ watcher_finalize_helpers cycle that
+# SonarCloud's Architecture view flagged.
+#
+# Layer rationale:
+#  6 (top): entry points — imported only externally, not by any sibling.
+#  5: the single orchestration chokepoint (watcher_finalize).
+#  4: internal helpers extracted from L6/L5 modules to keep file sizes small.
+#  3: side-effect services (subprocess, git worktrees, vLLM lifecycle).
+#  2: pure utility functions consumed by L3+.
+#  1: leaves — types, parsers, TUI primitives, log formatting. Import nothing
+#     from siblings.
+#
 # CONTRACT OWNER: cloud LLM only — do not modify without explicit approval.
 layers =
-    app.core.watcher.watcher
+    app.core.watcher.watcher : app.core.watcher.dispatch : app.core.watcher.ticket_status
     app.core.watcher.watcher_finalize
+    app.core.watcher.watcher_finalize_helpers : app.core.watcher.watcher_heartbeat : app.core.watcher.watcher_signals
     app.core.watcher.watcher_subprocess : app.core.watcher.watcher_worktrees : app.core.watcher.watcher_services
     app.core.watcher.watcher_helpers
-    app.core.watcher.watcher_types
+    app.core.watcher.watcher_types : app.core.watcher.watcher_log_parsing : app.core.watcher.watcher_tui : app.core.watcher.worker_waste : app.core.watcher.log_format
 
 [importlinter:contract:watcher-types-is-leaf]
 name = watcher_types must not import from sibling watcher modules
