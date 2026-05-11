@@ -469,45 +469,142 @@ class MetricsStore:
     # WOR-Sonar: columns added by ALTER TABLE ADD COLUMN over time.
     # Data-driven migration; new columns just append to this list.
     _TICKET_METRICS_ADDED_COLUMNS: list[tuple[str, str]] = [
-        ("local_input_tokens", "INTEGER"),
-        ("local_output_tokens", "INTEGER"),
-        ("output_tokens_per_wall_second", "REAL"),
-        ("change_type", "TEXT"),
-        ("reasoning_demand", "INTEGER"),
-        ("scope_clarity", "INTEGER"),
-        ("constraint_density", "INTEGER"),
-        ("ac_specificity", "INTEGER"),
-        ("tech_stack", "TEXT"),
-        ("raw_extensions", "TEXT"),
-        ("waste_score", "INTEGER"),
-        ("waste_breakdown_json", "TEXT"),
-        ("tags", "TEXT"),
-        ("notes", "TEXT"),
-        ("effort", "TEXT"),
-        ("compact_duration_ms", "INTEGER"),
-        ("api_retry_count", "INTEGER"),
-        ("subagent_spawns", "INTEGER"),
-        ("hook_trust_violations", "INTEGER"),
-        ("dispatch_concurrency", "INTEGER"),
-        ("vllm_metrics_attributable", "INTEGER"),
-        ("vllm_prefix_cache_hits", "INTEGER"),
-        ("vllm_prefix_cache_queries", "INTEGER"),
-        ("vllm_prefix_cache_hit_ratio", "REAL"),
-        ("vllm_prompt_tokens", "INTEGER"),
-        ("vllm_generation_tokens", "INTEGER"),
-        ("vllm_ttft_seconds_sum", "REAL"),
-        ("vllm_ttft_count", "INTEGER"),
-        ("vllm_ttft_mean_seconds", "REAL"),
-        ("vllm_preemptions", "INTEGER"),
-        ("turn_count", "INTEGER"),
-        ("tool_calls_total", "INTEGER"),
-        ("tool_calls_breakdown", "TEXT"),
-        ("thinking_blocks", "INTEGER"),
-        ("thinking_chars_total", "INTEGER"),
-        ("input_tokens_max", "INTEGER"),
-        ("input_tokens_first", "INTEGER"),
-        ("input_tokens_last", "INTEGER"),
-        ("redundant_reads_count", "INTEGER"),
+        # (column_name, full_alter_sql) — literal SQL keeps semgrep's
+        # SQL-injection rules happy (the f-string version trips
+        # python.lang.security.audit.formatted-sql-query even though
+        # every value is a hardcoded class attribute).
+        (
+            "local_input_tokens",
+            "ALTER TABLE ticket_metrics ADD COLUMN local_input_tokens INTEGER",
+        ),
+        (
+            "local_output_tokens",
+            "ALTER TABLE ticket_metrics ADD COLUMN local_output_tokens INTEGER",
+        ),
+        (
+            "output_tokens_per_wall_second",
+            "ALTER TABLE ticket_metrics ADD COLUMN output_tokens_per_wall_second REAL",
+        ),
+        ("change_type", "ALTER TABLE ticket_metrics ADD COLUMN change_type TEXT"),
+        (
+            "reasoning_demand",
+            "ALTER TABLE ticket_metrics ADD COLUMN reasoning_demand INTEGER",
+        ),
+        (
+            "scope_clarity",
+            "ALTER TABLE ticket_metrics ADD COLUMN scope_clarity INTEGER",
+        ),
+        (
+            "constraint_density",
+            "ALTER TABLE ticket_metrics ADD COLUMN constraint_density INTEGER",
+        ),
+        (
+            "ac_specificity",
+            "ALTER TABLE ticket_metrics ADD COLUMN ac_specificity INTEGER",
+        ),
+        ("tech_stack", "ALTER TABLE ticket_metrics ADD COLUMN tech_stack TEXT"),
+        ("raw_extensions", "ALTER TABLE ticket_metrics ADD COLUMN raw_extensions TEXT"),
+        ("waste_score", "ALTER TABLE ticket_metrics ADD COLUMN waste_score INTEGER"),
+        (
+            "waste_breakdown_json",
+            "ALTER TABLE ticket_metrics ADD COLUMN waste_breakdown_json TEXT",
+        ),
+        ("tags", "ALTER TABLE ticket_metrics ADD COLUMN tags TEXT"),
+        ("notes", "ALTER TABLE ticket_metrics ADD COLUMN notes TEXT"),
+        ("effort", "ALTER TABLE ticket_metrics ADD COLUMN effort TEXT"),
+        (
+            "compact_duration_ms",
+            "ALTER TABLE ticket_metrics ADD COLUMN compact_duration_ms INTEGER",
+        ),
+        (
+            "api_retry_count",
+            "ALTER TABLE ticket_metrics ADD COLUMN api_retry_count INTEGER",
+        ),
+        (
+            "subagent_spawns",
+            "ALTER TABLE ticket_metrics ADD COLUMN subagent_spawns INTEGER",
+        ),
+        (
+            "hook_trust_violations",
+            "ALTER TABLE ticket_metrics ADD COLUMN hook_trust_violations INTEGER",
+        ),
+        (
+            "dispatch_concurrency",
+            "ALTER TABLE ticket_metrics ADD COLUMN dispatch_concurrency INTEGER",
+        ),
+        (
+            "vllm_metrics_attributable",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_metrics_attributable INTEGER",
+        ),
+        (
+            "vllm_prefix_cache_hits",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hits INTEGER",
+        ),
+        (
+            "vllm_prefix_cache_queries",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_queries INTEGER",
+        ),
+        (
+            "vllm_prefix_cache_hit_ratio",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_prefix_cache_hit_ratio REAL",
+        ),
+        (
+            "vllm_prompt_tokens",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_prompt_tokens INTEGER",
+        ),
+        (
+            "vllm_generation_tokens",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_generation_tokens INTEGER",
+        ),
+        (
+            "vllm_ttft_seconds_sum",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_seconds_sum REAL",
+        ),
+        (
+            "vllm_ttft_count",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_count INTEGER",
+        ),
+        (
+            "vllm_ttft_mean_seconds",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_ttft_mean_seconds REAL",
+        ),
+        (
+            "vllm_preemptions",
+            "ALTER TABLE ticket_metrics ADD COLUMN vllm_preemptions INTEGER",
+        ),
+        ("turn_count", "ALTER TABLE ticket_metrics ADD COLUMN turn_count INTEGER"),
+        (
+            "tool_calls_total",
+            "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_total INTEGER",
+        ),
+        (
+            "tool_calls_breakdown",
+            "ALTER TABLE ticket_metrics ADD COLUMN tool_calls_breakdown TEXT",
+        ),
+        (
+            "thinking_blocks",
+            "ALTER TABLE ticket_metrics ADD COLUMN thinking_blocks INTEGER",
+        ),
+        (
+            "thinking_chars_total",
+            "ALTER TABLE ticket_metrics ADD COLUMN thinking_chars_total INTEGER",
+        ),
+        (
+            "input_tokens_max",
+            "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_max INTEGER",
+        ),
+        (
+            "input_tokens_first",
+            "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_first INTEGER",
+        ),
+        (
+            "input_tokens_last",
+            "ALTER TABLE ticket_metrics ADD COLUMN input_tokens_last INTEGER",
+        ),
+        (
+            "redundant_reads_count",
+            "ALTER TABLE ticket_metrics ADD COLUMN redundant_reads_count INTEGER",
+        ),
     ]
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
@@ -531,11 +628,9 @@ class MetricsStore:
                 for row in conn.execute("PRAGMA table_info(ticket_metrics)").fetchall()
             }
 
-        for col, dtype in self._TICKET_METRICS_ADDED_COLUMNS:
+        for col, alter_sql in self._TICKET_METRICS_ADDED_COLUMNS:
             if col not in existing:
-                conn.execute(
-                    f"ALTER TABLE ticket_metrics ADD COLUMN {col} {dtype}"  # nosec B608
-                )
+                conn.execute(alter_sql)
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
