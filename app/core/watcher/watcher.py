@@ -181,22 +181,8 @@ class Watcher:
     # Public entry point
     # ------------------------------------------------------------------
 
-    def run(self) -> None:
-        """Start the poll loop. Blocks until SIGINT/SIGTERM."""
-        write_pid_file()
-        handler = make_signal_handler(self._services, self)
-        signal.signal(signal.SIGINT, handler)
-        if hasattr(signal, "SIGTERM"):
-            signal.signal(signal.SIGTERM, handler)
-        cleanup_orphaned_worktrees(self._repo_root, cleanup_worktree)
-        remove_stale_softstop_sentinel(self._repo_root)
-
-        if self._tui_mode:
-            self._display = WatcherDisplay()
-
-        if self._mode in ("local", "default"):
-            self._services.probe_vllm_health()
-
+    def _log_startup_banner(self) -> None:
+        """Log the per-mode startup banner."""
         if self._mode == "cloud":
             logger.info(
                 "Watcher started (mode=%s, max_cloud_workers=%d)",
@@ -217,76 +203,112 @@ class Watcher:
                 self._max_cloud_workers,
             )
 
+    def _check_softstop_sentinel(self) -> None:
+        """If the soft-stop sentinel file exists, transition into drain mode."""
+        if self._draining:
+            return
+        sentinel = softstop_sentinel_path(self._repo_root)
+        if not sentinel.exists():
+            return
+        self._draining = True
+        self._draining_since = time.monotonic()
+        active = len(self._local_active) + len(self._cloud_active)
+        logger.warning(
+            "Soft-stop requested. Draining: %d worker(s). "
+            "Daemon exits when all finish.",
+            active,
+        )
+
+    def _poll_iteration(self) -> bool:
+        """One iteration of the daemon poll loop.
+
+        Returns False if the loop should exit (drain complete or running=False).
+        """
+        self._check_softstop_sentinel()
+        self._terminate_overrun_workers()
+        self._reap_pool(self._local_active)
+        self._reap_pool(self._cloud_active)
+        if self._display is not None:
+            self._display.update_state(
+                build_tui_state(
+                    self._local_active,
+                    self._cloud_active,
+                    self._metrics,
+                    self._tracked_prs,
+                )
+            )
+        if not self._draining:
+            self._promote_waiting_tickets()
+        local_has_capacity = len(self._local_active) < self._max_local_workers
+        cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
+        if not self._draining and (local_has_capacity or cloud_has_capacity):
+            self._dispatch_next_ticket()
+        if not self._draining:
+            self._check_epic_completion()
+        if self._draining and not (self._local_active or self._cloud_active):
+            logger.info("Drain complete — all workers finished. Exiting.")
+            remove_softstop_sentinel(self._repo_root)
+            self._running = False
+        return self._running
+
+    def _emit_post_iteration_signals(self) -> None:
+        """Emit idle line, heartbeat, and soft-stop warnings after a poll cycle."""
+        new_idle = emit_idle_line(
+            len(self._local_active),
+            len(self._cloud_active),
+            self._max_local_workers,
+            self._max_cloud_workers,
+            self._repo_root,
+            self._last_idle_state,
+        )
+        if new_idle is not None:
+            self._last_idle_state = new_idle
+        self._heartbeat = emit_heartbeat(
+            self._local_active,
+            self._cloud_active,
+            self._heartbeat,
+        )
+        if maybe_warn_softstop_stuck(
+            self._draining,
+            self._draining_since,
+            self._softstop_warned_stuck,
+            self._local_active,
+            self._cloud_active,
+        ):
+            self._softstop_warned_stuck = True
+
+    def _finalize_run(self) -> None:
+        """Teardown: wait on active workers, stop services, remove pid file."""
+        wait_for_active_workers(self._local_active, self._cloud_active)
+        self._services.stop()
+        remove_pid_file()
+        if self._display is not None:
+            self._display.stop()
+        logger.info("Watcher stopped cleanly")
+
+    def run(self) -> None:
+        """Start the poll loop. Blocks until SIGINT/SIGTERM."""
+        write_pid_file()
+        handler = make_signal_handler(self._services, self)
+        signal.signal(signal.SIGINT, handler)
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, handler)
+        cleanup_orphaned_worktrees(self._repo_root, cleanup_worktree)
+        remove_stale_softstop_sentinel(self._repo_root)
+        if self._tui_mode:
+            self._display = WatcherDisplay()
+        if self._mode in ("local", "default"):
+            self._services.probe_vllm_health()
+        self._log_startup_banner()
+
         try:
             while self._running:
-                if not self._draining:
-                    sentinel = softstop_sentinel_path(self._repo_root)
-                    if sentinel.exists():
-                        self._draining = True
-                        self._draining_since = time.monotonic()
-                        active = len(self._local_active) + len(self._cloud_active)
-                        logger.warning(
-                            "Soft-stop requested. Draining: %d worker(s). "
-                            "Daemon exits when all finish.",
-                            active,
-                        )
-                self._terminate_overrun_workers()
-                self._reap_pool(self._local_active)
-                self._reap_pool(self._cloud_active)
-                if self._display is not None:
-                    self._display.update_state(
-                        build_tui_state(
-                            self._local_active,
-                            self._cloud_active,
-                            self._metrics,
-                            self._tracked_prs,
-                        )
-                    )
-                if not self._draining:
-                    self._promote_waiting_tickets()
-                local_has_capacity = len(self._local_active) < self._max_local_workers
-                cloud_has_capacity = len(self._cloud_active) < self._max_cloud_workers
-                if not self._draining and (local_has_capacity or cloud_has_capacity):
-                    self._dispatch_next_ticket()
-                if not self._draining:
-                    self._check_epic_completion()
-                if self._draining and not (self._local_active or self._cloud_active):
-                    logger.info("Drain complete — all workers finished. Exiting.")
-                    remove_softstop_sentinel(self._repo_root)
-                    self._running = False
-                if not self._running:
+                if not self._poll_iteration():
                     break
                 time.sleep(self._POLL_INTERVAL)
-                new_idle = emit_idle_line(
-                    len(self._local_active),
-                    len(self._cloud_active),
-                    self._max_local_workers,
-                    self._max_cloud_workers,
-                    self._repo_root,
-                    self._last_idle_state,
-                )
-                if new_idle is not None:
-                    self._last_idle_state = new_idle
-                self._heartbeat = emit_heartbeat(
-                    self._local_active,
-                    self._cloud_active,
-                    self._heartbeat,
-                )
-                if maybe_warn_softstop_stuck(
-                    self._draining,
-                    self._draining_since,
-                    self._softstop_warned_stuck,
-                    self._local_active,
-                    self._cloud_active,
-                ):
-                    self._softstop_warned_stuck = True
+                self._emit_post_iteration_signals()
         finally:
-            wait_for_active_workers(self._local_active, self._cloud_active)
-            self._services.stop()
-            remove_pid_file()
-            if self._display is not None:
-                self._display.stop()
-            logger.info("Watcher stopped cleanly")
+            self._finalize_run()
 
     # ------------------------------------------------------------------
     # WaitingForDeps promotion
@@ -481,17 +503,14 @@ class Watcher:
             except Exception as exc:
                 logger.error("Failed to start %s: %s", ticket_id, exc)
 
-    def _start_ticket(self, ticket_id: str, linear_id: str) -> None:
-        manifest = self._load_manifest(ticket_id)
-        manifest = self._enrich_with_retry_context(manifest)
-
-        # Prerequisite checks
+    def _has_open_blockers(
+        self, ticket_id: str, linear_id: str, manifest: ExecutionManifest
+    ) -> bool:
+        """Return True if ticket has open blockers (Linear or manifest)."""
         open_blockers = self._linear.get_open_blockers(linear_id)
         if open_blockers:
             logger.info("Skipping %s - open blockers: %s", ticket_id, open_blockers)
-            return
-
-        # Manifest-based blocker check - defense-in-depth alongside Linear check.
+            return True
         for blocker_id in manifest.blocked_by_tickets:
             state_type = self._linear.get_issue_state_type(blocker_id)
             if state_type not in DONE_STATE_TYPES:
@@ -501,62 +520,67 @@ class Watcher:
                     blocker_id,
                     state_type,
                 )
-                return
+                return True
+        return False
 
-        # WOR-419: defense-in-depth — refuse to spawn on a new epic/* branch
-        # when another epic/* is already in flight. Sub-ticket branches under
-        # the same epic are unaffected.
-        if manifest.base_branch.startswith("epic/"):
-            for worker in self._local_active:
-                if not hasattr(worker, "manifest"):
-                    continue
-                if not worker.manifest.base_branch.startswith("epic/"):
-                    continue
-                if worker.manifest.base_branch != manifest.base_branch:
-                    logger.warning(
-                        "Deferring %s — epic branch %s already in-flight "
-                        "(worker on %s)",
-                        ticket_id,
-                        manifest.base_branch,
-                        worker.manifest.base_branch,
-                    )
-                    try:
-                        self._linear.post_comment(
-                            linear_id,
-                            (
-                                f"Dispatch deferred: another worker is already "
-                                f"in-flight on epic branch "
-                                f"`{worker.manifest.base_branch}`. "
-                                f"Cannot dispatch to a new epic branch "
-                                f"`{manifest.base_branch}` until the in-flight "
-                                f"worker completes (one-active-epic-branch "
-                                f"principle, WOR-419)."
-                            ),
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Could not post epic-branch conflict comment for %s: %s",
-                            ticket_id,
-                            exc,
-                        )
-                    return
+    def _epic_branch_in_use(
+        self, ticket_id: str, linear_id: str, manifest: ExecutionManifest
+    ) -> bool:
+        """WOR-419: defer if another epic/* branch is already in flight."""
+        if not manifest.base_branch.startswith("epic/"):
+            return False
+        for worker in self._local_active:
+            if not hasattr(worker, "manifest"):
+                continue
+            if not worker.manifest.base_branch.startswith("epic/"):
+                continue
+            if worker.manifest.base_branch == manifest.base_branch:
+                continue
+            logger.warning(
+                "Deferring %s - epic branch %s already in-flight (worker on %s)",
+                ticket_id,
+                manifest.base_branch,
+                worker.manifest.base_branch,
+            )
+            try:
+                self._linear.post_comment(
+                    linear_id,
+                    (
+                        f"Dispatch deferred: another worker is already "
+                        f"in-flight on epic branch "
+                        f"`{worker.manifest.base_branch}`. "
+                        f"Cannot dispatch to a new epic branch "
+                        f"`{manifest.base_branch}` until the in-flight "
+                        f"worker completes (one-active-epic-branch "
+                        f"principle, WOR-419)."
+                    ),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not post epic-branch conflict comment for %s: %s",
+                    ticket_id,
+                    exc,
+                )
+            return True
+        return False
 
+    def _has_path_overlap(self, ticket_id: str, manifest: ExecutionManifest) -> bool:
+        """Return True if allowed_paths overlap with any active worker's."""
         all_active = self._local_active + self._cloud_active
         conflicts = check_allowed_paths_overlap(all_active, manifest)
-        if conflicts:
-            reason = f"overlap:{','.join(conflicts)}"
-            reason_msg = (
-                "Deferring %s - allowed_paths overlap with active workers: %s"
-                % (ticket_id, conflicts)
-            )
-            if suppress_dedup(ticket_id, reason, reason_msg, self._last_deferral_state):
-                logger.info(reason_msg)
-            return
-
-        effective_mode = resolve_effective_mode(
-            self._mode, manifest.implementation_mode
+        if not conflicts:
+            return False
+        reason = f"overlap:{','.join(conflicts)}"
+        reason_msg = "Deferring %s - allowed_paths overlap with active workers: %s" % (
+            ticket_id,
+            conflicts,
         )
+        if suppress_dedup(ticket_id, reason, reason_msg, self._last_deferral_state):
+            logger.info(reason_msg)
+        return True
 
+    def _pool_full_for_mode(self, ticket_id: str, effective_mode: str) -> bool:
+        """Return True if the pool for `effective_mode` has no capacity."""
         if effective_mode == "local":
             if len(self._local_active) >= self._max_local_workers:
                 reason_msg = "Deferring %s - local pool full (%d/%d)" % (
@@ -565,46 +589,47 @@ class Watcher:
                     self._max_local_workers,
                 )
                 if suppress_dedup(
-                    ticket_id,
-                    "local_pool_full",
-                    reason_msg,
-                    self._last_deferral_state,
+                    ticket_id, "local_pool_full", reason_msg, self._last_deferral_state
                 ):
                     logger.info(reason_msg)
-                return
-        else:
-            if len(self._cloud_active) >= self._max_cloud_workers:
-                reason_msg = "Deferring %s - cloud pool full (%d/%d)" % (
-                    ticket_id,
-                    len(self._cloud_active),
-                    self._max_cloud_workers,
-                )
-                if suppress_dedup(
-                    ticket_id,
-                    "cloud_pool_full",
-                    reason_msg,
-                    self._last_deferral_state,
-                ):
-                    logger.info(reason_msg)
-                return
+                return True
+            return False
+        if len(self._cloud_active) >= self._max_cloud_workers:
+            reason_msg = "Deferring %s - cloud pool full (%d/%d)" % (
+                ticket_id,
+                len(self._cloud_active),
+                self._max_cloud_workers,
+            )
+            if suppress_dedup(
+                ticket_id, "cloud_pool_full", reason_msg, self._last_deferral_state
+            ):
+                logger.info(reason_msg)
+            return True
+        return False
 
-        if effective_mode == "local":
-            if not self._services.probe_vllm_health():
-                reason_msg = "Deferring %s - vLLM not ready yet" % ticket_id
-                if suppress_dedup(
-                    ticket_id,
-                    "vllm_not_ready",
-                    reason_msg,
-                    self._last_deferral_state,
-                ):
-                    logger.warning(reason_msg)
-                return
-            self._services.ensure_vllm_anthropic_mode()
+    def _vllm_not_ready(self, ticket_id: str) -> bool:
+        """Return True if local mode is selected but vLLM isn't reachable."""
+        if not self._services.probe_vllm_health():
+            reason_msg = "Deferring %s - vLLM not ready yet" % ticket_id
+            if suppress_dedup(
+                ticket_id, "vllm_not_ready", reason_msg, self._last_deferral_state
+            ):
+                logger.warning(reason_msg)
+            return True
+        self._services.ensure_vllm_anthropic_mode()
+        return False
 
+    def _spawn_worker(
+        self,
+        ticket_id: str,
+        linear_id: str,
+        manifest: ExecutionManifest,
+        effective_mode: str,
+    ) -> None:
+        """Create the worktree, launch the worker process, and append to pool."""
         worktree_path = create_worktree(self._repo_root, manifest)
         copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)
         write_worker_pytest_config(worktree_path)
-
         safe_set_state(
             self._linear,
             linear_id,
@@ -612,7 +637,6 @@ class Watcher:
             ticket_id,
         )
         logger.info("Starting worker for %s - mode=%s", ticket_id, effective_mode)
-
         backed_up_plans = backup_plan_files()
         process = launch_worker(
             self._repo_root,
@@ -633,6 +657,28 @@ class Watcher:
             self._local_active.append(worker)
         else:
             self._cloud_active.append(worker)
+
+    def _start_ticket(self, ticket_id: str, linear_id: str) -> None:
+        """Dispatch a ticket: run all guards, then spawn the worker."""
+        manifest = self._load_manifest(ticket_id)
+        manifest = self._enrich_with_retry_context(manifest)
+
+        if self._has_open_blockers(ticket_id, linear_id, manifest):
+            return
+        if self._epic_branch_in_use(ticket_id, linear_id, manifest):
+            return
+        if self._has_path_overlap(ticket_id, manifest):
+            return
+
+        effective_mode = resolve_effective_mode(
+            self._mode, manifest.implementation_mode
+        )
+        if self._pool_full_for_mode(ticket_id, effective_mode):
+            return
+        if effective_mode == "local" and self._vllm_not_ready(ticket_id):
+            return
+
+        self._spawn_worker(ticket_id, linear_id, manifest, effective_mode)
 
     # ------------------------------------------------------------------
     # Worker lifecycle
@@ -830,92 +876,116 @@ class Watcher:
     # ------------------------------------------------------------------
     # Epic completion detection
     # ------------------------------------------------------------------
-    def _check_epic_completion(self) -> None:
-        if self._local_active or self._cloud_active:
-            return
+    def _no_remaining_ready_or_waiting(self) -> bool:
+        """Return True if there are no ReadyForLocal tickets AND no
+        WaitingForDeps manifests outstanding."""
         try:
             ready = self._linear.list_ready_for_local()
         except Exception as exc:
             logger.warning("Epic completion check: Linear poll failed: %s", exc)
-            return
+            return False
         if ready:
-            return
+            return False
         artifacts = self._repo_root / _CLAUDE_DIR / "artifacts"
         if artifacts.exists():
             for mp in artifacts.glob("manifest.json"):
                 try:
                     if ExecutionManifest.from_json(mp).status == "WaitingForDeps":
-                        return
+                        return False
                 except Exception as exc:
                     logger.warning("Could not read manifest at %s: %s", mp, exc)
+        return True
 
-        if self._processed_tickets:
-            state_key = (
-                "|".join(sorted(t.ticket_id for t in self._processed_tickets))
-                + ":"
-                + str(any(not t.succeeded for t in self._processed_tickets))
-            )
-            epic_id = next(
-                (t.epic_id for t in self._processed_tickets if t.epic_id), None
-            )
-            if epic_id and self._last_epic_complete_announced.get(epic_id) == state_key:
-                return
-            if epic_id:
-                self._last_epic_complete_announced[epic_id] = state_key
-            failed = [t for t in self._processed_tickets if not t.succeeded]
-            succeeded = [t for t in self._processed_tickets if t.succeeded]
-            if failed:
-                logger.warning(
-                    "All tickets processed - %d failed, %d succeeded",
-                    len(failed),
-                    len(succeeded),
-                )
-            else:
-                logger.info("All sub-tickets processed - epic complete")
-            logger.info("%-15s  %-55s  %s", "Ticket", "PR URL", "Elapsed")
-            for t in self._processed_tickets:
-                if not t.succeeded:
-                    pr_url = "(failed)"
-                else:
-                    try:
-                        cmd = [
-                            "gh",
-                            "pr",
-                            "list",
-                            "--head",
-                            t.worker_branch,
-                            "--json",
-                            "url",
-                            "--jq",
-                            ".[0].url",
-                        ]
-                        result = subprocess.run(  # nosec B603 B607
-                            cmd,
-                            capture_output=True,
-                            text=True,
-                            timeout=30,
-                            cwd=str(self._repo_root),
-                            check=False,
-                        )
-                        pr_url = result.stdout.strip()
-                        pr_url = pr_url if pr_url else "(not found)"
-                    except Exception:
-                        pr_url = "(not found)"
+    def _epic_dedup_state_key(self) -> tuple[str | None, str]:
+        """Return (epic_id, state_key) for dedup of the epic-complete announcement."""
+        epic_id = next((t.epic_id for t in self._processed_tickets if t.epic_id), None)
+        state_key = (
+            "|".join(sorted(t.ticket_id for t in self._processed_tickets))
+            + ":"
+            + str(any(not t.succeeded for t in self._processed_tickets))
+        )
+        return epic_id, state_key
 
-                logger.info("%-15s  %-55s  %.0fs", t.ticket_id, pr_url, t.elapsed)
-            if epic_id and not failed:
-                try:
-                    self._linear.post_comment(
-                        epic_id,
-                        f"All sub-tickets merged — ready for `/close-epic {epic_id}`",
-                    )
-                    logger.info("Posted epic-complete comment on %s", epic_id)
-                except Exception as exc:
-                    logger.warning(
-                        "Could not post epic-complete comment on %s: %s", epic_id, exc
-                    )
-            if not self._no_epic_shutdown:
-                self._running = False
+    def _lookup_pr_url(self, branch: str) -> str:
+        """Return the PR URL for `branch` via `gh pr list`, or a fallback."""
+        try:
+            cmd = [
+                "gh",
+                "pr",
+                "list",
+                "--head",
+                branch,
+                "--json",
+                "url",
+                "--jq",
+                ".[0].url",
+            ]
+            result = subprocess.run(  # nosec B603 B607
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(self._repo_root),
+                check=False,
+            )
+            pr_url = result.stdout.strip()
+            return pr_url if pr_url else "(not found)"
+        except Exception:
+            return "(not found)"
+
+    def _log_epic_summary(self) -> None:
+        """Log the per-ticket summary table for processed tickets."""
+        failed = [t for t in self._processed_tickets if not t.succeeded]
+        succeeded = [t for t in self._processed_tickets if t.succeeded]
+        if failed:
+            logger.warning(
+                "All tickets processed - %d failed, %d succeeded",
+                len(failed),
+                len(succeeded),
+            )
+        else:
+            logger.info("All sub-tickets processed - epic complete")
+        logger.info("%-15s  %-55s  %s", "Ticket", "PR URL", "Elapsed")
+        for t in self._processed_tickets:
+            pr_url = (
+                "(failed)" if not t.succeeded else self._lookup_pr_url(t.worker_branch)
+            )
+            logger.info("%-15s  %-55s  %.0fs", t.ticket_id, pr_url, t.elapsed)
+
+    def _post_epic_complete_comment(self, epic_id: str) -> None:
+        """Post the epic-complete summary comment, swallowing transport errors."""
+        try:
+            self._linear.post_comment(
+                epic_id,
+                f"All sub-tickets merged — ready for `/close-epic {epic_id}`",
+            )
+            logger.info("Posted epic-complete comment on %s", epic_id)
+        except Exception as exc:
+            logger.warning(
+                "Could not post epic-complete comment on %s: %s", epic_id, exc
+            )
+
+    def _check_epic_completion(self) -> None:
+        """When pools and queue are empty, announce epic complete + maybe exit."""
+        if self._local_active or self._cloud_active:
+            return
+        if not self._no_remaining_ready_or_waiting():
+            return
+        if not self._processed_tickets:
+            return
+
+        epic_id, state_key = self._epic_dedup_state_key()
+        if epic_id and self._last_epic_complete_announced.get(epic_id) == state_key:
+            return
+        if epic_id:
+            self._last_epic_complete_announced[epic_id] = state_key
+
+        self._log_epic_summary()
+        failed = any(not t.succeeded for t in self._processed_tickets)
+        if epic_id and not failed:
+            self._post_epic_complete_comment(epic_id)
+        if not self._no_epic_shutdown:
+            self._running = False
 
     # ------------------------------------------------------------------
     # Manifest loading
