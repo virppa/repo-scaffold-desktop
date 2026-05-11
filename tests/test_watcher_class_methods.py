@@ -134,14 +134,17 @@ def test_check_softstop_sentinel_noop_when_already_draining(tmp_path: Path) -> N
     """Already draining → return immediately, _draining_since unchanged."""
     w = _make_watcher(tmp_path)
     w._draining = True
-    w._draining_since = 1234.0  # sentinel value
+    original_since = 1234.0  # sentinel value
+    w._draining_since = original_since
 
     sentinel = softstop_sentinel_path(tmp_path)
     sentinel.parent.mkdir(parents=True, exist_ok=True)
     sentinel.touch()
 
     w._check_softstop_sentinel()
-    assert w._draining_since == 1234.0
+    # Identity comparison — the method must not have written a new value
+    # (avoids the floating-point-equality smell, S1244).
+    assert w._draining_since is original_since
 
 
 def test_check_softstop_sentinel_no_file_no_change(tmp_path: Path) -> None:
