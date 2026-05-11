@@ -33,6 +33,9 @@ python -m app.cli watcher                        # respects each manifest's impl
 python -m app.cli watcher --worker-mode cloud    # force cloud (Anthropic API) for all tickets
 python -m app.cli watcher --worker-mode local    # force local (LiteLLM proxy + RTX 5090)
 # Also: WORKER_MODE=cloud python -m app.cli watcher
+# Auto-loads .env from cwd (WOR-435) — LINEAR_API_KEY etc. inherited automatically
+python -m app.cli watcher --detach               # spawn detached daemon; parent exits; logs → .claude/watcher.log
+python -m app.cli watcher --visible              # Windows only: open new cmd.exe window with watcher attached
 # Concurrency (pools are independent — local is never starved by cloud burst):
 python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concurrency
 python -m app.cli watcher --max-cloud-workers 3  # default 3; parallelisable
