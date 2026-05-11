@@ -896,3 +896,38 @@ class TestInteractiveWizard:
         # Import exists and callable
         assert callable(validate_repo_name)
         assert callable(collect_interactive_wizard)
+
+    def test_interactive_and_preset_are_mutually_exclusive(self, capsys):
+        """--interactive and --preset together must fail with clear error."""
+        rc = main(
+            [
+                "generate",
+                "--interactive",
+                "--preset",
+                "python_basic",
+                "--repo-name",
+                "myrepo",
+                "--output",
+                "/tmp/test",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "mutually exclusive" in err
+
+    def test_preset_choices_shown_in_wizard_prompt(self, output_dir, tmp_path):
+        """Preset choices appear in the wizard prompt string."""
+        prefs_path = tmp_path / "prefs.json"
+        with (
+            patch.object(PrefsStore, "get_path", return_value=prefs_path),
+            patch("app.cli.generate.generate") as mock_gen,
+            patch("app.core.wizard.input") as mock_input,
+        ):
+            mock_gen.return_value = [".gitignore"]
+            mock_input.side_effect = ["myrepo", "python_basic", str(output_dir)]
+            rc = main(["generate", "--interactive"])
+        assert rc == 0
+        # Second call is for preset prompt which shows choices
+        preset_call = mock_input.call_args_list[1][0][0]
+        assert "python_basic" in preset_call
+        assert "full_agentic" in preset_call

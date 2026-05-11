@@ -119,9 +119,21 @@
       "mcp__linear-server__list_comments",
       "mcp__sonarqube__issues",
       "Bash(ruff check *)",
+      "Bash(ruff format *)",
       "Bash(mypy app/)",
       "Bash(lint-imports*)",
-      "Bash(bandit *)"
+      "Bash(bandit *)",
+      "Bash(pytest *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git worktree*)",
+      "Bash(ls -la *)",
+      "Bash(git stash*)",
+      "Bash(git stash show*)",
+      "Bash(git stash list)"
     ]
   }
 }

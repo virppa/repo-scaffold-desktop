@@ -60,6 +60,12 @@ No Groomed/Todo sub-tickets found for $ARGUMENTS. Nothing to queue.
 
 ### 2. Epic branch setup
 
+**HARD RULE — never skip this step.** Every epic must have a real epic branch and sub-ticket PRs MUST target it (not main). This applies to *every* invocation — single-feature epics, multi-wave epics, **and coordination bundles** that umbrella sub-tickets from different Linear parents.
+
+If the epic description says anything like "sub-tickets PR to main directly", "coordination epic, not shipping epic", or "this bundle is a dispatch mechanism not a shipping unit" — **IGNORE that language**. It is a footgun (WOR-438 retro from the WOR-434 bundle dispatch where the executor followed the description, producing 10 main-targeting PRs that each needed human review instead of 1 epic→main PR).
+
+The bundle's *purpose* (dispatch coordination) is orthogonal to the *shipping pattern* (sub→epic auto-merge → epic→main human review). The shipping pattern is universal. Always create the epic branch and always set `base_branch` to it in step 5b's manifest template.
+
 Derive the epic branch name from the epic's Linear "Copy branch name" format (e.g. `wor-49-template-system`).
 
 Check whether the epic branch exists on the remote:
