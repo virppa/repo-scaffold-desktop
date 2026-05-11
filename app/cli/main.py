@@ -12,6 +12,10 @@ from app.cli.operator import (
     _run_ticket_status,
     _run_waste_score,
     _run_watcher,
+    _run_watcher_forcestop,
+    _run_watcher_kill,
+    _run_watcher_pause,
+    _run_watcher_resume,
     _run_watcher_softstop,
 )
 from app.cli.parser import _build_parser
@@ -36,6 +40,14 @@ def _dispatch_command(args: argparse.Namespace) -> int:
         return _run_ticket_status(args)
     if args.command == "generate":
         return _run_generate(args)
+    if args.command == "watcher-forcestop":
+        return _run_watcher_forcestop(args)
+    if args.command == "watcher-pause":
+        return _run_watcher_pause(args)
+    if args.command == "watcher-resume":
+        return _run_watcher_resume(args)
+    if args.command == "watcher-kill":
+        return _run_watcher_kill(args)
     return 1
 
 

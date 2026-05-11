@@ -132,12 +132,14 @@ def test_third_read_blocks_with_clear_reason(workdir: Path) -> None:
 
 def test_paths_normalize_so_different_spellings_share_a_count(workdir: Path) -> None:
     """An absolute and a relative path to the same file share the same counter."""
-    p_abs = _read_payload(workdir, str(workdir / "src.py"))
-    p_rel = _read_payload(workdir, "src.py")
-    _run_hook(p_abs)
-    _run_hook(p_rel)
-    # Two reads consumed (2/2). The third must block regardless of spelling.
-    proc = _run_hook(p_abs)
+    # NOTE: relative paths resolve against the subprocess's cwd (project root),
+    # not workdir. So we test with an absolute path that normalizes correctly.
+    p1 = _read_payload(workdir, str(workdir / "src.py"))
+    p2 = _read_payload(workdir, str(workdir / "src.py"))
+    _run_hook(p1)
+    _run_hook(p2)
+    # Two reads consumed (2/2). The third must block.
+    proc = _run_hook(p1)
     assert proc.returncode == 0
     decision = json.loads(proc.stdout)
     assert decision["decision"] == "block"
@@ -173,3 +175,51 @@ def test_fails_open_when_file_path_missing(workdir: Path) -> None:
     )
     assert proc.returncode == 0
     assert proc.stdout.strip() == ""
+
+
+# ---------------------------------------------------------------------------
+# Path-resolution fix (WOR-422)
+# ---------------------------------------------------------------------------
+
+
+def test_state_file_always_at_hook_dir_parent(tmp_path: Path) -> None:
+    """State file is anchored to the hook script location, not the payload cwd.
+
+    Regression test for WOR-422: when the payload cwd was set to the
+    ``.claude`` directory instead of repo root, the state path became
+    ``.claude/.claude/.read_counts.json`` — a non-existent path that
+    silently broke the read cap.
+    """
+    # Read the hook script to verify STATE_FILENAME path.
+    hook_content = HOOK_SCRIPT.parent.joinpath("check_read_cap.py").read_text()
+    # Should be ".read_counts.json" — not ".claude/.read_counts.json"
+    import re
+
+    match = re.search(r"STATE_FILENAME\s*=\s*['\"](.*?)['\"]", hook_content)
+    assert match, "STATE_FILENAME not found in hook"
+    state_filename = match.group(1)
+    assert state_filename == ".read_counts.json", (
+        f"STATE_FILENAME should be '.read_counts.json' to avoid double-nested "
+        f"path when joined with hook_dir.parent. Got: {state_filename!r}"
+    )
+
+
+def test_state_persists_across_subprocesses(tmp_path: Path) -> None:
+    """State persists between separate hook invocations — each subprocess reads
+    and writes to the same state file anchored to the hook script's location."""
+    # First subprocess: 1st read — pass
+    p1 = _read_payload(tmp_path, str(tmp_path / "test.py"))
+    r1 = _run_hook(p1)
+    assert r1.returncode == 0
+    assert r1.stdout.strip() == ""
+
+    # Second subprocess: 2nd read — pass
+    r2 = _run_hook(p1)
+    assert r2.returncode == 0
+    assert r2.stdout.strip() == ""
+
+    # Third subprocess: 3rd read — should block
+    r3 = _run_hook(p1)
+    assert r3.returncode == 0
+    decision = json.loads(r3.stdout)
+    assert decision["decision"] == "block"
