@@ -10,10 +10,44 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.watcher.watcher_daemon import (
+    _build_child_argv,
     launch_detached,
     launch_in_new_terminal,
     load_env_file,
 )
+
+# ── _build_child_argv ───────────────────────────────────────────────────────
+
+
+def test_build_child_argv_strips_detach_visible() -> None:
+    """--detach and --visible are removed; all other args preserved in order."""
+    result = _build_child_argv(
+        ["--detach", "--worker-mode", "local", "--visible", "--verbose"]
+    )
+    assert result == ["--worker-mode", "local", "--verbose"]
+
+
+def test_build_child_argv_no_match_returns_unchanged() -> None:
+    """No --detach/--visible → full list returned as-is."""
+    args = ["--worker-mode", "local", "--max-workers", "8"]
+    assert _build_child_argv(args) == args
+
+
+def test_build_child_argv_empty_list() -> None:
+    """Empty input → empty output."""
+    assert _build_child_argv([]) == []
+
+
+def test_build_child_argv_only_strip_flags() -> None:
+    """Only --detach and --visible → empty list."""
+    assert _build_child_argv(["--detach", "--visible"]) == []
+
+
+def test_build_child_argv_duplicate_removal() -> None:
+    """Duplicate --detach entries are all stripped."""
+    result = _build_child_argv(["--detach", "--detach", "--verbose"])
+    assert result == ["--verbose"]
+
 
 # ── load_env_file ───────────────────────────────────────────────────────────
 
@@ -155,4 +189,76 @@ def test_launch_in_new_terminal_windows_runs_cmd_start(tmp_path: Path) -> None:
     # The inner command should include the tmp_path and the watcher invocation
     inner = args[-1]
     assert str(tmp_path) in inner
+    assert "app.cli watcher" in inner
+
+
+def test_launch_detached_forwards_extra_args(tmp_path: Path) -> None:
+    """extra_args are appended to the child command after 'watcher'."""
+    fake_proc = MagicMock(pid=1)
+    with patch(
+        "app.core.watcher.watcher_daemon.subprocess.Popen", return_value=fake_proc
+    ) as mock_popen:
+        launch_detached(
+            repo_root=tmp_path,
+            extra_args=["--worker-mode", "local", "--verbose"],
+        )
+
+    cmd = mock_popen.call_args.args[0]
+    assert cmd == [
+        sys.executable,
+        "-m",
+        "app.cli",
+        "watcher",
+        "--worker-mode",
+        "local",
+        "--verbose",
+    ]
+
+
+def test_launch_detached_extra_args_strips_detach_visible(tmp_path: Path) -> None:
+    """--detach/--visible in extra_args are stripped before forwarding."""
+    fake_proc = MagicMock(pid=1)
+    with patch(
+        "app.core.watcher.watcher_daemon.subprocess.Popen", return_value=fake_proc
+    ) as mock_popen:
+        launch_detached(
+            repo_root=tmp_path,
+            extra_args=["--detach", "--worker-mode", "local", "--visible"],
+        )
+
+    cmd = mock_popen.call_args.args[0]
+    assert "--detach" not in cmd
+    assert "--visible" not in cmd
+    assert "--worker-mode" in cmd
+    assert cmd.index("--worker-mode") == cmd.index("local") - 1
+
+
+def test_launch_detached_no_extra_args_unchanged(tmp_path: Path) -> None:
+    """Default call (no extra_args) still produces the base command."""
+    fake_proc = MagicMock(pid=1)
+    with patch(
+        "app.core.watcher.watcher_daemon.subprocess.Popen", return_value=fake_proc
+    ) as mock_popen:
+        launch_detached(repo_root=tmp_path)
+
+    cmd = mock_popen.call_args.args[0]
+    assert cmd == [sys.executable, "-m", "app.cli", "watcher"]
+
+
+def test_launch_in_new_terminal_forwards_extra_args(tmp_path: Path) -> None:
+    """extra_args are appended to the inner command string."""
+    with (
+        patch("app.core.watcher.watcher_daemon.sys") as mock_sys,
+        patch("app.core.watcher.watcher_daemon.subprocess.run") as mock_run,
+    ):
+        mock_sys.platform = "win32"
+        mock_sys.executable = sys.executable
+        rc = launch_in_new_terminal(
+            repo_root=tmp_path,
+            extra_args=["--worker-mode", "local", "--verbose"],
+        )
+    assert rc == 0
+    inner = mock_run.call_args.args[0][-1]
+    assert "--worker-mode" in inner
+    assert "--verbose" in inner
     assert "app.cli watcher" in inner
