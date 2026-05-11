@@ -123,7 +123,11 @@ def launch_worker(
         mcp_config_json=_LINEAR_MCP,
         effort=manifest.effort,
     )
-    env = build_worker_env(effective_mode, dict(os.environ))
+    env = build_worker_env(
+        effective_mode,
+        dict(os.environ),
+        quality_check_budget=len(manifest.required_checks),
+    )
 
     log_path = worktree_path / f".claude/worker_{manifest.ticket_id.lower()}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
