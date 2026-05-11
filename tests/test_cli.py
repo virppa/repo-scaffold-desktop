@@ -326,6 +326,68 @@ def test_watcher_max_local_and_cloud_workers_forwarded():
     assert kwargs.get("max_cloud_workers") == 5
 
 
+# ── WOR-435: --detach / --visible / .env autoload ──────────────────────────
+
+
+def test_watcher_detach_spawns_subprocess_and_returns_zero(capsys):
+    """--detach calls launch_detached, prints the PID line, returns 0
+    without instantiating Watcher in this process."""
+    from unittest.mock import patch
+
+    with (
+        patch("app.cli.operator.launch_detached", return_value=12345) as mock_launch,
+        patch("app.core.watcher.Watcher") as MockWatcher,
+    ):
+        rc = main(["watcher", "--detach"])
+    assert rc == 0
+    mock_launch.assert_called_once()
+    MockWatcher.assert_not_called()
+    err = capsys.readouterr().err
+    assert "Watcher daemon started (PID 12345)" in err
+    assert "watcher.log" in err
+
+
+def test_watcher_visible_calls_helper_and_returns_zero():
+    """--visible calls launch_in_new_terminal; Watcher not invoked."""
+    from unittest.mock import patch
+
+    with (
+        patch("app.cli.operator.launch_in_new_terminal", return_value=0) as mock_helper,
+        patch("app.core.watcher.Watcher") as MockWatcher,
+    ):
+        rc = main(["watcher", "--visible"])
+    assert rc == 0
+    mock_helper.assert_called_once()
+    MockWatcher.assert_not_called()
+
+
+def test_watcher_detach_and_visible_are_mutually_exclusive(capsys):
+    """--detach + --visible together → rc=2, clear error, no spawn."""
+    from unittest.mock import patch
+
+    with (
+        patch("app.cli.operator.launch_detached") as mock_detach,
+        patch("app.cli.operator.launch_in_new_terminal") as mock_visible,
+    ):
+        rc = main(["watcher", "--detach", "--visible"])
+    assert rc == 2
+    mock_detach.assert_not_called()
+    mock_visible.assert_not_called()
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_watcher_loads_env_file_before_dispatch():
+    """load_env_file is called before any other watcher logic, including detach."""
+    from unittest.mock import patch
+
+    with (
+        patch("app.cli.operator.load_env_file") as mock_load,
+        patch("app.cli.operator.launch_detached", return_value=1),
+    ):
+        main(["watcher", "--detach"])
+    mock_load.assert_called_once()
+
+
 def test_watcher_max_workers_alias_sets_both():
     from unittest.mock import MagicMock, patch
 
