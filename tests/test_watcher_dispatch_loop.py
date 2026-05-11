@@ -193,13 +193,13 @@ def test_cloud_pool_full_does_not_block_local_dispatch(tmp_path: Path) -> None:
 
     with (
         patch.object(watcher, "_load_manifest", return_value=local_manifest),
-        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.watcher.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
         patch.object(watcher._services, "ensure_vllm_anthropic_mode"),
         patch.object(watcher._services, "probe_vllm_health"),
         patch(
-            "app.core.watcher.watcher.launch_worker",
+            "app.core.watcher.dispatch.launch_worker",
             return_value=fake_local_process,
         ),
     ):
@@ -322,13 +322,13 @@ def test_dispatch_deferred_when_vllm_not_ready(tmp_path: Path) -> None:
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.watcher.create_worktree") as mock_create,
-        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.watcher.safe_set_state") as mock_set_state,
-        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.dispatch.create_worktree") as mock_create,
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.safe_set_state") as mock_set_state,
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
         patch(
-            "app.core.watcher.watcher.launch_worker",
+            "app.core.watcher.dispatch.launch_worker",
             return_value=fake_process,
         ),
         patch.object(w._services, "probe_vllm_health", return_value=False),
@@ -366,14 +366,14 @@ def test_dispatch_proceeds_when_vllm_ready(tmp_path: Path) -> None:
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
         patch(
-            "app.core.watcher.watcher.create_worktree", return_value=tmp_path
+            "app.core.watcher.dispatch.create_worktree", return_value=tmp_path
         ) as mock_create,
-        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.watcher.safe_set_state"),
-        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
         patch(
-            "app.core.watcher.watcher.launch_worker",
+            "app.core.watcher.dispatch.launch_worker",
             return_value=fake_process,
         ),
         patch.object(w._services, "probe_vllm_health", return_value=True),
@@ -488,13 +488,13 @@ def test_dispatch_proceeds_when_manifest_blocked_by_tickets_is_empty(
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.watcher.safe_set_state"),
-        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
         patch(
-            "app.core.watcher.watcher.launch_worker",
+            "app.core.watcher.dispatch.launch_worker",
             return_value=fake_process,
         ),
         patch.object(w._services, "ensure_vllm_anthropic_mode"),
@@ -527,13 +527,13 @@ def test_dispatch_proceeds_when_all_manifest_blockers_are_merged(
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.watcher.safe_set_state"),
-        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
         patch(
-            "app.core.watcher.watcher.launch_worker",
+            "app.core.watcher.dispatch.launch_worker",
             return_value=fake_process,
         ),
         patch.object(w._services, "ensure_vllm_anthropic_mode"),
@@ -562,11 +562,11 @@ def test_start_ticket_set_state_failure_worker_still_starts(tmp_path: Path) -> N
 
     with (
         patch.object(w, "_load_manifest", return_value=manifest),
-        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.watcher.create_worktree"),
-        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.dispatch.create_worktree"),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
         patch(
-            "app.core.watcher.watcher.launch_worker",
+            "app.core.watcher.dispatch.launch_worker",
             return_value=fake_process,
         ),
         patch.object(w._services, "ensure_vllm_anthropic_mode"),
@@ -903,7 +903,7 @@ def test_start_ticket_blocks_when_another_epic_branch_in_flight(
 
     with (
         patch.object(w, "_load_manifest", return_value=new_epic_manifest),
-        patch("app.core.watcher.watcher.create_worktree"),
+        patch("app.core.watcher.dispatch.create_worktree"),
         caplog.at_level(logging.WARNING, logger="app.core.watcher"),
     ):
         w._start_ticket("WOR-419", "fake-419")
@@ -952,13 +952,13 @@ def test_start_ticket_proceeds_for_same_epic_branch(
 
     with (
         patch.object(w, "_load_manifest", return_value=same_epic_manifest),
-        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.watcher.safe_set_state"),
-        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
         patch(
-            "app.core.watcher.watcher.launch_worker",
+            "app.core.watcher.dispatch.launch_worker",
             return_value=MagicMock(spec=subprocess.Popen),
         ),
         patch.object(w._services, "ensure_vllm_anthropic_mode"),
@@ -990,13 +990,13 @@ def test_start_ticket_unaffected_when_no_epic_workers(
 
     with (
         patch.object(w, "_load_manifest", return_value=main_manifest),
-        patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-        patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-        patch("app.core.watcher.watcher.write_worker_pytest_config"),
-        patch("app.core.watcher.watcher.safe_set_state"),
-        patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+        patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
         patch(
-            "app.core.watcher.watcher.launch_worker",
+            "app.core.watcher.dispatch.launch_worker",
             return_value=MagicMock(spec=subprocess.Popen),
         ),
         patch.object(w._services, "ensure_vllm_anthropic_mode"),

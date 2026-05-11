@@ -111,13 +111,13 @@ class TestMultiDispatchPerCycle:
 
         with (
             patch.object(w, "_load_manifest", side_effect=capture_load),
-            patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-            patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-            patch("app.core.watcher.watcher.write_worker_pytest_config"),
-            patch("app.core.watcher.watcher.safe_set_state"),
-            patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+            patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+            patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+            patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+            patch("app.core.watcher.dispatch.safe_set_state"),
+            patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
             patch(
-                "app.core.watcher.watcher.launch_worker",
+                "app.core.watcher.dispatch.launch_worker",
                 return_value=fake_process,
             ),
             patch.object(w._services, "ensure_vllm_anthropic_mode"),
@@ -172,13 +172,13 @@ class TestMultiDispatchPerCycle:
 
         with (
             patch.object(w, "_load_manifest", side_effect=load_for),
-            patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-            patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-            patch("app.core.watcher.watcher.write_worker_pytest_config"),
-            patch("app.core.watcher.watcher.safe_set_state"),
-            patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+            patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+            patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+            patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+            patch("app.core.watcher.dispatch.safe_set_state"),
+            patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
             patch(
-                "app.core.watcher.watcher.launch_worker",
+                "app.core.watcher.dispatch.launch_worker",
                 return_value=fake_process,
             ),
             patch.object(w._services, "ensure_vllm_anthropic_mode"),
@@ -240,13 +240,13 @@ class TestMultiDispatchPerCycle:
 
         with (
             patch.object(w, "_load_manifest", side_effect=capture_load),
-            patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-            patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-            patch("app.core.watcher.watcher.write_worker_pytest_config"),
-            patch("app.core.watcher.watcher.safe_set_state"),
-            patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+            patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+            patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+            patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+            patch("app.core.watcher.dispatch.safe_set_state"),
+            patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
             patch(
-                "app.core.watcher.watcher.launch_worker",
+                "app.core.watcher.dispatch.launch_worker",
                 return_value=fake_process,
             ),
             patch.object(w._services, "ensure_vllm_anthropic_mode"),
@@ -322,13 +322,13 @@ class TestInterDispatchDelay:
 
         with (
             patch.object(w, "_load_manifest", side_effect=capture_load),
-            patch("app.core.watcher.watcher.create_worktree", return_value=tmp_path),
-            patch("app.core.watcher.watcher.copy_manifest_to_worktree"),
-            patch("app.core.watcher.watcher.write_worker_pytest_config"),
-            patch("app.core.watcher.watcher.safe_set_state"),
-            patch("app.core.watcher.watcher.backup_plan_files", return_value=[]),
+            patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+            patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+            patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+            patch("app.core.watcher.dispatch.safe_set_state"),
+            patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
             patch(
-                "app.core.watcher.watcher.launch_worker",
+                "app.core.watcher.dispatch.launch_worker",
                 return_value=fake_process,
             ),
             patch.object(w._services, "ensure_vllm_anthropic_mode"),
@@ -378,14 +378,14 @@ class TestFailureDoesNotConsumeLimit:
 
         with (
             patch.object(w, "_load_manifest") as mock_load,
-            patch("app.core.watcher.watcher.create_worktree"),
+            patch("app.core.watcher.dispatch.create_worktree"),
         ):
             mock_load.side_effect = [
                 RuntimeError("boom"),  # First ticket fails
                 manifests[1],  # Second ticket succeeds
             ]
             # Patch safe_set_state to avoid actual Linear call
-            with patch("app.core.watcher.watcher.safe_set_state"):
+            with patch("app.core.watcher.dispatch.safe_set_state"):
                 w._dispatch_next_ticket()
 
         # Second ticket should have been loaded despite first failure

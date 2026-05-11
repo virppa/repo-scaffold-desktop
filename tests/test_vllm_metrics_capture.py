@@ -189,6 +189,8 @@ def test_dispatch_captures_vllm_snapshot_when_solo(tmp_path: Path) -> None:
         base_branch="main",
     )
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     local_active: list = []
     cloud_active: list = []
@@ -242,8 +244,12 @@ def test_dispatch_invalidates_solo_peer_when_second_worker_launches(
     from app.core.watcher.watcher_types import ActiveWorker
     from tests.conftest import make_manifest
 
-    # Pre-existing solo worker in the pool
-    solo_manifest = make_manifest(ticket_id="WOR-1")
+    # Pre-existing solo worker in the pool. WOR-431: dispatch.start_ticket now
+    # does path-overlap checking; use distinct allowed_paths so the second
+    # dispatch doesn't defer on overlap before reaching solo-peer invalidation.
+    solo_manifest = make_manifest(
+        ticket_id="WOR-1", allowed_paths=["app/core/solo_file.py"]
+    )
     solo_worker = ActiveWorker(
         ticket_id="WOR-1",
         linear_id="linear-1",
@@ -257,9 +263,14 @@ def test_dispatch_invalidates_solo_peer_when_second_worker_launches(
     cloud_active: list = []
 
     new_manifest = make_manifest(
-        ticket_id="WOR-2", base_branch="main", worker_branch="wor-2"
+        ticket_id="WOR-2",
+        base_branch="main",
+        worker_branch="wor-2",
+        allowed_paths=["app/core/peer_file.py"],
     )
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
 
     with (
@@ -313,6 +324,8 @@ def test_dispatch_skips_snapshot_when_metrics_endpoint_unreachable(
 
     manifest = make_manifest(implementation_mode="local", base_branch="main")
     linear = MagicMock()
+
+    linear.get_open_blockers.return_value = []
     services = _services()
     local_active: list = []
     cloud_active: list = []

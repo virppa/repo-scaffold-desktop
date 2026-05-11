@@ -29,14 +29,10 @@ from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
 from app.core.metrics import MetricsStore
 
+from . import dispatch
 from .watcher_epic import check_epic_completion
 from .watcher_finalize import finalize_worker, safe_set_state
 from .watcher_heartbeat import build_tui_state, emit_heartbeat, emit_idle_line
-from .watcher_helpers import (
-    check_allowed_paths_overlap,
-    resolve_effective_mode,
-    suppress_dedup,
-)
 from .watcher_log_parsing import format_elapsed, format_worker_token_count
 from .watcher_services import ServiceManager
 from .watcher_signals import (
@@ -51,7 +47,6 @@ from .watcher_signals import (
     wait_for_active_workers,
     write_pid_file,
 )
-from .watcher_subprocess import launch_worker
 from .watcher_tui import TrackedPR, WatcherDisplay
 from .watcher_types import (
     _ARTIFACTS_DIR,
@@ -60,11 +55,7 @@ from .watcher_types import (
     LinearClientProtocol,
 )
 from .watcher_worktrees import (
-    backup_plan_files,
     cleanup_worktree,
-    copy_manifest_to_worktree,
-    create_worktree,
-    write_worker_pytest_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -131,6 +122,9 @@ class Watcher:
         self._processed_tickets: list[_ProcessedTicket] = []
         self._running = True
         self._services = ServiceManager(self._repo_root)
+        # WOR-431: dispatch.start_ticket reads services._mode for
+        # effective_mode resolution. Forward the watcher's mode.
+        self._services._mode = worker_mode  # type: ignore[attr-defined]
         self._worker_verbose = worker_verbose
         self._escalation_policy = EscalationPolicy.from_toml()
         self._no_epic_shutdown = no_epic_shutdown
@@ -474,182 +468,31 @@ class Watcher:
             except Exception as exc:
                 logger.error("Failed to start %s: %s", ticket_id, exc)
 
-    def _has_open_blockers(
-        self, ticket_id: str, linear_id: str, manifest: ExecutionManifest
-    ) -> bool:
-        """Return True if ticket has open blockers (Linear or manifest)."""
-        open_blockers = self._linear.get_open_blockers(linear_id)
-        if open_blockers:
-            logger.info("Skipping %s - open blockers: %s", ticket_id, open_blockers)
-            return True
-        for blocker_id in manifest.blocked_by_tickets:
-            state_type = self._linear.get_issue_state_type(blocker_id)
-            if state_type not in DONE_STATE_TYPES:
-                logger.info(
-                    "Skipping %s - manifest declares unmerged blocker %s (state=%s)",
-                    ticket_id,
-                    blocker_id,
-                    state_type,
-                )
-                return True
-        return False
-
-    def _epic_branch_in_use(
-        self, ticket_id: str, linear_id: str, manifest: ExecutionManifest
-    ) -> bool:
-        """WOR-419: defer if another epic/* branch is already in flight."""
-        if not manifest.base_branch.startswith("epic/"):
-            return False
-        for worker in self._local_active:
-            if not hasattr(worker, "manifest"):
-                continue
-            if not worker.manifest.base_branch.startswith("epic/"):
-                continue
-            if worker.manifest.base_branch == manifest.base_branch:
-                continue
-            logger.warning(
-                "Deferring %s - epic branch %s already in-flight (worker on %s)",
-                ticket_id,
-                manifest.base_branch,
-                worker.manifest.base_branch,
-            )
-            try:
-                self._linear.post_comment(
-                    linear_id,
-                    (
-                        f"Dispatch deferred: another worker is already "
-                        f"in-flight on epic branch "
-                        f"`{worker.manifest.base_branch}`. "
-                        f"Cannot dispatch to a new epic branch "
-                        f"`{manifest.base_branch}` until the in-flight "
-                        f"worker completes (one-active-epic-branch "
-                        f"principle, WOR-419)."
-                    ),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Could not post epic-branch conflict comment for %s: %s",
-                    ticket_id,
-                    exc,
-                )
-            return True
-        return False
-
-    def _has_path_overlap(self, ticket_id: str, manifest: ExecutionManifest) -> bool:
-        """Return True if allowed_paths overlap with any active worker's."""
-        all_active = self._local_active + self._cloud_active
-        conflicts = check_allowed_paths_overlap(all_active, manifest)
-        if not conflicts:
-            return False
-        reason = f"overlap:{','.join(conflicts)}"
-        reason_msg = "Deferring %s - allowed_paths overlap with active workers: %s" % (
-            ticket_id,
-            conflicts,
-        )
-        if suppress_dedup(ticket_id, reason, reason_msg, self._last_deferral_state):
-            logger.info(reason_msg)
-        return True
-
-    def _pool_full_for_mode(self, ticket_id: str, effective_mode: str) -> bool:
-        """Return True if the pool for `effective_mode` has no capacity."""
-        if effective_mode == "local":
-            if len(self._local_active) >= self._max_local_workers:
-                reason_msg = "Deferring %s - local pool full (%d/%d)" % (
-                    ticket_id,
-                    len(self._local_active),
-                    self._max_local_workers,
-                )
-                if suppress_dedup(
-                    ticket_id, "local_pool_full", reason_msg, self._last_deferral_state
-                ):
-                    logger.info(reason_msg)
-                return True
-            return False
-        if len(self._cloud_active) >= self._max_cloud_workers:
-            reason_msg = "Deferring %s - cloud pool full (%d/%d)" % (
-                ticket_id,
-                len(self._cloud_active),
-                self._max_cloud_workers,
-            )
-            if suppress_dedup(
-                ticket_id, "cloud_pool_full", reason_msg, self._last_deferral_state
-            ):
-                logger.info(reason_msg)
-            return True
-        return False
-
-    def _vllm_not_ready(self, ticket_id: str) -> bool:
-        """Return True if local mode is selected but vLLM isn't reachable."""
-        if not self._services.probe_vllm_health():
-            reason_msg = "Deferring %s - vLLM not ready yet" % ticket_id
-            if suppress_dedup(
-                ticket_id, "vllm_not_ready", reason_msg, self._last_deferral_state
-            ):
-                logger.warning(reason_msg)
-            return True
-        self._services.ensure_vllm_anthropic_mode()
-        return False
-
-    def _spawn_worker(
-        self,
-        ticket_id: str,
-        linear_id: str,
-        manifest: ExecutionManifest,
-        effective_mode: str,
-    ) -> None:
-        """Create the worktree, launch the worker process, and append to pool."""
-        worktree_path = create_worktree(self._repo_root, manifest)
-        copy_manifest_to_worktree(self._repo_root, manifest, worktree_path)
-        write_worker_pytest_config(worktree_path)
-        safe_set_state(
-            self._linear,
-            linear_id,
-            manifest.ticket_state_map.in_progress_local,
-            ticket_id,
-        )
-        logger.info("Starting worker for %s - mode=%s", ticket_id, effective_mode)
-        backed_up_plans = backup_plan_files()
-        process = launch_worker(
-            self._repo_root,
-            manifest,
-            worktree_path,
-            effective_mode,
-            self._worker_verbose,
-        )
-        worker = ActiveWorker(
-            ticket_id=ticket_id,
-            linear_id=linear_id,
-            manifest=manifest,
-            worktree_path=worktree_path,
-            process=process,
-            backed_up_plans=backed_up_plans,
-        )
-        if effective_mode == "local":
-            self._local_active.append(worker)
-        else:
-            self._cloud_active.append(worker)
-
     def _start_ticket(self, ticket_id: str, linear_id: str) -> None:
-        """Dispatch a ticket: run all guards, then spawn the worker."""
+        """Load + enrich the manifest, then delegate to dispatch.start_ticket.
+
+        WOR-431: All dispatch logic (prereq checks, epic-branch gate, manifest
+        quality gates, stale-epic refusal, pool/vLLM readiness, worker spawn)
+        lives in dispatch.start_ticket. This wrapper handles the watcher-side
+        manifest loading + retry-context enrichment that dispatch can't do.
+        """
         manifest = self._load_manifest(ticket_id)
         manifest = self._enrich_with_retry_context(manifest)
-
-        if self._has_open_blockers(ticket_id, linear_id, manifest):
-            return
-        if self._epic_branch_in_use(ticket_id, linear_id, manifest):
-            return
-        if self._has_path_overlap(ticket_id, manifest):
-            return
-
-        effective_mode = resolve_effective_mode(
-            self._mode, manifest.implementation_mode
+        dispatch.start_ticket(
+            manifest=manifest,
+            linear=self._linear,
+            services=self._services,
+            worker_verbose=self._worker_verbose,
+            _local_active=self._local_active,
+            _cloud_active=self._cloud_active,
+            max_cloud_workers=self._max_cloud_workers,
+            _repo_root=self._repo_root,
+            _processed_tickets=self._processed_tickets,  # type: ignore[arg-type]
+            linear_id=linear_id,
+            ticket_id=ticket_id,
+            _escalation_policy=self._escalation_policy,
+            _dedup_state=self._last_deferral_state,
         )
-        if self._pool_full_for_mode(ticket_id, effective_mode):
-            return
-        if effective_mode == "local" and self._vllm_not_ready(ticket_id):
-            return
-
-        self._spawn_worker(ticket_id, linear_id, manifest, effective_mode)
 
     # ------------------------------------------------------------------
     # Worker lifecycle
