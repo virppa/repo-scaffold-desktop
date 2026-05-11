@@ -37,8 +37,11 @@ python -m app.cli config delete github-token
 
 # Watcher daemon (local worker orchestrator)
 python -m app.cli watcher                        # respects each manifest's implementation_mode
+                                                 # auto-loads .env from cwd (WOR-435)
 python -m app.cli watcher --worker-mode cloud    # force cloud (Anthropic API)
 python -m app.cli watcher --worker-mode local    # force local (vLLM-served Qwen)
+python -m app.cli watcher --detach               # spawn detached daemon; parent exits; logs → .claude/watcher.log
+python -m app.cli watcher --visible              # Windows only: open new cmd.exe window with watcher attached
 python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concurrency
 python -m app.cli watcher --max-cloud-workers 3  # default 3
 python -m app.cli watcher --verbose              # DEBUG level on the watcher's own logger
