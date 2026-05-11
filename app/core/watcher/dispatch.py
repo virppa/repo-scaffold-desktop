@@ -77,23 +77,12 @@ def start_ticket(
         services._mode if hasattr(services, "_mode") else "local",
         manifest.implementation_mode,
     )
-
-    if effective_mode != "local" and len(_cloud_active) >= max_cloud_workers:
-        logger.info(
-            "Deferring %s — cloud pool full (%d/%d)",
-            ticket_id,
-            len(_cloud_active),
-            max_cloud_workers,
-        )
+    if not _check_pool_capacity(
+        effective_mode, _cloud_active, max_cloud_workers, ticket_id
+    ):
         return
-
-    if effective_mode == "local":
-        if not services.probe_vllm_health():
-            reason_msg = "Deferring %s — vLLM not ready yet" % (ticket_id,)
-            if suppress_dedup(ticket_id, "vllm_not_ready", reason_msg, _dedup_state):
-                logger.warning("%s", reason_msg)
-            return
-        services.ensure_vllm_anthropic_mode()
+    if not _check_vllm_health(effective_mode, services, ticket_id, _dedup_state):
+        return
 
     worktree_path = create_worktree(_repo_root, manifest)
     copy_manifest_to_worktree(_repo_root, manifest, worktree_path)
@@ -111,24 +100,9 @@ def start_ticket(
     # WOR-363: capture pool size BEFORE launching this worker. Counts OTHER
     # workers — does not include the one we're about to add.
     dispatch_concurrency = len(_local_active) + len(_cloud_active)
-
-    # WOR-370: vLLM /metrics attribution gate.
-    # 1. If we're solo (dispatch_concurrency==0) and the /metrics endpoint
-    #    responds, snapshot for later delta computation.
-    # 2. If we're NOT solo, any peer that previously had remained_solo=True
-    #    must lose that flag — they're no longer alone, so their session's
-    #    deltas would be polluted by this worker's traffic.
-    vllm_metrics_before: dict[str, float] | None = None
-    remained_solo = False
-    if dispatch_concurrency == 0:
-        snapshot = capture_vllm_metrics()
-        if snapshot is not None:
-            vllm_metrics_before = snapshot
-            remained_solo = True
-    else:
-        for peer in (*_local_active, *_cloud_active):
-            if peer.remained_solo:
-                peer.remained_solo = False
+    vllm_metrics_before, remained_solo = _snapshot_vllm_solo(
+        dispatch_concurrency, _local_active, _cloud_active
+    )
 
     process = launch_worker(
         _repo_root, manifest, worktree_path, effective_mode, worker_verbose
@@ -319,3 +293,63 @@ def _check_path_overlap(
     if suppress_dedup(ticket_id, reason, reason_msg, _dedup_state):
         logger.info(reason_msg)
     return False
+
+
+def _check_pool_capacity(
+    effective_mode: str,
+    _cloud_active: list[ActiveWorker],
+    max_cloud_workers: int,
+    ticket_id: str,
+) -> bool:
+    """Defer cloud dispatch when the cloud pool is at capacity."""
+    if effective_mode == "local" or len(_cloud_active) < max_cloud_workers:
+        return True
+    logger.info(
+        "Deferring %s — cloud pool full (%d/%d)",
+        ticket_id,
+        len(_cloud_active),
+        max_cloud_workers,
+    )
+    return False
+
+
+def _check_vllm_health(
+    effective_mode: str,
+    services: ServiceManager,
+    ticket_id: str,
+    _dedup_state: dict[str, str],
+) -> bool:
+    """For local mode: defer until vLLM probes healthy + Anthropic mode is set."""
+    if effective_mode != "local":
+        return True
+    if not services.probe_vllm_health():
+        reason_msg = "Deferring %s — vLLM not ready yet" % (ticket_id,)
+        if suppress_dedup(ticket_id, "vllm_not_ready", reason_msg, _dedup_state):
+            logger.warning("%s", reason_msg)
+        return False
+    services.ensure_vllm_anthropic_mode()
+    return True
+
+
+def _snapshot_vllm_solo(
+    dispatch_concurrency: int,
+    _local_active: list[ActiveWorker],
+    _cloud_active: list[ActiveWorker],
+) -> tuple[dict[str, float] | None, bool]:
+    """WOR-370: vLLM /metrics attribution gate.
+
+    1. Solo (dispatch_concurrency==0): snapshot /metrics for later delta;
+       returns (snapshot, True) on success or (None, False) if probe fails.
+    2. Not solo: clear remained_solo on any peer that previously had it set
+       — their deltas would now be polluted by this worker's traffic.
+       Returns (None, False).
+    """
+    if dispatch_concurrency == 0:
+        snapshot = capture_vllm_metrics()
+        if snapshot is not None:
+            return snapshot, True
+        return None, False
+    for peer in (*_local_active, *_cloud_active):
+        if peer.remained_solo:
+            peer.remained_solo = False
+    return None, False
