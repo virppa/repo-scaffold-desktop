@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Callable
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
@@ -33,6 +34,11 @@ from app.core.watcher.watcher_worktrees import (
     preserve_worker_artifacts,
     squash_wip_commits,
 )
+
+# WOR-Sonar-tangle: callback type for `attempt_pr` injected by watcher_finalize.
+# Using Callable[..., ...] (not a Protocol) keeps the type loose enough to accept
+# the existing function without forcing a public-API change.
+AttemptPrFn = Callable[..., "tuple[Outcome, str | None]"]
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +91,7 @@ def _execute_finalization(
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
     repo_root: Path,
+    attempt_pr_fn: AttemptPrFn,
     tracked_prs: list[TrackedPR] | None = None,
     metrics: MetricsStore | None = None,
     project_id: str = "",
@@ -179,6 +186,7 @@ def _execute_finalization(
         worker,
         linear,
         escalation_policy,
+        attempt_pr_fn,
         manifest.objective,
         tracked_prs=tracked_prs,
     )
@@ -191,6 +199,7 @@ def _handle_policy_outcome(
     worker: ActiveWorker,
     linear: LinearClientProtocol,
     escalation_policy: EscalationPolicy,
+    attempt_pr_fn: AttemptPrFn,
     final_message: str = "Implementation complete",
     tracked_prs: list[TrackedPR] | None = None,
 ) -> tuple[Outcome, bool, list[str] | None, str | None]:
@@ -250,9 +259,7 @@ def _handle_policy_outcome(
         final_message,
     )
 
-    from .watcher_finalize import attempt_pr
-
-    outcome, pr_url = attempt_pr(manifest, worker, linear, tracked_prs=tracked_prs)
+    outcome, pr_url = attempt_pr_fn(manifest, worker, linear, tracked_prs=tracked_prs)
     if outcome == "success":
         if manifest.base_branch == "main":
             safe_set_state(linear, linear_id, "In Review", ticket_id)
