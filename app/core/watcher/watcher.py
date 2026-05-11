@@ -47,6 +47,7 @@ from .watcher_signals import (
     wait_for_active_workers,
     write_pid_file,
 )
+from .watcher_subprocess import fetch_sonar_findings
 from .watcher_tui import TrackedPR, WatcherDisplay
 from .watcher_types import (
     _ARTIFACTS_DIR,
@@ -141,6 +142,11 @@ class Watcher:
         self._draining: bool = False
         self._draining_since: float | None = None
         self._softstop_warned_stuck: bool = False
+        # WOR-132: workers that finished with pending_sonar_fetch=True, keyed
+        # by ticket_id. Used by _retry_pending_sonar to retry sonar findings
+        # asynchronously on the poll loop after the worker has been removed
+        # from the active pools.
+        self._pending_sonar_workers: dict[str, ActiveWorker] = {}
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -193,6 +199,8 @@ class Watcher:
         terminate_overrun_workers(self._local_active, self._cloud_active, self._linear)
         self._reap_pool(self._local_active)
         self._reap_pool(self._cloud_active)
+        # WOR-132: retry deferred SonarCloud findings fetches
+        self._retry_pending_sonar()
         if self._display is not None:
             self._display.update_state(
                 build_tui_state(
@@ -578,6 +586,11 @@ class Watcher:
             project_id=self._project_id,
             tracked_prs=self._tracked_prs,
         )
+        # Register workers that need async sonar retries (WOR-132).
+        # Must happen here — before _reap_pool removes the worker from the
+        # active pool, because the poll loop retry needs access to it.
+        if worker.pending_sonar_fetch:
+            self._pending_sonar_workers[worker.ticket_id] = worker
         self._processed_tickets.append(
             _ProcessedTicket(
                 ticket_id=worker.ticket_id,
@@ -663,6 +676,58 @@ class Watcher:
                 ]
             }
         )
+
+    def _retry_pending_sonar(self) -> None:
+        """Retry deferred SonarCloud findings fetches (WOR-132).
+
+        Iterates over ``_pending_sonar_workers``, fetches findings for each
+        worker's branch, and backfills ``sonar_findings_count`` in the
+        metrics store. Workers that exhaust 3 attempts are logged and
+        removed from the pending set without updating metrics.
+        """
+        if not self._pending_sonar_workers:
+            return
+
+        completed: list[str] = []
+        for ticket_id, worker in list(self._pending_sonar_workers.items()):
+            if not worker.pending_sonar_fetch:
+                completed.append(ticket_id)
+                continue
+
+            # Retry budget: 3 attempts total (1 initial + 2 poll-loop retries)
+            if worker.sonar_fetch_attempts >= 3:
+                logger.warning(
+                    "Sonar fetch retry budget exhausted for %s "
+                    "(%d attempts) — sonar_findings_count remains NULL",
+                    ticket_id,
+                    worker.sonar_fetch_attempts,
+                )
+                completed.append(ticket_id)
+                continue
+
+            findings = fetch_sonar_findings(worker.manifest.worker_branch)
+            if findings is not None:
+                self._metrics.update_sonar_count(
+                    ticket_id, self._project_id, len(findings)
+                )
+                logger.info(
+                    "Sonar findings backfilled for %s: %d findings (attempt %d)",
+                    ticket_id,
+                    len(findings),
+                    worker.sonar_fetch_attempts + 1,
+                )
+                worker.pending_sonar_fetch = False
+                completed.append(ticket_id)
+            else:
+                worker.sonar_fetch_attempts += 1
+                logger.debug(
+                    "Sonar fetch still unavailable for %s — retry attempt %d/3",
+                    ticket_id,
+                    worker.sonar_fetch_attempts,
+                )
+
+        for ticket_id in completed:
+            self._pending_sonar_workers.pop(ticket_id, None)
 
     def _load_manifest(self, ticket_id: str) -> ExecutionManifest:
         from app.core.manifest import ArtifactPaths

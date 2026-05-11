@@ -99,6 +99,12 @@ class ActiveWorker:
     # is dispatched. At reap, only workers with remained_solo=True get
     # attributable vLLM /metrics deltas; the rest get a sentinel artifact.
     remained_solo: bool = False
+    # WOR-132: deferred SonarCloud findings fetch state. When the immediate
+    # fetch at finalize time returns None, this flag is set so the watcher
+    # poll loop can retry asynchronously.
+    pending_sonar_fetch: bool = False
+    sonar_fetch_attempts: int = 0
+    sonar_first_attempted_at: float | None = None
 
 
 # ---------------------------------------------------------------------------

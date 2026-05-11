@@ -412,6 +412,23 @@ class MetricsStore:
                 (tags_json, ticket_id, project_id),
             )
 
+    def update_sonar_count(
+        self, ticket_id: str, project_id: str, count: int | None
+    ) -> None:
+        """Update only the sonar_findings_count column for an existing row.
+
+        Uses UPDATE instead of INSERT OR REPLACE so it does not rewrite the
+        whole row — the initial record is still fresh, and this is a
+        targeted backfill.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE ticket_metrics SET sonar_findings_count = ? "
+                "WHERE ticket_id = ? AND project_id = ? "
+                "AND sonar_findings_count IS NULL",
+                (count, ticket_id, project_id),
+            )
+
     def get_by_epic(self, epic_id: str, project_id: str) -> list[TicketMetrics]:
         """Return all ticket metrics for an epic."""
         with self._connect() as conn:
