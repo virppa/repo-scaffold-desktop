@@ -217,6 +217,8 @@ Two skills operate on epics rather than single tickets:
 - `/start-epic WOR-NNN` — batch-plan all groomed sub-tickets of an existing epic, file-conflict detection, queue Batch 1 as ReadyForLocal and Batch 2+ as WaitingForDeps. Use when an epic has 3-8 sub-tickets that need to be queued for the watcher.
 - `/prepare-overnight-epic` — auto-mine 20-30 single-bound parallel-safe candidates from existing Linear backlog + SonarQube findings, create a fire-and-forget mega-epic, queue all as ReadyForLocal. Use to fill the watcher with mechanical fixes for an unattended overnight run. Two operator gates (candidate-list approval + launch confirmation) before any worker dispatches. Per-ticket failures are accepted losses; morning workflow is `/close-epic` → epic→main PR with whatever shipped.
 
+**Coordination bundles still use the sub→epic→main shipping pattern (WOR-438).** When a bulk skill umbrellas sub-tickets from different Linear parents into one dispatch unit ("coordination bundle"), the bundle is the *dispatch mechanism* — not the *shipping unit*. The shipping pattern is universal: sub-ticket PRs target the epic branch and auto-merge; one epic→main PR is the human review surface. Bundle descriptions that say "PRs target main directly" or "this is a coordination epic, not shipping" are footguns; ignore that language and always create the epic branch in step 2. Surfaced live by WOR-434 where the executor followed such language and produced 10 main-targeting PRs instead of 1.
+
 ### Hybrid lifecycle states
 
 Linear workflow states for the hybrid execution model. The watcher daemon uses these as its action triggers:
