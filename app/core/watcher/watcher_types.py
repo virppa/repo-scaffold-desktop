@@ -19,6 +19,10 @@ from app.core.metrics import ImplementationMode
 _CLAUDE_DIR = ".claude"
 _ARTIFACTS_DIR = "artifacts"
 _PID_FILE = Path(_CLAUDE_DIR) / "watcher.pid"
+# Sentinel file names used by CLI operators to signal the watcher daemon.
+_WATCHER_FORCESTOP_SENTINEL_NAME = "watcher.forcestop"
+_WATCHER_PAUSE_SENTINEL_NAME = "watcher.pause"
+_WATCHER_KILL_SENTINEL_NAME = "watcher.kill"
 _IN_PROGRESS_STATE = "In Progress"
 _VLLM_PORT = 8000
 # WOR-408: env-configurable vLLM endpoint. Defaults to localhost:8000 (the
@@ -59,6 +63,7 @@ _ENV_VARS_TO_STRIP_FOR_CLOUD = frozenset(
 
 class LinearClientProtocol(Protocol):
     def list_ready_for_local(self) -> list[dict[str, Any]]: ...
+    def list_issues_by_state(self, state_name: str) -> list[dict[str, Any]]: ...
     def get_open_blockers(self, issue_id: str) -> list[str]: ...
     def set_state(self, issue_id: str, state_name: str) -> None: ...
     def post_comment(self, issue_id: str, body: str) -> None: ...

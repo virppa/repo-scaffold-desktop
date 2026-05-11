@@ -293,6 +293,58 @@ def format_elapsed(seconds: float) -> str:
     return f"{mins}m{secs:02d}s"
 
 
+def last_tool_call(log_path: Path) -> str:
+    """Return the most recent tool call name from a stream-json log.
+
+    Walks the log in a single pass and returns the ``name`` of the last
+    ``type=tool_use`` content block (e.g. ``Read``, ``Bash``, ``Edit``).
+    Returns the most recent thinking/text summary when the last block was
+    a ``thinking`` or ``text`` type. Returns ``""`` when the log is missing,
+    unparseable, or has no assistant messages yet (running worker with no
+    assistant turns).
+
+    For in-progress workers this gives a live view of what the LLM is doing.
+    """
+    try:
+        with log_path.open(encoding="utf-8") as f:
+            result = ""
+            for raw in f:
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") != "assistant":
+                    continue
+                msg = obj.get("message") or {}
+                for block in msg.get("content") or []:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type")
+                    if btype == "tool_use":
+                        name = block.get("name", "")
+                        if isinstance(name, str) and name:
+                            result = name
+                        else:
+                            result = ""
+                    elif btype in ("thinking", "text"):
+                        text = (
+                            block.get("thinking")
+                            or block.get("text")
+                            or block.get("text", "")
+                        )
+                        if isinstance(text, str) and text:
+                            # Truncate to ~40 chars to keep the TUI column usable
+                            result = (text[:37] + "...") if len(text) > 40 else text
+                        else:
+                            result = ""
+            return result
+    except Exception:
+        return ""
+
+
 def format_worker_token_count(log_path: Path) -> str:
     """Return ``142k tokens`` for the worker log, ``? tokens`` if unknown.
 
