@@ -218,7 +218,7 @@ def build_tui_state(
     for w in local_active:
         elapsed = time.monotonic() - w.start_time
         log_path = _build_local_worker_log_path(w)
-        in_tok, out_tok, _, _ = _parse_worker_usage(log_path)
+        _, out_tok, _, _ = _parse_worker_usage(log_path)
         cost = _live_cost_estimate(out_tok)
         last_act = last_tool_call(log_path)
         workers.append(

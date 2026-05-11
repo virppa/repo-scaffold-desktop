@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Sonar S1192: shared warning template — every stale-sentinel cleanup path
+# logs the same message when unlink fails, so consolidate the literal here.
+_STALE_SENTINEL_WARN_MSG = "Could not remove stale sentinel %s: %s"
+
 _SOFTSTOP_SENTINEL_NAME = "watcher.softstop"
 _SOFTSTOP_WARN_AFTER_MIN = 60
 
@@ -140,7 +144,7 @@ def remove_stale_softstop_sentinel(repo_root: Path) -> None:
             sentinel.unlink()
             logger.info("Removed stale soft-stop sentinel from prior run: %s", sentinel)
         except OSError as exc:
-            logger.warning("Could not remove stale sentinel %s: %s", sentinel, exc)
+            logger.warning(_STALE_SENTINEL_WARN_MSG, sentinel, exc)
 
 
 def remove_softstop_sentinel(repo_root: Path) -> None:
@@ -331,7 +335,7 @@ def remove_stale_forcestop_sentinel(repo_root: Path) -> None:
                 "Removed stale force-stop sentinel from prior run: %s", sentinel
             )
         except OSError as exc:
-            logger.warning("Could not remove stale sentinel %s: %s", sentinel, exc)
+            logger.warning(_STALE_SENTINEL_WARN_MSG, sentinel, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +356,7 @@ def remove_stale_pause_sentinel(repo_root: Path) -> None:
             sentinel.unlink()
             logger.info("Removed stale pause sentinel from prior run: %s", sentinel)
         except OSError as exc:
-            logger.warning("Could not remove stale sentinel %s: %s", sentinel, exc)
+            logger.warning(_STALE_SENTINEL_WARN_MSG, sentinel, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -373,7 +377,7 @@ def remove_stale_kill_sentinel(repo_root: Path) -> None:
             sentinel.unlink()
             logger.info("Removed stale kill sentinel from prior run: %s", sentinel)
         except OSError as exc:
-            logger.warning("Could not remove stale sentinel %s: %s", sentinel, exc)
+            logger.warning(_STALE_SENTINEL_WARN_MSG, sentinel, exc)
 
 
 def read_kill_sentinel(repo_root: Path) -> list[str]:

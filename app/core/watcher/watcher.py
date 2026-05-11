@@ -814,7 +814,7 @@ class Watcher:
             return
 
         completed: list[str] = []
-        for ticket_id, worker in list(self._pending_sonar_workers.items()):
+        for ticket_id, worker in self._pending_sonar_workers.items():
             if not worker.pending_sonar_fetch:
                 completed.append(ticket_id)
                 continue

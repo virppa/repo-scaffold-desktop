@@ -276,28 +276,8 @@ class WatcherDisplay:
         metrics = state.vllm_metrics
         if metrics is None:
             table.add_row("—", "No vLLM running")
-        else:
-            gen = metrics.get("vllm:generation_tokens_total") or 0
-            prompt = metrics.get("vllm:prompt_tokens_total") or 0
-            total_gen = gen + prompt
-            # Queue depth = num_preemptions (proxy for pending requests)
-            preempt = metrics.get("vllm:num_preemptions_total") or 0
-            hit_ratio = metrics.get("vllm:prefix_cache_hit_ratio")
-            # Show throughput if we have token data
-            if total_gen > 0:
-                table.add_row("Tokens", f"{total_gen:,.0f}")
-            else:
-                table.add_row("Tokens", "—")
-            table.add_row("Queue Depth", f"{int(preempt)}" if preempt else "—")
-            if hit_ratio is not None:
-                table.add_row("Cache Hit Ratio", f"{hit_ratio:.0%}")
-            else:
-                table.add_row("Cache Hit Ratio", "—")
-            ttft_mean = metrics.get("vllm:ttft_mean_seconds")
-            if ttft_mean is not None and ttft_mean > 0:
-                table.add_row("TTFT Mean", f"{ttft_mean:.3f}s")
-            else:
-                table.add_row("TTFT Mean", "—")
+            return table
+        _fill_vllm_rows(table, metrics)
         return table
 
     @staticmethod
@@ -440,3 +420,40 @@ class WatcherDisplay:
             return (state, merge_status)
         except Exception:
             return ("?", "?")
+
+
+# ---------------------------------------------------------------------------
+# Module-level vLLM-table helpers (extracted from _vllm_table for CC, S3776)
+# ---------------------------------------------------------------------------
+
+
+def _fill_vllm_rows(table: Table, metrics: dict[str, float]) -> None:
+    """Append the metric rows to the vLLM table.
+
+    Each helper formats one row; this keeps _vllm_table's branching cheap.
+    """
+    gen = metrics.get("vllm:generation_tokens_total") or 0
+    prompt = metrics.get("vllm:prompt_tokens_total") or 0
+    total_gen = gen + prompt
+    preempt = metrics.get("vllm:num_preemptions_total") or 0
+
+    table.add_row("Tokens", f"{total_gen:,.0f}" if total_gen > 0 else "—")
+    table.add_row("Queue Depth", f"{int(preempt)}" if preempt else "—")
+    table.add_row(
+        "Cache Hit Ratio",
+        _format_hit_ratio(metrics.get("vllm:prefix_cache_hit_ratio")),
+    )
+    table.add_row(
+        "TTFT Mean",
+        _format_ttft_mean(metrics.get("vllm:ttft_mean_seconds")),
+    )
+
+
+def _format_hit_ratio(value: float | None) -> str:
+    return f"{value:.0%}" if value is not None else "—"
+
+
+def _format_ttft_mean(value: float | None) -> str:
+    if value is None or value <= 0:
+        return "—"
+    return f"{value:.3f}s"
