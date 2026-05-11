@@ -19,10 +19,13 @@ import pytest
 
 from app.core.manifest import ArtifactPaths, ExecutionManifest
 from app.core.watcher.watcher import (
-    _WORKER_HEARTBEAT_TIMEOUT_SECONDS,
     Watcher,
 )
 from app.core.watcher.watcher_heartbeat import emit_heartbeat
+from app.core.watcher.watcher_signals import (
+    _WORKER_HEARTBEAT_TIMEOUT_SECONDS,
+    terminate_overrun_workers,
+)
 from app.core.watcher.watcher_types import ActiveWorker
 
 # ---------------------------------------------------------------------------
@@ -256,7 +259,7 @@ def test_terminate_overrun_no_op_when_log_fresh(tmp_path: Path) -> None:
     worker = _stuck_worker(tmp_path, log_idle_secs=5 * 60)
     w._local_active.append(worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     worker.process.terminate.assert_not_called()
     worker.process.kill.assert_not_called()
@@ -275,7 +278,7 @@ def test_terminate_overrun_no_op_below_threshold_with_long_decode(
     worker = _stuck_worker(tmp_path, log_idle_secs=30 * 60)
     w._local_active.append(worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     worker.process.terminate.assert_not_called()
     worker.process.kill.assert_not_called()
@@ -288,7 +291,7 @@ def test_terminate_overrun_no_op_when_log_missing(tmp_path: Path) -> None:
     worker = _stuck_worker(tmp_path, log_idle_secs=None)
     w._local_active.append(worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     worker.process.terminate.assert_not_called()
     worker.process.kill.assert_not_called()
@@ -302,7 +305,7 @@ def test_terminate_overrun_sigterm_when_log_idle_past_threshold(tmp_path: Path) 
     )
     w._local_active.append(worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     worker.process.terminate.assert_called_once()
     worker.process.kill.assert_not_called()
@@ -317,9 +320,9 @@ def test_terminate_overrun_sigterm_only_once(tmp_path: Path) -> None:
     )
     w._local_active.append(worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
     first_terminated_at = worker.terminated_at
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     worker.process.terminate.assert_called_once()
     assert worker.terminated_at == first_terminated_at
@@ -336,7 +339,7 @@ def test_terminate_overrun_sigkill_after_grace(tmp_path: Path) -> None:
     )
     w._local_active.append(worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     worker.process.kill.assert_called_once()
     linear.post_comment.assert_called_once()
@@ -356,7 +359,7 @@ def test_terminate_overrun_no_sigkill_within_grace(tmp_path: Path) -> None:
     )
     w._local_active.append(worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     worker.process.kill.assert_not_called()
 
@@ -370,7 +373,7 @@ def test_terminate_overrun_skips_already_exited(tmp_path: Path) -> None:
     worker.process.poll.return_value = 0
     w._local_active.append(worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     worker.process.terminate.assert_not_called()
     worker.process.kill.assert_not_called()
@@ -385,7 +388,7 @@ def test_terminate_overrun_handles_terminate_oserror(tmp_path: Path) -> None:
     worker.process.terminate.side_effect = OSError("no such process")
     w._local_active.append(worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     assert worker.terminated_at is not None
 
@@ -406,7 +409,7 @@ def test_terminate_overrun_covers_both_pools(tmp_path: Path) -> None:
     w._local_active.append(local_worker)
     w._cloud_active.append(cloud_worker)
 
-    w._terminate_overrun_workers()
+    terminate_overrun_workers(w._local_active, w._cloud_active, w._linear)
 
     local_worker.process.terminate.assert_called_once()
     cloud_worker.process.terminate.assert_called_once()

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import signal
 import subprocess  # nosec B404
 import time
@@ -48,6 +47,7 @@ from .watcher_signals import (
     remove_softstop_sentinel,
     remove_stale_softstop_sentinel,
     softstop_sentinel_path,
+    terminate_overrun_workers,
     wait_for_active_workers,
     write_pid_file,
 )
@@ -68,35 +68,6 @@ from .watcher_worktrees import (
 )
 
 logger = logging.getLogger(__name__)
-
-# WOR-381 + WOR-388: heartbeat-based stuck-worker detection. The metric is
-# "time since the worker's stream-json log file was last written" — a stuck
-# worker (network hang, deadlocked vLLM, infinite tool-result wait) does not
-# emit new lines, while a slow-but-progressing worker keeps writing.
-# Wall-time bounds proved unworkable: app.db's 33-session distribution shows
-# median 43.7 min and p99 171 min for legitimate runs, so any wall-time
-# threshold either fires on real work or misses real hangs.
-#
-# WOR-388 post-mortem (2026-05-05): the original 15-min threshold killed
-# WOR-369 (23m wall, 1.3M input) and WOR-362 (26m wall, 2.7M input)
-# mid-decode after their last log event. Both were legitimately reasoning —
-# log tails ended mid-Read tool-result with no `"type":"result"` event, and
-# both artifacts ended up tagged `no_diff_against_base` because the kill
-# preceded the worker's edit phase. Single-decode silences of 15-30 min are
-# plausible for effort=high refactor sessions on qwen3-coder when extended-
-# thinking blocks run long. Threshold raised to 90 min — well above any
-# legitimate single-event-gap we have forensic evidence for (the WOR-322
-# 76-min total run had no individual gap exceeding ~10 min). 90 min still
-# catches genuinely-stuck workers within a single overnight cycle. Override
-# at launch with WATCHER_WORKER_HEARTBEAT_TIMEOUT_SECONDS=N for tuning.
-_DEFAULT_HEARTBEAT_TIMEOUT_SECONDS = 90 * 60
-_WORKER_HEARTBEAT_TIMEOUT_SECONDS = int(
-    os.environ.get(
-        "WATCHER_WORKER_HEARTBEAT_TIMEOUT_SECONDS",
-        _DEFAULT_HEARTBEAT_TIMEOUT_SECONDS,
-    )
-)
-_WORKER_KILL_GRACE_SECONDS = 5 * 60
 
 # S1192: extracted from literal used in 3 glob() calls (lines ~256, ~371, ~850)
 _MANIFEST_GLOB = "*/manifest.json"
@@ -225,7 +196,7 @@ class Watcher:
         Returns False if the loop should exit (drain complete or running=False).
         """
         self._check_softstop_sentinel()
-        self._terminate_overrun_workers()
+        terminate_overrun_workers(self._local_active, self._cloud_active, self._linear)
         self._reap_pool(self._local_active)
         self._reap_pool(self._cloud_active)
         if self._display is not None:
@@ -775,103 +746,6 @@ class Watcher:
             )
         )
         return outcome
-
-    def _worker_log_idle(self, worker: ActiveWorker, now_wall: float) -> float | None:
-        """Return seconds since worker log last wrote, or None if log missing."""
-        log_path = (
-            worker.worktree_path
-            / _CLAUDE_DIR
-            / f"worker_{worker.ticket_id.lower()}.log"
-        )
-        try:
-            return now_wall - log_path.stat().st_mtime
-        except OSError:
-            return None
-
-    def _send_sigterm_if_stalled(
-        self, worker: ActiveWorker, idle_seconds: float, now_wall: float
-    ) -> bool:
-        """Stage 1: SIGTERM the worker if its log has been idle past threshold.
-
-        Returns True if SIGTERM was issued (caller skips stage 2 this cycle).
-        """
-        if worker.terminated_at is not None:
-            return False
-        if idle_seconds <= _WORKER_HEARTBEAT_TIMEOUT_SECONDS:
-            return False
-        if worker.process.poll() is not None:
-            return False
-        logger.warning(
-            "Worker %s heartbeat stalled - log idle for %.0fs "
-            "(threshold %ds). Sending SIGTERM. SIGKILL grace: %ds.",
-            worker.ticket_id,
-            idle_seconds,
-            _WORKER_HEARTBEAT_TIMEOUT_SECONDS,
-            _WORKER_KILL_GRACE_SECONDS,
-        )
-        try:
-            worker.process.terminate()
-        except (OSError, ValueError) as exc:
-            logger.warning("Failed to SIGTERM %s: %s", worker.ticket_id, exc)
-        worker.terminated_at = now_wall
-        return True
-
-    def _send_sigkill_if_grace_expired(
-        self, worker: ActiveWorker, idle_seconds: float, now_wall: float
-    ) -> None:
-        """Stage 2: SIGKILL the worker if SIGTERM grace period has lapsed."""
-        if worker.terminated_at is None:
-            return
-        if now_wall - worker.terminated_at <= _WORKER_KILL_GRACE_SECONDS:
-            return
-        if worker.process.poll() is not None:
-            return
-        logger.error(
-            "Worker %s did not exit within %ds of SIGTERM - sending SIGKILL.",
-            worker.ticket_id,
-            _WORKER_KILL_GRACE_SECONDS,
-        )
-        try:
-            worker.process.kill()
-        except (OSError, ValueError) as exc:
-            logger.warning("Failed to SIGKILL %s: %s", worker.ticket_id, exc)
-        slug = worker.ticket_id.lower().replace("-", "_")
-        try:
-            self._linear.post_comment(
-                worker.linear_id,
-                (
-                    f"Worker stalled: log idle {int(idle_seconds)}s "
-                    f"(threshold {_WORKER_HEARTBEAT_TIMEOUT_SECONDS}s). "
-                    f"SIGTERM was sent, then SIGKILL after "
-                    f"{_WORKER_KILL_GRACE_SECONDS}s grace. The ticket "
-                    "will be marked Blocked by the natural failure "
-                    f"path. Inspect `.claude/artifacts/{slug}/` for "
-                    "the partial worker log."
-                ),
-            )
-        except Exception as exc:
-            logger.warning(
-                "Could not post timeout comment for %s: %s",
-                worker.ticket_id,
-                exc,
-            )
-
-    def _terminate_overrun_workers(self) -> None:
-        """Heartbeat-based stuck-worker detection (WOR-381).
-
-        Each worker tees its stream-json log; mtime advances while the model
-        is making progress. A stuck worker stops writing. Two-stage shutdown:
-        SIGTERM after the heartbeat threshold, then SIGKILL after the grace
-        period with a Linear forensic comment.
-        """
-        now_wall = time.time()
-        for worker in (*self._local_active, *self._cloud_active):
-            idle_seconds = self._worker_log_idle(worker, now_wall)
-            if idle_seconds is None:
-                continue
-            if self._send_sigterm_if_stalled(worker, idle_seconds, now_wall):
-                continue
-            self._send_sigkill_if_grace_expired(worker, idle_seconds, now_wall)
 
     # ------------------------------------------------------------------
     # Epic completion detection
