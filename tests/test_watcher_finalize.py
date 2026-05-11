@@ -879,6 +879,10 @@ def test_finalize_worker_single_retry_then_success(
             side_effect=check_results,
         ),
         patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+            return_value=MagicMock(),
+        ),
+        patch(
             "app.core.watcher.watcher_finalize.create_pr",
             return_value="https://gh/pr/1",
         ),
@@ -919,6 +923,10 @@ def test_finalize_worker_hardcap_enforces_max_one_retry(
         patch(
             "app.core.watcher.watcher_finalize_helpers.run_checks",
             side_effect=check_results,
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+            return_value=MagicMock(),
         ),
         patch(
             "app.core.watcher.watcher_finalize.create_pr",
