@@ -848,13 +848,13 @@ class TestComputeTags:
         assert "escalated" not in compute_tags(m, "success")
 
     def test_high_waste(self):
-        """high_waste: waste_score > 80."""
-        m = _metrics(waste_score=85)
+        """high_waste: waste_score > 55."""
+        m = _metrics(waste_score=56)
         assert "high_waste" in compute_tags(m, "success")
 
     def test_high_waste_below_threshold(self):
-        """Does not fire when waste_score <= 80."""
-        m = _metrics(waste_score=80)
+        """Does not fire when waste_score <= 55."""
+        m = _metrics(waste_score=55)
         assert "high_waste" not in compute_tags(m, "success")
 
     def test_high_waste_none(self):

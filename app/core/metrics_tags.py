@@ -87,7 +87,7 @@ def _category_tags(
         tags.append("scope_drift")
     if m.outcome == "escalated":
         tags.append("escalated")
-    if isinstance(m.waste_score, (int, float)) and m.waste_score > 80:
+    if isinstance(m.waste_score, (int, float)) and m.waste_score > 55:
         tags.append("high_waste")
     if isinstance(m.retry_count, int) and m.retry_count > 0:
         tags.append("rework")
