@@ -21,7 +21,11 @@ except ImportError:  # pragma: no cover
     print("PyYAML required. Install with: pip install pyyaml", file=sys.stderr)
     sys.exit(1)
 
-from app.core.manifest_builder import TaxonomyFields, build_manifest, write_manifest  # noqa: E402
+from app.core.manifest_builder import (  # noqa: E402
+    TaxonomyFields,
+    build_manifest,
+    write_manifest,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

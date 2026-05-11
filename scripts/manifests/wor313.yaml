@@ -65,7 +65,7 @@ tickets:
 
   - ticket_id: WOR-250
     branch: wor-250-archive-bench-tomls
-    title: Config: archive stale bench experiment TOML files
+    title: "Config: archive stale bench experiment TOML files"
     allowed_paths: [config/**, scripts/bench/**, README.md]
     related_files_hint: [config/, scripts/bench/run_bench.py, README.md]
     effort: high
@@ -96,7 +96,7 @@ tickets:
 
   - ticket_id: WOR-251
     branch: wor-251-pin-sonarqube-mcp
-    title: MCP: pin SonarQube MCP server to a specific version in .mcp.json
+    title: "MCP: pin SonarQube MCP server to a specific version in .mcp.json"
     allowed_paths: [".mcp.json"]
     forbidden_paths_extra: []
     related_files_hint: [.mcp.json]
@@ -127,7 +127,7 @@ tickets:
 
   - ticket_id: WOR-252
     branch: wor-252-remove-type-ignore-metrics-mode
-    title: Fix: remove type: ignore in _to_metrics_mode with proper cast
+    title: "Fix: remove type: ignore in _to_metrics_mode with proper cast"
     allowed_paths: [app/core/watcher/watcher_types.py]
     related_files_hint:
       - app/core/watcher/watcher_types.py
@@ -160,7 +160,7 @@ tickets:
 
   - ticket_id: WOR-275
     branch: wor-275-file-reread-cap
-    title: Worker file re-read suppression: cap at 2 reads/file with explicit instruction
+    title: "Worker file re-read suppression: cap at 2 reads/file with explicit instruction"
     allowed_paths:
       - .claude/commands/implement-ticket.md
       - .claude/commands/start-ticket.md
@@ -198,7 +198,7 @@ tickets:
 
   - ticket_id: WOR-277
     branch: wor-277-waste-score-column
-    title: Watcher waste-score: per-session metric in ticket_metrics + warning log
+    title: "Watcher waste-score: per-session metric in ticket_metrics + warning log"
     allowed_paths:
       - app/core/watcher/worker_waste.py
       - app/core/watcher/watcher_finalize.py
@@ -255,7 +255,7 @@ tickets:
 
   - ticket_id: WOR-278
     branch: wor-278-github-e2e-test
-    title: GitHub flow: end-to-end integration test for generate --github-create + --git-push
+    title: "GitHub flow: end-to-end integration test for generate --github-create + --git-push"
     allowed_paths:
       - tests/test_cli.py
       - tests/test_cli_github_flow.py
@@ -294,7 +294,7 @@ tickets:
 
   - ticket_id: WOR-279
     branch: wor-279-github-flow-rollback
-    title: GitHub flow: rollback / cleanup on partial failure
+    title: "GitHub flow: rollback / cleanup on partial failure"
     allowed_paths:
       - app/core/post_setup.py
       - app/cli.py
@@ -339,7 +339,7 @@ tickets:
 
   - ticket_id: WOR-280
     branch: wor-280-cli-set-token-getpass-test
-    title: GitHub flow: cover interactive getpass path in cli_set_token
+    title: "GitHub flow: cover interactive getpass path in cli_set_token"
     allowed_paths:
       - app/core/credentials.py
       - tests/test_credentials.py
@@ -377,7 +377,7 @@ tickets:
 
   - ticket_id: WOR-304
     branch: wor-304-watcher-daemon-smoke-test-ci
-    title: CI: smoke-start watcher daemon for 5s to catch startup-only bugs
+    title: "CI: smoke-start watcher daemon for 5s to catch startup-only bugs"
     allowed_paths:
       - .github/workflows/ci.yml
       - .github/workflows/*.yml
@@ -422,7 +422,7 @@ tickets:
 
   - ticket_id: WOR-314
     branch: wor-314-tests-dispatch-start-ticket
-    title: Tests: add tests/test_watcher_dispatch.py for dispatch.start_ticket flow
+    title: "Tests: add tests/test_watcher_dispatch.py for dispatch.start_ticket flow"
     allowed_paths: [tests/test_watcher_dispatch.py]
     related_files_hint:
       - app/core/watcher/dispatch.py
@@ -458,7 +458,7 @@ tickets:
 
   - ticket_id: WOR-315
     branch: wor-315-tests-color-formatter
-    title: Tests: add tests/test_watcher_log_format.py for ColorFormatter
+    title: "Tests: add tests/test_watcher_log_format.py for ColorFormatter"
     allowed_paths: [tests/test_watcher_log_format.py]
     related_files_hint: [app/core/watcher/log_format.py]
     effort: high
@@ -492,7 +492,7 @@ tickets:
 
   - ticket_id: WOR-316
     branch: wor-316-tests-credentials-edge-cases
-    title: Tests: add edge-case coverage for app/core/credentials.py
+    title: "Tests: add edge-case coverage for app/core/credentials.py"
     allowed_paths: [tests/test_credentials.py]
     related_files_hint:
       - app/core/credentials.py
@@ -524,7 +524,7 @@ tickets:
 
   - ticket_id: WOR-317
     branch: wor-317-tests-user-prefs-edge-cases
-    title: Tests: add edge-case coverage for app/core/user_prefs.py
+    title: "Tests: add edge-case coverage for app/core/user_prefs.py"
     allowed_paths: [tests/test_user_prefs.py]
     related_files_hint:
       - app/core/user_prefs.py
@@ -555,7 +555,7 @@ tickets:
 
   - ticket_id: WOR-318
     branch: wor-318-tests-escalation-policy-classify
-    title: Tests: cover EscalationPolicy.classify_* decision tables
+    title: "Tests: cover EscalationPolicy.classify_* decision tables"
     allowed_paths: [tests/test_escalation_policy.py]
     related_files_hint:
       - app/core/escalation_policy.py
@@ -586,7 +586,7 @@ tickets:
 
   - ticket_id: WOR-319
     branch: wor-319-tests-manifest-validators
-    title: Tests: add validator tests for app/core/manifest.py (extra=forbid, paths, taxonomy ranges)
+    title: "Tests: add validator tests for app/core/manifest.py (extra=forbid, paths, taxonomy ranges)"
     allowed_paths: [tests/test_manifest.py]
     related_files_hint:
       - app/core/manifest.py
@@ -618,7 +618,7 @@ tickets:
 
   - ticket_id: WOR-320
     branch: wor-320-docstrings-watcher-helpers
-    title: Docstrings: add to public functions in app/core/watcher/watcher_helpers.py
+    title: "Docstrings: add to public functions in app/core/watcher/watcher_helpers.py"
     allowed_paths: [app/core/watcher/watcher_helpers.py]
     related_files_hint: [app/core/watcher/watcher_helpers.py]
     effort: high
@@ -647,7 +647,7 @@ tickets:
 
   - ticket_id: WOR-321
     branch: wor-321-docstrings-watcher-subprocess
-    title: Docstrings: add to public functions in app/core/watcher/watcher_subprocess.py
+    title: "Docstrings: add to public functions in app/core/watcher/watcher_subprocess.py"
     allowed_paths: [app/core/watcher/watcher_subprocess.py]
     related_files_hint: [app/core/watcher/watcher_subprocess.py]
     effort: high
@@ -672,7 +672,7 @@ tickets:
 
   - ticket_id: WOR-322
     branch: wor-322-docstrings-post-setup
-    title: Docstrings: add to public functions in app/core/post_setup.py
+    title: "Docstrings: add to public functions in app/core/post_setup.py"
     allowed_paths: [app/core/post_setup.py]
     related_files_hint: [app/core/post_setup.py]
     effort: high
@@ -697,7 +697,7 @@ tickets:
 
   - ticket_id: WOR-323
     branch: wor-323-audit-bare-except-post-setup
-    title: Audit: replace bare except Exception in app/core/post_setup.py with specific exceptions
+    title: "Audit: replace bare except Exception in app/core/post_setup.py with specific exceptions"
     allowed_paths:
       - app/core/post_setup.py
       - tests/test_post_setup.py
@@ -733,7 +733,7 @@ tickets:
 
   - ticket_id: WOR-324
     branch: wor-324-audit-noqa-watcher
-    title: Audit: remove unused noqa/type:ignore comments in app/core/watcher/
+    title: "Audit: remove unused noqa/type:ignore comments in app/core/watcher/"
     allowed_paths: [app/core/watcher/*.py]
     forbidden_paths_extra: [app/core/watcher/__init__.py]
     related_files_hint: [app/core/watcher/]
@@ -769,7 +769,7 @@ tickets:
 
   - ticket_id: WOR-325
     branch: wor-325-tests-watcher-services-probes
-    title: Tests: add coverage for app/core/watcher/watcher_services.py::ServiceManager probes
+    title: "Tests: add coverage for app/core/watcher/watcher_services.py::ServiceManager probes"
     allowed_paths: [tests/test_watcher_services.py]
     related_files_hint:
       - app/core/watcher/watcher_services.py
@@ -798,7 +798,7 @@ tickets:
 
   - ticket_id: WOR-326
     branch: wor-326-sonar-s1-quick-wins
-    title: SonarCloud S1: quick-win cleanups (S1481, S5713, S1066) — 5 findings
+    title: "SonarCloud S1: quick-win cleanups (S1481, S5713, S1066) — 5 findings"
     allowed_paths:
       - app/core/watcher/watcher.py
       - app/core/watcher/watcher_finalize.py
@@ -831,7 +831,7 @@ tickets:
 
   - ticket_id: WOR-327
     branch: wor-327-sonar-s2-string-literals
-    title: SonarCloud S2: extract duplicated string literals (S1192) — 2 findings
+    title: "SonarCloud S2: extract duplicated string literals (S1192) — 2 findings"
     allowed_paths:
       - app/core/watcher/watcher.py
       - app/core/watcher/watcher_finalize.py
@@ -863,7 +863,7 @@ tickets:
 
   - ticket_id: WOR-328
     branch: wor-328-sonar-s3-dispatch-signature
-    title: SonarCloud S3: clean up dispatch.start_ticket signature (S107 + S1172) — remove dead params
+    title: "SonarCloud S3: clean up dispatch.start_ticket signature (S107 + S1172) — remove dead params"
     allowed_paths:
       - app/core/watcher/dispatch.py
       - app/core/watcher/watcher.py
@@ -902,7 +902,7 @@ tickets:
 
   - ticket_id: WOR-329
     branch: wor-329-sonar-s4-unused-params
-    title: SonarCloud S4: remove unused parameters in watcher_finalize.py + post_setup.py (S1172) — 3 findings
+    title: "SonarCloud S4: remove unused parameters in watcher_finalize.py + post_setup.py (S1172) — 3 findings"
     allowed_paths:
       - app/core/watcher/watcher_finalize.py
       - app/core/post_setup.py
@@ -939,7 +939,7 @@ tickets:
 
   - ticket_id: WOR-330
     branch: wor-330-sonar-s5-cli-complexity
-    title: SonarCloud S5: reduce cognitive complexity in app/cli.py (S3776) — 3 functions
+    title: "SonarCloud S5: reduce cognitive complexity in app/cli.py (S3776) — 3 functions"
     allowed_paths: [app/cli.py, tests/test_cli.py]
     related_files_hint:
       - app/cli.py
