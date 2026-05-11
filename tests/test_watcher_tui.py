@@ -66,9 +66,9 @@ def test_renders_idle_state_when_no_workers() -> None:
     state = _tui_state()
     snapshot = _take_snapshot(state)
 
-    assert "No active workers" in snapshot
-    assert "—  —  No active workers" in snapshot or "No active workers" in snapshot
-    assert "No tracked PRs" in snapshot
+    # The fallback text may span multiple columns in a wider table
+    assert "No active" in snapshot and "workers" in snapshot
+    assert "No tracked" in snapshot and "PRs" in snapshot
 
 
 def test_renders_single_worker_with_elapsed_and_cost() -> None:
@@ -545,3 +545,88 @@ def test_build_tui_state_single_local_worker(tmp_path: Path) -> None:
     assert ws.mode == "local"
     assert ws.status == "running"
     assert abs(ws.elapsed_s - 60) < 3  # ±3s for test timing
+
+
+# ---------------------------------------------------------------------------
+# vLLM table — empty and populated
+# ---------------------------------------------------------------------------
+
+
+def test_vllm_table_shows_dash_when_no_metrics() -> None:
+    """When vllm_metrics is None, the vLLM panel shows 'No vLLM running'."""
+    state = _tui_state()
+    display = WatcherDisplay()
+    layout = display._build_layout(state)
+    console = Console(record=True, width=120, force_terminal=True)
+    console.print(layout)
+    text = console.export_text()
+
+    assert "No vLLM running" in text
+    assert "vLLM" in text
+
+
+def test_vllm_table_shows_metrics_when_present() -> None:
+    """When vllm_metrics is populated, the panel shows token and latency data."""
+    from app.core.watcher.watcher_tui import TUIState
+
+    state = TUIState(
+        workers=[],
+        cost_rollups={
+            "today": CostRollup(),
+            "week": CostRollup(),
+            "all": CostRollup(),
+        },
+        vllm_metrics={
+            "vllm:generation_tokens_total": 15000.0,
+            "vllm:prompt_tokens_total": 5000.0,
+            "vllm:prefix_cache_hit_ratio": 0.72,
+            "vllm:num_preemptions_total": 3.0,
+            "vllm:ttft_mean_seconds": 0.045,
+        },
+    )
+    display = WatcherDisplay()
+    layout = display._build_layout(state)
+    console = Console(record=True, width=120, force_terminal=True)
+    console.print(layout)
+    text = console.export_text()
+
+    assert "vLLM" in text
+    assert "20,000" in text  # total tokens (15k + 5k)
+    assert "72%" in text  # cache hit ratio
+    assert "3" in text  # queue depth
+    assert "0.045" in text  # TTFT
+
+
+# ---------------------------------------------------------------------------
+# Queue table
+# ---------------------------------------------------------------------------
+
+
+def test_queue_table_shows_counts() -> None:
+    """The queue panel shows ticket counts for each state."""
+    from app.core.watcher.watcher_tui import QueueState, TUIState
+
+    state = TUIState(
+        workers=[],
+        cost_rollups={
+            "today": CostRollup(),
+            "week": CostRollup(),
+            "all": CostRollup(),
+        },
+        queue_state=QueueState(ready=3, waiting=2, in_progress=1, blocked=0),
+    )
+    display = WatcherDisplay()
+    layout = display._build_layout(state)
+    console = Console(record=True, width=120, force_terminal=True)
+    console.print(layout)
+    text = console.export_text()
+
+    assert "Queue" in text
+    assert "ReadyForLocal" in text
+    assert "WaitingForDeps" in text
+    assert "InProgressLocal" in text
+    assert "Blocked" in text
+    assert "3" in text
+    assert "2" in text
+    assert "1" in text
+    assert "0" in text

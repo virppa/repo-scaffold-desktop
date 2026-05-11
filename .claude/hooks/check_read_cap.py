@@ -10,9 +10,13 @@ in the manifest. Re-reads are most often the "verify after edit"
 anti-pattern — the Edit tool result is authoritative; trusting it saves
 a round-trip.
 
-State file: ``<cwd>/.claude/.read_counts.json``. Keyed by ``session_id`` so
+State file: ``<repo>/.claude/.read_counts.json``. Keyed by ``session_id`` so
 a stale file from a prior session does not leak into the current one.
 Persisted before any potential block so the count is always durable.
+
+The state file is anchored to the hook script's location (``__file__``),
+not the cwd from the payload. This avoids a double-nested path bug when
+Claude Code sets ``cwd`` to the ``.claude`` directory instead of repo root.
 
 Wire in ``.claude/settings.json``::
 
@@ -38,7 +42,7 @@ import sys
 from pathlib import Path
 
 CAP = 2
-STATE_FILENAME = ".claude/.read_counts.json"
+STATE_FILENAME = ".read_counts.json"
 
 
 def _block(reason: str) -> int:
@@ -47,9 +51,11 @@ def _block(reason: str) -> int:
 
 
 def main() -> int:
+    print("check_read_cap: fired", file=sys.stderr, flush=True)
     try:
         payload = json.load(sys.stdin)
     except json.JSONDecodeError:
+        print("check_read_cap: stdin was not valid JSON", file=sys.stderr)
         return 0
 
     if payload.get("tool_name") != "Read":
@@ -59,18 +65,24 @@ def main() -> int:
     if not file_path_raw:
         return 0
 
-    cwd = Path(payload.get("cwd", ".")).resolve()
     session_id = payload.get("session_id", "")
-    state_path = cwd / STATE_FILENAME
+
+    # State file lives at <repo>/.claude/.read_counts.json.
+    # Anchor to the hook script's own location, not the cwd from the
+    # payload — cwd can be unreliable (e.g. set to the .claude directory
+    # instead of repo root in some Claude Code invocations), which would
+    # produce a nested path like .claude/.claude/.read_counts.json and
+    # silently miss the state file, breaking the read cap entirely.
+    hook_dir = Path(__file__).resolve().parent  # <repo>/.claude/hooks
+    state_path = hook_dir.parent / STATE_FILENAME  # <repo>/.claude/.read_counts.json
 
     # Normalize the file path so different relative spellings of the same
-    # file collapse to one key. Resolve against the payload's cwd, not the
-    # hook process's — Claude Code passes absolute paths in practice, but
-    # relative ones must anchor to the worker's cwd to be meaningful.
+    # file collapse to one key. Claude Code passes absolute paths in
+    # practice, but fall back to os.path.abspath for safety.
     try:
         candidate = Path(file_path_raw)
         if not candidate.is_absolute():
-            candidate = cwd / candidate
+            candidate = Path.cwd() / candidate
         normalized = str(candidate.resolve())
     except (OSError, RuntimeError):
         normalized = file_path_raw
