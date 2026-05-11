@@ -79,7 +79,7 @@ def test_invalid_repo_name_exits(output_dir, capsys):
 
 
 def test_generate_error_exits(output_dir, capsys):
-    with patch("app.cli.generate", side_effect=ValueError("unknown preset")):
+    with patch("app.cli.generate.generate", side_effect=ValueError("unknown preset")):
         rc = main(
             [
                 "generate",
@@ -151,7 +151,7 @@ def test_no_subcommand_shows_help(capsys):
 
 
 def test_git_init_flag_calls_post_setup(output_dir):
-    with patch("app.cli.run_git_init") as mock_git:
+    with patch("app.cli.generate.run_git_init") as mock_git:
         rc = main(
             [
                 "generate",
@@ -169,7 +169,7 @@ def test_git_init_flag_calls_post_setup(output_dir):
 
 
 def test_install_precommit_flag_calls_post_setup(output_dir):
-    with patch("app.cli.run_precommit_install") as mock_pc:
+    with patch("app.cli.generate.run_precommit_install") as mock_pc:
         rc = main(
             [
                 "generate",
@@ -224,7 +224,8 @@ def test_config_no_subcommand_exits(capsys):
 
 def test_full_agentic_preset_calls_fetch_skills(output_dir):
     with patch(
-        "app.cli.fetch_skills", return_value=[".claude/commands/groom-ticket.md"]
+        "app.cli.generate.fetch_skills",
+        return_value=[".claude/commands/groom-ticket.md"],
     ) as mock_fetch:
         rc = main(
             [
@@ -251,7 +252,8 @@ def test_full_agentic_preset_calls_fetch_skills(output_dir):
 
 def test_post_setup_error_exits_nonzero(output_dir, capsys):
     with patch(
-        "app.cli.run_git_init", side_effect=RuntimeError("git not found on PATH")
+        "app.cli.generate.run_git_init",
+        side_effect=RuntimeError("git not found on PATH"),
     ):
         rc = main(
             [
@@ -512,21 +514,21 @@ class TestGitHubRollbackFlow:
         """When push fails, the repo should be deleted."""
         with (
             patch(
-                "app.cli.create_github_repo",
+                "app.cli.generate.create_github_repo",
                 return_value="https://github.com/testuser/myrepo",
             ),
             patch(
-                "app.cli.configure_github_repo",
+                "app.cli.generate.configure_github_repo",
             ),
             patch("app.core.post_setup.get_token", return_value="ghp_fake"),
             patch(
-                "app.cli.run_initial_push",
+                "app.cli.generate.run_initial_push",
                 side_effect=RuntimeError("failed to push"),
             ) as mock_push,
-            patch("app.cli.run_git_init"),
-            patch("app.cli.run_precommit_install"),
+            patch("app.cli.generate.run_git_init"),
+            patch("app.cli.generate.run_precommit_install"),
             patch(
-                "app.cli.delete_github_repo",
+                "app.cli.generate.delete_github_repo",
             ) as mock_delete,
         ):
             rc = main(
@@ -555,21 +557,21 @@ class TestGitHubRollbackFlow:
         """--no-rollback-on-failure should skip the delete call."""
         with (
             patch(
-                "app.cli.create_github_repo",
+                "app.cli.generate.create_github_repo",
                 return_value="https://github.com/testuser/myrepo",
             ),
             patch(
-                "app.cli.configure_github_repo",
+                "app.cli.generate.configure_github_repo",
             ),
             patch("app.core.post_setup.get_token", return_value="ghp_fake"),
             patch(
-                "app.cli.run_initial_push",
+                "app.cli.generate.run_initial_push",
                 side_effect=RuntimeError("failed to push"),
             ),
-            patch("app.cli.run_git_init"),
-            patch("app.cli.run_precommit_install"),
+            patch("app.cli.generate.run_git_init"),
+            patch("app.cli.generate.run_precommit_install"),
             patch(
-                "app.cli.delete_github_repo",
+                "app.cli.generate.delete_github_repo",
             ) as mock_delete,
         ):
             rc = main(
@@ -596,18 +598,18 @@ class TestGitHubRollbackFlow:
         """When configure fails, the repo should be deleted."""
         with (
             patch(
-                "app.cli.create_github_repo",
+                "app.cli.generate.create_github_repo",
                 return_value="https://github.com/testuser/myrepo",
             ),
             patch("app.core.post_setup.get_token", return_value="ghp_fake"),
             patch(
-                "app.cli.configure_github_repo",
+                "app.cli.generate.configure_github_repo",
                 side_effect=RuntimeError("forbidden"),
             ),
-            patch("app.cli.run_git_init"),
-            patch("app.cli.run_precommit_install"),
+            patch("app.cli.generate.run_git_init"),
+            patch("app.cli.generate.run_precommit_install"),
             patch(
-                "app.cli.delete_github_repo",
+                "app.cli.generate.delete_github_repo",
             ) as mock_delete,
         ):
             rc = main(
@@ -632,13 +634,13 @@ class TestGitHubRollbackFlow:
         """If create itself fails, there's nothing to rollback."""
         with (
             patch(
-                "app.cli.create_github_repo",
+                "app.cli.generate.create_github_repo",
                 side_effect=RuntimeError("Repository already exists"),
             ),
             patch("app.core.post_setup.get_token", return_value="ghp_fake"),
-            patch("app.cli.run_git_init"),
-            patch("app.cli.run_precommit_install"),
-            patch("app.cli.delete_github_repo") as mock_delete,
+            patch("app.cli.generate.run_git_init"),
+            patch("app.cli.generate.run_precommit_install"),
+            patch("app.cli.generate.delete_github_repo") as mock_delete,
         ):
             rc = main(
                 [
@@ -670,7 +672,7 @@ class TestInteractiveWizard:
         prefs_path = tmp_path / "prefs.json"
         with (
             patch.object(PrefsStore, "get_path", return_value=prefs_path),
-            patch("app.cli.generate") as mock_gen,
+            patch("app.cli.generate.generate") as mock_gen,
             patch(
                 "app.core.wizard.input",
                 side_effect=["myrepo", "python_basic", str(output_dir)],
@@ -691,8 +693,8 @@ class TestInteractiveWizard:
         prefs_path = tmp_path / "prefs.json"
         with (
             patch.object(PrefsStore, "get_path", return_value=prefs_path),
-            patch("app.cli.generate") as mock_gen,
-            patch("app.cli.run_git_init") as mock_git,
+            patch("app.cli.generate.generate") as mock_gen,
+            patch("app.cli.generate.run_git_init") as mock_git,
             patch(
                 "app.core.wizard.input",
                 side_effect=["myrepo", "python_basic", str(output_dir)],
@@ -726,7 +728,7 @@ class TestInteractiveWizard:
         ]
         with (
             patch.object(PrefsStore, "get_path", return_value=prefs_path),
-            patch("app.cli.generate") as mock_gen,
+            patch("app.cli.generate.generate") as mock_gen,
             patch("app.core.wizard.input", side_effect=side_effect),
         ):
             mock_gen.return_value = [
@@ -761,7 +763,7 @@ class TestInteractiveWizard:
         # 3 basic inputs — all empty to accept pre-filled defaults
         with (
             patch.object(PrefsStore, "get_path", return_value=prefs_path),
-            patch("app.cli.generate") as mock_gen,
+            patch("app.cli.generate.generate") as mock_gen,
             patch("app.core.wizard.input", side_effect=["", "", ""]),
         ):
             mock_gen.return_value = [".gitignore"]
@@ -791,7 +793,7 @@ class TestInteractiveWizard:
 
         with (
             patch.object(PrefsStore, "get_path", return_value=prefs_path),
-            patch("app.cli.generate") as mock_gen,
+            patch("app.cli.generate.generate") as mock_gen,
             patch.object(PrefsStore, "save", side_effect=capture_save) as mock_save,
             patch(
                 "app.core.wizard.input",

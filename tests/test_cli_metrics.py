@@ -15,8 +15,8 @@ def test_metrics_browse_launches_datasette(tmp_path: Path) -> None:
     db.touch()
 
     with (
-        patch("app.cli.MetricsStore.get_db_path", return_value=db),
-        patch("app.cli.subprocess.run") as mock_run,
+        patch("app.cli.operator.MetricsStore.get_db_path", return_value=db),
+        patch("app.cli.operator.subprocess.run") as mock_run,
     ):
         mock_run.return_value = MagicMock(returncode=0)
         rc = main(["metrics", "browse"])
@@ -30,7 +30,7 @@ def test_metrics_browse_missing_db_exits(
 ) -> None:
     db = tmp_path / "app.db"  # does not exist
 
-    with patch("app.cli.MetricsStore.get_db_path", return_value=db):
+    with patch("app.cli.operator.MetricsStore.get_db_path", return_value=db):
         rc = main(["metrics", "browse"])
 
     assert rc == 1
@@ -44,8 +44,8 @@ def test_metrics_browse_datasette_not_installed(
     db.touch()
 
     with (
-        patch("app.cli.MetricsStore.get_db_path", return_value=db),
-        patch("app.cli.subprocess.run", side_effect=FileNotFoundError),
+        patch("app.cli.operator.MetricsStore.get_db_path", return_value=db),
+        patch("app.cli.operator.subprocess.run", side_effect=FileNotFoundError),
     ):
         rc = main(["metrics", "browse"])
 
