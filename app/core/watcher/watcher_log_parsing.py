@@ -294,55 +294,68 @@ def format_elapsed(seconds: float) -> str:
 
 
 def last_tool_call(log_path: Path) -> str:
-    """Return the most recent tool call name from a stream-json log.
+    """Return the most recent tool call name (or thinking/text snippet) from
+    a stream-json log. Returns ``""`` if the log is missing/unparseable.
 
-    Walks the log in a single pass and returns the ``name`` of the last
-    ``type=tool_use`` content block (e.g. ``Read``, ``Bash``, ``Edit``).
-    Returns the most recent thinking/text summary when the last block was
-    a ``thinking`` or ``text`` type. Returns ``""`` when the log is missing,
-    unparseable, or has no assistant messages yet (running worker with no
-    assistant turns).
-
-    For in-progress workers this gives a live view of what the LLM is doing.
+    Walks the log in a single pass; the last-seen block wins (overwrites
+    earlier `result`). For in-progress workers this gives a live view of
+    what the LLM is doing.
     """
     try:
         with log_path.open(encoding="utf-8") as f:
             result = ""
             for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if obj.get("type") != "assistant":
+                obj = _parse_assistant_event(raw)
+                if obj is None:
                     continue
                 msg = obj.get("message") or {}
                 for block in msg.get("content") or []:
                     if not isinstance(block, dict):
                         continue
-                    btype = block.get("type")
-                    if btype == "tool_use":
-                        name = block.get("name", "")
-                        if isinstance(name, str) and name:
-                            result = name
-                        else:
-                            result = ""
-                    elif btype in ("thinking", "text"):
-                        text = (
-                            block.get("thinking")
-                            or block.get("text")
-                            or block.get("text", "")
-                        )
-                        if isinstance(text, str) and text:
-                            # Truncate to ~40 chars to keep the TUI column usable
-                            result = (text[:37] + "...") if len(text) > 40 else text
-                        else:
-                            result = ""
+                    rendered = _render_content_block(block)
+                    if rendered is not None:
+                        result = rendered
             return result
     except Exception:
         return ""
+
+
+def _parse_assistant_event(raw_line: str) -> dict[str, Any] | None:
+    """Parse one JSONL line; return the dict only when it's an assistant event."""
+    stripped = raw_line.strip()
+    if not stripped:
+        return None
+    try:
+        obj = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict) or obj.get("type") != "assistant":
+        return None
+    return obj
+
+
+def _render_content_block(block: dict[str, Any]) -> str | None:
+    """Render one assistant content block as the last-action string.
+
+    Returns:
+        - tool name for ``tool_use`` blocks (empty string if no name)
+        - first ~37 chars of ``thinking``/``text`` for those block types
+        - None when the block type doesn't contribute to last-action display
+
+    (None vs empty-string matters: None means "skip", empty means
+    "explicitly clear the prior result".)
+    """
+    btype = block.get("type")
+    if btype == "tool_use":
+        name = block.get("name", "")
+        return name if isinstance(name, str) and name else ""
+    if btype in ("thinking", "text"):
+        text = block.get("thinking") or block.get("text") or ""
+        if not isinstance(text, str) or not text:
+            return ""
+        # Truncate to ~40 chars to keep the TUI column usable
+        return (text[:37] + "...") if len(text) > 40 else text
+    return None
 
 
 def format_worker_token_count(log_path: Path) -> str:

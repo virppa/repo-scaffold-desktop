@@ -23,6 +23,12 @@ from app.core.watcher.watcher_daemon import (
     load_env_file,
 )
 
+# Sonar S1192: shared constants for sentinel + pid file names to avoid the
+# repeated string literals these subcommand handlers used to spread across
+# the file.
+_CLAUDE_DIR_NAME = ".claude"
+_WATCHER_PID_FILE = "watcher.pid"
+
 
 def _run_watcher(args: argparse.Namespace) -> int:
     # WOR-435: auto-load .env so agent-spawned / remote shells inherit
@@ -43,7 +49,7 @@ def _run_watcher(args: argparse.Namespace) -> int:
         return launch_in_new_terminal()
     if args.detach:
         pid = launch_detached()
-        log_path = Path.cwd() / ".claude" / "watcher.log"
+        log_path = Path.cwd() / _CLAUDE_DIR_NAME / "watcher.log"
         print(
             f"Watcher daemon started (PID {pid}). Logs: {log_path}",
             file=sys.stderr,
@@ -91,8 +97,8 @@ def _run_watcher_softstop(_args: argparse.Namespace) -> int:
     Daemon polls .claude/watcher.softstop each cycle: if present, it stops
     accepting new dispatches, finishes in-flight workers, then exits cleanly.
     """
-    claude_dir = Path.cwd() / ".claude"
-    pid_file = claude_dir / "watcher.pid"
+    claude_dir = Path.cwd() / _CLAUDE_DIR_NAME
+    pid_file = claude_dir / _WATCHER_PID_FILE
     sentinel = claude_dir / "watcher.softstop"
     if not pid_file.exists():
         print(
@@ -122,8 +128,8 @@ def _run_watcher_forcestop(_args: argparse.Namespace) -> int:
     commits WIP for every active worker, terminates them, and pauses
     the dispatcher.
     """
-    claude_dir = Path.cwd() / ".claude"
-    pid_file = claude_dir / "watcher.pid"
+    claude_dir = Path.cwd() / _CLAUDE_DIR_NAME
+    pid_file = claude_dir / _WATCHER_PID_FILE
     sentinel = claude_dir / "watcher.forcestop"
     if not pid_file.exists():
         print(
@@ -153,8 +159,8 @@ def _run_watcher_pause(_args: argparse.Namespace) -> int:
     stops accepting new dispatches, promotions, and epic completions,
     but keeps reaping workers and health checks running.
     """
-    claude_dir = Path.cwd() / ".claude"
-    pid_file = claude_dir / "watcher.pid"
+    claude_dir = Path.cwd() / _CLAUDE_DIR_NAME
+    pid_file = claude_dir / _WATCHER_PID_FILE
     sentinel = claude_dir / "watcher.pause"
     if not pid_file.exists():
         print(
@@ -179,8 +185,8 @@ def _run_watcher_pause(_args: argparse.Namespace) -> int:
 
 def _run_watcher_resume(_args: argparse.Namespace) -> int:
     """Remove the pause sentinel to resume dispatch (WOR-352)."""
-    claude_dir = Path.cwd() / ".claude"
-    pid_file = claude_dir / "watcher.pid"
+    claude_dir = Path.cwd() / _CLAUDE_DIR_NAME
+    pid_file = claude_dir / _WATCHER_PID_FILE
     sentinel = claude_dir / "watcher.pause"
     if not pid_file.exists():
         print("Watcher is already running — pause is not active.", file=sys.stderr)
@@ -211,8 +217,8 @@ def _run_watcher_kill(args: argparse.Namespace) -> int:
     Each line in the sentinel file is a ticket ID (e.g. WOR-123).
     The daemon terminates matching workers after committing their WIP.
     """
-    claude_dir = Path.cwd() / ".claude"
-    pid_file = claude_dir / "watcher.pid"
+    claude_dir = Path.cwd() / _CLAUDE_DIR_NAME
+    pid_file = claude_dir / _WATCHER_PID_FILE
     sentinel = claude_dir / "watcher.kill"
     if not pid_file.exists():
         print(
@@ -277,7 +283,7 @@ def _run_waste_score(args: argparse.Namespace) -> int:
     # The worker log lives in .claude/ within the repo root.
     # We search for it relative to the current working directory.
     ticket_id = args.ticket_id.lower()
-    log_path = Path(".claude") / f"worker_{ticket_id}.log"
+    log_path = Path(_CLAUDE_DIR_NAME) / f"worker_{ticket_id}.log"
 
     if not log_path.exists():
         print(
