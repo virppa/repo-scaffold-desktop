@@ -142,6 +142,10 @@ def test_finalize_worker_retry_count_increments_on_check_failure(
             return_value=(False, []),
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+            return_value=MagicMock(),
+        ),
     ):
         _call_finalize(worker)
         _call_finalize(worker)
@@ -172,6 +176,10 @@ def test_finalize_worker_retry_count_two_failures_then_success(
             return_value="https://github.com/example/pr/1",
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+            return_value=MagicMock(),
+        ),
     ):
         _call_finalize(worker, metrics=metrics_mock)
         _call_finalize(worker, metrics=metrics_mock)
