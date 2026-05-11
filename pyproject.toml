@@ -53,3 +53,12 @@ DEP003 = ["yaml"]
 targets = ["app"]
 exclude_dirs = ["tests"]
 skips = []
+
+[tool.coverage.run]
+# __main__.py is pure entry-point shim ("sys.exit(main())") — only runs
+# under `python -m app.cli`, never during pytest. Including it skews the
+# SonarCloud Risk-view chart with a 0% datapoint that stretches the
+# Coverage y-axis (rest of the codebase is ~80% covered). Omit it.
+omit = [
+    "*/__main__.py",
+]
