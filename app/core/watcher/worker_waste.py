@@ -70,13 +70,11 @@ def _read_log_lines(log_path: Path) -> list[str] | None:
         return None
 
 
-def _classify_bash(
-    command: str, manual_check_count: int, cd_count: int, bash_buffer: list[str]
-) -> tuple[int, int]:
-    """Update manual_check / cd / bash counters from a single Bash command.
+def _classify_bash(command: str, bash_buffer: list[str]) -> tuple[int, int]:
+    """Classify one Bash command into (manual_check_delta, cd_delta).
 
-    Returns (manual_check_delta, cd_delta). Mutates `bash_buffer` in place
-    when the command should count toward redundancy detection.
+    Mutates `bash_buffer` in place when the command counts toward redundancy
+    detection (i.e. is not a check tool, not a `cd`, and not empty).
     """
     is_cd = command.strip().startswith("cd ")
     cd_delta = 1 if is_cd else 0
@@ -169,9 +167,7 @@ def _extract_signals(
                     command = str(inp.get("command", ""))
                 elif isinstance(inp, str):
                     command = inp
-                check_delta, cd_delta = _classify_bash(
-                    command, manual_check_runs, cd_commands, bash_commands
-                )
+                check_delta, cd_delta = _classify_bash(command, bash_commands)
                 manual_check_runs += check_delta
                 cd_commands += cd_delta
 
