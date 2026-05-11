@@ -32,7 +32,13 @@ from app.core.metrics import MetricsStore
 from . import dispatch
 from .watcher_epic import check_epic_completion
 from .watcher_finalize import finalize_worker, safe_set_state
-from .watcher_heartbeat import build_tui_state, emit_heartbeat, emit_idle_line
+from .watcher_heartbeat import (
+    _count_queue_items,
+    build_tui_state,
+    emit_heartbeat,
+    emit_idle_line,
+)
+from .watcher_helpers import capture_vllm_metrics
 from .watcher_log_parsing import format_elapsed, format_worker_token_count
 from .watcher_services import ServiceManager
 from .watcher_signals import (
@@ -194,12 +200,21 @@ class Watcher:
         self._reap_pool(self._local_active)
         self._reap_pool(self._cloud_active)
         if self._display is not None:
+            vllm = None
+            if self._mode in ("local", "default"):
+                vllm = capture_vllm_metrics()
+            queue = _count_queue_items(
+                self._linear,
+                self._repo_root,
+            )
             self._display.update_state(
                 build_tui_state(
                     self._local_active,
                     self._cloud_active,
                     self._metrics,
                     self._tracked_prs,
+                    vllm_metrics=vllm,
+                    queue_state=queue,
                 )
             )
         if not self._draining:
