@@ -26,28 +26,29 @@ logger = logging.getLogger(__name__)
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
 
+def _block_text_chars(block: dict[str, Any]) -> int:
+    """Approximate character length of one content block (WOR-384 sentinel)."""
+    btype = block.get("type")
+    if btype in ("thinking", "text"):
+        key = "thinking" if btype == "thinking" else "text"
+        text = block.get(key) or block.get("text") or ""
+        return len(text) if isinstance(text, str) else 0
+    if btype != "tool_use":
+        return 0
+    inp_dict = block.get("input")
+    if inp_dict is None:
+        return 0
+    try:
+        return len(json.dumps(inp_dict))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _accumulate_content_chars(content: Any) -> int:
-    """Sum approximate character lengths of content blocks for the WOR-384 sentinel."""
+    """Sum approximate character lengths across content blocks."""
     if not isinstance(content, list):
         return 0
-    total = 0
-    for blk in content:
-        if not isinstance(blk, dict):
-            continue
-        btype = blk.get("type")
-        if btype in ("thinking", "text"):
-            key = "thinking" if btype == "thinking" else "text"
-            text = blk.get(key) or blk.get("text") or ""
-            if isinstance(text, str):
-                total += len(text)
-        elif btype == "tool_use":
-            inp_dict = blk.get("input")
-            if inp_dict is not None:
-                try:
-                    total += len(json.dumps(inp_dict))
-                except (TypeError, ValueError):
-                    pass
-    return total
+    return sum(_block_text_chars(b) for b in content if isinstance(b, dict))
 
 
 def _process_assistant_event(obj: dict[str, Any]) -> tuple[int, int, bool, int]:
