@@ -73,9 +73,7 @@ def test_build_manifest_artifact_paths_use_underscored_id() -> None:
 
 def test_build_manifest_forbidden_paths_excludes_allowed_overlap() -> None:
     """If an allowed_path matches a common-forbidden entry, it is not also forbidden."""
-    out = build_manifest(
-        **_minimal_kwargs(allowed_paths=[".env", "app/core/foo.py"])
-    )
+    out = build_manifest(**_minimal_kwargs(allowed_paths=[".env", "app/core/foo.py"]))
     forbidden = out["forbidden_paths"]
     assert ".env" not in forbidden
     assert ".mcp.json" in forbidden  # Other common-forbidden entries survive.
@@ -152,7 +150,4 @@ def test_wor313_round_trip_byte_identical() -> None:
             text=True,
             timeout=30,
         )
-        pytest.fail(
-            "Regenerated manifests differ from committed ones:\n"
-            + show.stdout
-        )
+        pytest.fail("Regenerated manifests differ from committed ones:\n" + show.stdout)
