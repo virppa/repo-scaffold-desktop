@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import logging
 import signal
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -120,6 +122,7 @@ class Watcher:
         worker_verbose: bool = False,
         no_epic_shutdown: bool = False,
         tui_mode: bool = False,
+        max_concurrent_checks: int | None = None,
     ) -> None:
         if linear_client is None:
             from app.core.linear_client import LinearClient  # lazy import
@@ -129,6 +132,19 @@ class Watcher:
         self._mode = worker_mode
         self._max_local_workers = max_local_workers
         self._max_cloud_workers = max_cloud_workers
+        # WOR-451: ThreadPoolExecutor for parallel finalize-checks.
+        # Default: max(max_local_workers // 2, 2). Sized so 4-worker waves
+        # on a 16-core box don't oversubscribe given pytest-xdist -n 8 from
+        # WOR-464 (4 finalize x 8 xdist = 32 threads = physical thread count).
+        if max_concurrent_checks is None:
+            max_concurrent_checks = max(max_local_workers // 2, 2)
+        self._max_concurrent_checks = max_concurrent_checks
+        self._finalize_executor: ThreadPoolExecutor | None = None
+        # WOR-451: serialise mutations of shared watcher state from
+        # finalize threads (heartbeat dict, pending_sonar_workers dict,
+        # processed_tickets list). PR-creation serialisation lives in
+        # watcher_finalize._get_pr_lock keyed by base_branch.
+        self._state_lock = threading.Lock()
         self._linear = linear_client
         self._metrics = metrics_store or MetricsStore()
         self._repo_root = (repo_root or Path.cwd()).resolve()
@@ -375,6 +391,12 @@ class Watcher:
     def _finalize_run(self) -> None:
         """Teardown: wait on active workers, stop services, remove pid file."""
         wait_for_active_workers(self._local_active, self._cloud_active)
+        # WOR-451: shut down finalize executor; wait for any in-flight
+        # finalize tasks to drain so PR creation / Linear state updates
+        # complete before we exit.
+        if self._finalize_executor is not None:
+            self._finalize_executor.shutdown(wait=True)
+            self._finalize_executor = None
         self._services.stop()
         remove_pid_file()
         if self._display is not None:
@@ -655,18 +677,39 @@ class Watcher:
     # Worker lifecycle
     # ------------------------------------------------------------------
 
+    def _ensure_finalize_executor(self) -> ThreadPoolExecutor:
+        """Lazy-init the finalize ThreadPoolExecutor on first reap (WOR-451).
+
+        Created lazily so unit tests that construct a Watcher but never call
+        run() don't spawn threads.
+        """
+        if self._finalize_executor is None:
+            self._finalize_executor = ThreadPoolExecutor(
+                max_workers=self._max_concurrent_checks,
+                thread_name_prefix="watcher-finalize",
+            )
+        return self._finalize_executor
+
     def _reap_pool(self, workers: list[ActiveWorker]) -> str:
-        """Poll each worker; finalize completed ones in-place.
+        """Poll each worker; finalize completed ones concurrently (WOR-451).
 
         Mutates ``workers`` directly - finished workers are removed from the
         list even if their ``finalize_worker`` call raises. This prevents
         ghost slots that would otherwise block future dispatch (WOR-334).
 
+        WOR-451: finalize calls for multiple finished workers are submitted
+        to a ThreadPoolExecutor and joined before this method returns. Each
+        worker's check phase (ruff/mypy/pytest/lint-imports) runs in its own
+        thread; PR creation is serialised per base_branch via
+        watcher_finalize._get_pr_lock. Net effect on a 3-worker
+        finished-together wave: ~3 min wall vs ~9 min serial.
+
         Returns the outcome of the last finalized worker (``""`` if none
         finished, ``"failure"`` if the last one's finalize raised).
         """
         finished_indices: list[int] = []
-        outcome = ""
+        finalize_futures: list[tuple[str, Any]] = []
+        executor = self._ensure_finalize_executor()
         for i, worker in enumerate(workers):
             rc = worker.process.poll()
             if rc is None:
@@ -674,15 +717,22 @@ class Watcher:
             # Worker finished - mark its slot for release BEFORE finalize so
             # an exception inside finalize cannot leak the slot.
             finished_indices.append(i)
+            future = executor.submit(self._finalize_one_worker, worker, rc)
+            finalize_futures.append((worker.ticket_id, future))
+        # Join all submitted finalizes (workers within one tick run
+        # concurrently; main poll loop is blocked here but only for the
+        # duration of the slowest of the parallel finalizes, not the sum).
+        outcome = ""
+        for ticket_id, future in finalize_futures:
             try:
-                outcome = self._finalize_one_worker(worker, rc)
+                outcome = future.result()
             except Exception as exc:
                 logger.exception(
                     "finalize_worker raised for %s: %s. Worker slot freed; "
                     "result.json / last_failure.json may be incomplete and "
                     "Linear state may not have been advanced - investigate "
                     "manually.",
-                    worker.ticket_id,
+                    ticket_id,
                     exc,
                 )
                 outcome = "failure"

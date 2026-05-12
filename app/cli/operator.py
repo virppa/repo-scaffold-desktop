@@ -87,6 +87,7 @@ def _run_watcher(args: argparse.Namespace) -> int:
         worker_verbose=args.worker_verbose,
         no_epic_shutdown=args.no_epic_shutdown,
         tui_mode=args.tui,
+        max_concurrent_checks=args.max_concurrent_checks,
     )
     try:
         watcher.run()
