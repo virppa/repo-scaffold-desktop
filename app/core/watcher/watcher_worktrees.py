@@ -168,13 +168,25 @@ def restore_plan_files(backed_up: list[Path]) -> None:
 
 
 def write_worker_pytest_config(worktree_path: Path) -> None:
-    """Write pytest.ini overriding pyproject.toml addopts in the worktree.
+    """No-op (WOR-462).
 
-    pytest.ini takes precedence over pyproject.toml, so this strips
-    --cov-fail-under from every pytest call the worker makes. Coverage
-    is still enforced by CI on the PR.
+    Previously wrote a `pytest.ini` shadowing `pyproject.toml`'s
+    `[tool.pytest.ini_options]` to strip `--cov-fail-under` from per-edit
+    runs. That also dropped `testpaths` and any other pyproject pytest
+    settings — which made the watcher's `required_checks pytest` step trip
+    on `WARNING: ignoring pytest config in pyproject.toml!` and fail.
+
+    Coverage is now disabled per-call by passing `--no-cov` in the
+    PostToolUse hook (`.claude/settings.json`, already in place) and the
+    manifest's `required_checks` template (`pytest --no-cov`, landed in
+    the parent commit). Coverage stays on for the explicit
+    `pytest --cov=app --cov-fail-under=80` invocation in `/close-epic`.
+
+    Kept as a no-op (instead of deleted) so the existing `dispatch.py`
+    call site doesn't need to change and downstream import tests don't
+    break. The parameter is intentionally unused.
     """
-    (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
+    del worktree_path  # WOR-462: kept for backwards compat; see docstring
 
 
 def _save_dirty_worktree_to_backup(
