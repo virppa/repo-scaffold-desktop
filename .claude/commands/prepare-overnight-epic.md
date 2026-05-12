@@ -302,7 +302,7 @@ If `allowed_paths` includes a `tests/test_<stem>*.py` glob, expand it to actual 
   "forbidden_paths": ["app/ui/**", ".env", ".mcp.json", ".claude/settings*", ".importlinter"],
   "related_files_hint": ["<single source file>"],
   "context_snippets": [<file_path>: <first 80 lines>],
-  "required_checks": ["ruff check .", "mypy app/", "pytest", "lint-imports"],
+  "required_checks": ["ruff check .", "mypy app/", "pytest --no-cov", "lint-imports"],
   "optional_checks": [],
   "done_definition": "All listed findings resolved; checks pass; no behavior change.",
   "failure_policy": {

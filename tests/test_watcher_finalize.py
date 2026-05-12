@@ -1377,3 +1377,118 @@ def test_finalize_worker_waste_score_zero_not_null(tmp_path: Path) -> None:
     assert m.waste_score == 0
     # When breakdown dict is empty, waste_breakdown_json should stay NULL.
     assert m.waste_breakdown_json is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-455: allowed-paths enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_allowed_paths_clean_proceeds(
+    tmp_path: Path,
+) -> None:
+    """No diff files → no violations → PR proceeds normally."""
+    manifest = make_manifest(
+        ticket_id="WOR-455",
+        worker_branch="wor-455-test",
+        allowed_paths=["app/core/watcher/watcher_finalize.py"],
+        forbidden_paths=["app/ui/**"],
+    )
+    metrics_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-455",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize._validate_allowed_paths",
+            return_value=[],
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://github.com/example/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    metrics_mock.record.assert_called_once()
+    m = metrics_mock.record.call_args[0][0]
+    assert m.outcome == "success"
+    assert m.escalated_to_cloud is False
+
+
+def test_finalize_worker_allowed_path_violation_marks_blocked(
+    tmp_path: Path,
+) -> None:
+    """Worker diff touches a file NOT in allowed_paths → Blocked + comment."""
+    manifest = make_manifest(
+        ticket_id="WOR-455",
+        worker_branch="wor-455-test",
+        allowed_paths=["app/core/watcher/watcher_finalize.py"],
+        forbidden_paths=["app/ui/**"],
+    )
+    linear_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-455",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize._validate_allowed_paths",
+            return_value=["ALLOWED app/core/ui/widget.py"],
+        ),
+    ):
+        _call_finalize(worker, linear=linear_mock)
+
+    # PR should NOT be attempted — we never call create_pr
+    linear_mock.set_state.assert_called_with("fake-linear-id", "Blocked")
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    assert "WOR-455" in comment_body
+    assert "ALLOWED app/core/ui/widget.py" in comment_body
+    assert "PR creation aborted" in comment_body
+
+
+def test_finalize_worker_forbidden_path_violation_marks_blocked(
+    tmp_path: Path,
+) -> None:
+    """Worker diff touches a forbidden path → Blocked + FORBIDDEN tag."""
+    manifest = make_manifest(
+        ticket_id="WOR-455",
+        worker_branch="wor-455-test",
+        allowed_paths=["app/core/watcher/watcher_finalize.py"],
+        forbidden_paths=["app/ui/**"],
+    )
+    linear_mock = MagicMock()
+    worker = ActiveWorker(
+        ticket_id="WOR-455",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize._validate_allowed_paths",
+            return_value=["FORBIDDEN app/ui/widget.py"],
+        ),
+    ):
+        _call_finalize(worker, linear=linear_mock)
+
+    linear_mock.set_state.assert_called_with("fake-linear-id", "Blocked")
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    assert "FORBIDDEN app/ui/widget.py" in comment_body
+    assert "PR creation aborted" in comment_body

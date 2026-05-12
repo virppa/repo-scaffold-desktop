@@ -307,15 +307,25 @@ def test_restore_plan_files_no_op_on_empty_list() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_write_worker_pytest_config(tmp_path: Path) -> None:
+def test_write_worker_pytest_config_is_noop(tmp_path: Path) -> None:
+    """WOR-462: write_worker_pytest_config no longer writes pytest.ini.
+
+    The previous behavior shadowed pyproject.toml's
+    [tool.pytest.ini_options] (testpaths, --cov, etc.), causing the
+    watcher's required_checks pytest step to fail with
+    "WARNING: ignoring pytest config in pyproject.toml". Coverage is
+    now disabled per-call via `--no-cov` in the PostToolUse hook and
+    `required_checks` template — see WOR-462.
+    """
     worktree_path = tmp_path / "worktree"
     worktree_path.mkdir(parents=True)
 
     write_worker_pytest_config(worktree_path)
 
     config_file = worktree_path / "pytest.ini"
-    assert config_file.exists()
-    assert config_file.read_text() == "[pytest]\naddopts = --tb=short\n"
+    assert not config_file.exists(), (
+        "write_worker_pytest_config must not create pytest.ini (WOR-462)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -959,3 +969,95 @@ def test_squash_wip_commits_returns_none_on_git_error(
 
     assert result is None
     assert any("squash_wip_commits failed" in r.message for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# WOR-458 — cleanup_stale_artifacts
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_stale_artifacts_removes_result_json(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Stale result.json is removed and reported."""
+    from app.core.watcher.watcher_worktrees import cleanup_stale_artifacts
+
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_458"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "result.json").write_text('{"status": "success"}', encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"):
+        cleaned = cleanup_stale_artifacts(artifact_dir, "WOR-458")
+
+    assert not (artifact_dir / "result.json").exists()
+    assert len(cleaned) == 1
+    assert "result.json" in cleaned[0]
+    assert any("Removing stale result.json" in r.message for r in caplog.records)
+
+
+def test_cleanup_stale_artifacts_removes_worker_logs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Stale worker logs matching the ticket prefix are removed."""
+    from app.core.watcher.watcher_worktrees import cleanup_stale_artifacts
+
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_458"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "result.json").write_text('{"status": "failed"}', encoding="utf-8")
+    (artifact_dir / "worker_wor-458.log").write_text("log content")
+    (artifact_dir / "worker_wor-100.log").write_text("unrelated log")
+    (artifact_dir / "other.txt").write_text("not a worker log")
+
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"):
+        cleaned = cleanup_stale_artifacts(artifact_dir, "WOR-458")
+
+    assert not (artifact_dir / "worker_wor-458.log").exists()
+    assert (artifact_dir / "worker_wor-100.log").exists()  # different ticket
+    assert (artifact_dir / "other.txt").exists()
+    assert len(cleaned) == 2  # result.json + worker_wor-458.log
+
+
+def test_cleanup_stale_artifacts_noop_when_clean(tmp_path: Path) -> None:
+    """No files to clean — returns empty list."""
+    from app.core.watcher.watcher_worktrees import cleanup_stale_artifacts
+
+    artifact_dir = tmp_path / ".claude" / "artifacts" / "wor_458"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "manifest.json").write_text("{}")
+
+    cleaned = cleanup_stale_artifacts(artifact_dir, "WOR-458")
+    assert cleaned == []
+
+
+# ---------------------------------------------------------------------------
+# WOR-458 — cleanup_orphan_dir
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_orphan_dir_removes_directory(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Existing orphan directory is removed."""
+    from app.core.watcher.watcher_worktrees import cleanup_orphan_dir
+
+    orphan = tmp_path / "worktrees" / "wor-458-branch"
+    orphan.mkdir(parents=True)
+    (orphan / "leftover.txt").write_text("stale")
+
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_worktrees"):
+        cleanup_orphan_dir(orphan)
+
+    assert not orphan.exists()
+    assert any(
+        "Orphan directory" in r.message and "not a git worktree" in r.message
+        for r in caplog.records
+    )
+
+
+def test_cleanup_orphan_dir_noop_when_absent(tmp_path: Path) -> None:
+    """No error when the directory does not exist."""
+    from app.core.watcher.watcher_worktrees import cleanup_orphan_dir
+
+    missing = tmp_path / "worktrees" / "nonexistent"
+    # Does not exist
+    cleanup_orphan_dir(missing)  # should not raise

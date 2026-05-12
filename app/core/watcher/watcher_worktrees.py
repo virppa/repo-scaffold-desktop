@@ -168,13 +168,25 @@ def restore_plan_files(backed_up: list[Path]) -> None:
 
 
 def write_worker_pytest_config(worktree_path: Path) -> None:
-    """Write pytest.ini overriding pyproject.toml addopts in the worktree.
+    """No-op (WOR-462).
 
-    pytest.ini takes precedence over pyproject.toml, so this strips
-    --cov-fail-under from every pytest call the worker makes. Coverage
-    is still enforced by CI on the PR.
+    Previously wrote a `pytest.ini` shadowing `pyproject.toml`'s
+    `[tool.pytest.ini_options]` to strip `--cov-fail-under` from per-edit
+    runs. That also dropped `testpaths` and any other pyproject pytest
+    settings — which made the watcher's `required_checks pytest` step trip
+    on `WARNING: ignoring pytest config in pyproject.toml!` and fail.
+
+    Coverage is now disabled per-call by passing `--no-cov` in the
+    PostToolUse hook (`.claude/settings.json`, already in place) and the
+    manifest's `required_checks` template (`pytest --no-cov`, landed in
+    the parent commit). Coverage stays on for the explicit
+    `pytest --cov=app --cov-fail-under=80` invocation in `/close-epic`.
+
+    Kept as a no-op (instead of deleted) so the existing `dispatch.py`
+    call site doesn't need to change and downstream import tests don't
+    break. The parameter is intentionally unused.
     """
-    (worktree_path / "pytest.ini").write_text("[pytest]\naddopts = --tb=short\n")
+    del worktree_path  # WOR-462: kept for backwards compat; see docstring
 
 
 def _save_dirty_worktree_to_backup(
@@ -628,3 +640,56 @@ def cleanup_orphaned_worktrees(repo_root: Path) -> None:
             continue
         logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
         cleanup_worktree(repo_root, worktree_dir)
+
+
+def cleanup_stale_artifacts(
+    artifact_dir: Path,
+    ticket_id: str,
+) -> list[str]:
+    """Archive or remove stale result.json / worker logs before re-dispatch.
+
+    When a ticket is re-dispatched after a prior failure (Blocked → ReadyForLocal),
+    leftover ``result.json`` and ``worker_*.log`` files from the previous run must
+    be removed so they do not leak stale data into the new worktree.
+
+    Returns a list of file paths that were cleaned up, for logging.
+    """
+    cleaned: list[str] = []
+
+    # Remove stale result.json
+    result_path = artifact_dir / "result.json"
+    if result_path.exists():
+        logger.warning("Removing stale result.json for %s — %s", ticket_id, result_path)
+        result_path.unlink()
+        cleaned.append(str(result_path))
+
+    # Remove stale worker logs (worker_<ticket>.log)
+    log_prefix = f"worker_{ticket_id.lower()}"
+    if artifact_dir.is_dir():
+        for child in sorted(artifact_dir.iterdir()):
+            if child.is_file() and child.name.startswith(log_prefix):
+                logger.warning("Removing stale worker log %s — %s", ticket_id, child)
+                child.unlink()
+                cleaned.append(str(child))
+
+    return cleaned
+
+
+def cleanup_orphan_dir(path: Path) -> None:
+    """Remove an orphan worktree directory not tracked by ``git worktree list``.
+
+    A directory at the expected path may persist on disk after a prior watcher run
+    crashes or is killed mid-cleanup. It is not registered as a git worktree — the
+    subsequent ``git worktree add`` will fail with ``already exists`` unless removed
+    first.
+
+    Uses ``shutil.rmtree(..., ignore_errors=True)`` so the caller does not need to
+    handle ``OSError`` / ``PermissionError`` for locked / read-only directories.
+    Logs a WARN so the operator sees what happened (audit trail, WOR-66).
+    """
+    if path.exists():
+        logger.warning(
+            "Orphan directory at %s is not a git worktree — removing via rmtree",
+            path,
+        )
+        shutil.rmtree(path, ignore_errors=True)

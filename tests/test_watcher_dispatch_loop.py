@@ -1006,3 +1006,118 @@ def test_start_ticket_unaffected_when_no_epic_workers(
 
     assert len(w._local_active) == 1
     w._linear.post_comment.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# WOR-458 — InProgressLocal state lock guard
+# ---------------------------------------------------------------------------
+
+
+def test_start_ticket_blocked_when_in_progress_local(
+    tmp_path: Path, caplog: pytest.LogCaptureContext
+) -> None:
+    """Dispatch must NOT proceed when the ticket's Linear state is
+    InProgressLocal — even if stale artifacts exist and the ticket
+    was re-dispatched by a race condition."""
+
+    manifest = _make_manifest(
+        ticket_id="WOR-458",
+        worker_branch="wor-458-branch",
+        base_branch="epic/wor-461-watcher-contract-wave-3",
+        allowed_paths=["app/core/foo.py"],
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.get_current_state_name.return_value = "InProgressLocal"
+    linear_mock.list_ready_for_local.return_value = []
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        w._start_ticket("WOR-458", "fake-linear-id")
+
+    assert len(w._local_active) == 0
+    assert any(
+        "InProgressLocal" in m and "Double-launch guard" in m for m in caplog.messages
+    )
+    # No worktree or state transition should occur
+    w._linear.get_current_state_name.assert_called_once_with("fake-linear-id")
+
+
+def test_start_ticket_proceeds_for_ready_for_local(
+    tmp_path: Path,
+) -> None:
+    """When Linear state is ReadyForLocal, dispatch proceeds normally
+    and stale artifacts are cleaned up."""
+    manifest = _make_manifest(
+        ticket_id="WOR-458",
+        worker_branch="wor-458-branch",
+        base_branch="epic/wor-461-watcher-contract-wave-3",
+        allowed_paths=["app/core/foo.py"],
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.get_current_state_name.return_value = "ReadyForLocal"
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    fake_process = MagicMock(spec=subprocess.Popen)
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.dispatch.launch_worker",
+            return_value=fake_process,
+        ),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
+        patch.object(w._services, "probe_vllm_health", return_value=True),
+    ):
+        w._start_ticket("WOR-458", "fake-458")
+
+    assert len(w._local_active) == 1
+    assert w._local_active[0].ticket_id == "WOR-458"
+
+
+def test_start_ticket_proceeds_when_state_not_found(
+    tmp_path: Path,
+) -> None:
+    """If get_current_state_name returns None (issue not found),
+    dispatch proceeds — the ticket is safe to re-dispatch."""
+    manifest = _make_manifest(
+        ticket_id="WOR-458",
+        worker_branch="wor-458-branch",
+        base_branch="epic/wor-461-watcher-contract-wave-3",
+        allowed_paths=["app/core/foo.py"],
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.get_current_state_name.return_value = None
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    fake_process = MagicMock(spec=subprocess.Popen)
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.dispatch.launch_worker",
+            return_value=fake_process,
+        ),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
+        patch.object(w._services, "probe_vllm_health", return_value=True),
+    ):
+        w._start_ticket("WOR-458", "fake-458")
+
+    assert len(w._local_active) == 1
+    assert w._local_active[0].ticket_id == "WOR-458"

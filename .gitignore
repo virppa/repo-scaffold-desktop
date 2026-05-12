@@ -68,6 +68,9 @@ litellm-local.yaml
 # Claude Code hook state (per-session, machine-generated)
 .claude/.read_counts.json
 
+# Claude Code quality-check budget counter (per-session, machine-generated)
+.claude/.quality_check_count
+
 # Forensic log dumps under retros/ (raw worker logs + manifests captured during
 # post-mortem analysis). The retro markdown itself is committed; raw evidence
 # lives in private gists or Linear attachments instead.
