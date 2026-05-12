@@ -818,7 +818,7 @@ def test_finalize_worker_human_policy_posts_comment_and_aborts(
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_worker_no_retry_when_max_retries_zero(
+def test_finalize_worker_max_retries_zero_no_retry(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """max_retries=0: single attempt even when checks fail, no retry.
@@ -857,6 +857,53 @@ def test_finalize_worker_no_retry_when_max_retries_zero(
     assert worker.attempt_count == 1
     # Verify launch_worker was NOT called (no retry happened)
     mock_launch.assert_not_called()
+
+
+def test_finalize_worker_hardcap_clamps_above_one(tmp_path: Path) -> None:
+    """max_retries=5 but hardcapped at 1 — exactly 2 total iterations.
+
+    Without hardcap the retry loop would allow 5 retries (6 iterations).
+    ATTEMPT_HARDCAP=1 clamps it to 1 retry = 2 total check iterations.
+    """
+    manifest = make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test",
+        failure_policy={"max_retries": 5},
+    )
+    worker = ActiveWorker(
+        ticket_id="WOR-10",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    # Simulate 2 failures: first → loop continues, second → attempt_count > 1
+    # so the hardcap (max_retries=1) is exceeded and the loop exits.
+    check_results = [
+        (False, [{"check": "ruff check .", "exit_code": 1}]),
+        (False, [{"check": "mypy app/", "exit_code": 1}]),
+    ]
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            side_effect=check_results,
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+        ) as mock_launch,
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker)
+
+    # Hardcap: 1 retry = 2 total iterations. launch_worker called once.
+    assert worker.attempt_count == 2
+    mock_launch.assert_called_once()
 
 
 def test_finalize_worker_single_retry_then_success(
