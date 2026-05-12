@@ -1276,3 +1276,57 @@ def test_finalize_worker_e2e_behavior_from_worker_log(tmp_path: Path) -> None:
     assert m.turn_count is not None
     assert m.tool_calls_total is not None
     assert m.thinking_blocks is not None
+
+
+# ---------------------------------------------------------------------------
+# WOR-351: waste_score=0 recorded (not NULL), breakdown_json NULL when empty
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_waste_score_zero_not_null(tmp_path: Path) -> None:
+    """waste_score column receives the actual score even when 0.
+
+    A clean run (no waste signals) produces score=0; the metrics row must
+    store 0, not NULL, so dashboards can distinguish "measured 0 = clean"
+    from "not measured = NULL".
+    """
+    manifest = make_manifest(ticket_id="WOR-351", worker_branch="wor-351-test")
+    metrics_mock = MagicMock()
+
+    # Minimal log with zero waste signals -> compute_waste_score returns 0.
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-351.log"
+    log_file.write_text(
+        json.dumps(
+            {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 50}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-351",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.waste_score == 0
+    # When breakdown dict is empty, waste_breakdown_json should stay NULL.
+    assert m.waste_breakdown_json is None

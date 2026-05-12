@@ -445,10 +445,12 @@ def finalize_worker(
     cost = _build_cost_metrics(eff, input_tokens, output_tokens, wall_time)
 
     # Compute waste score from the worker log (WOR-277).
+    # WOR-351: always record waste_score (0 = clean run, not NULL).
+    #           only null breakdown_json when the dict is empty.
     waste_report = compute_waste_score(log_path)
-    waste_score: int | None = waste_report.score if waste_report.score > 0 else None
+    waste_score: int | None = waste_report.score
     waste_breakdown_json: str | None = (
-        json.dumps(waste_report.breakdown) if waste_report.score > 0 else None
+        json.dumps(waste_report.breakdown) if waste_report.breakdown else None
     )
     _warn_high_waste(worker.ticket_id, waste_score, waste_report)
 
