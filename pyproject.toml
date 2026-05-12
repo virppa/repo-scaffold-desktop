@@ -29,7 +29,11 @@ select = ["E", "F", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80"
+# WOR-464: -n 8 enables pytest-xdist (parallel test workers). On the 16C/32T
+# 9950X3D dev box, full suite drops from ~125s serial to ~34s. Operator can
+# override with -p no:xdist for serial. PostToolUse single-file pytest hook
+# disables xdist explicitly since worker-spawn overhead would dominate.
+addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80 -n 8"
 
 [tool.mypy]
 python_version = "3.12"

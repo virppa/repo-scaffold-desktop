@@ -107,7 +107,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */tests/* ]]; then pytest \"$FILE\" --no-cov --tb=short -q; fi"
+            "command": "FILE=\"$CLAUDE_TOOL_INPUT_FILE_PATH\"; if [[ \"$FILE\" == */tests/* ]]; then pytest \"$FILE\" --no-cov -p no:xdist --tb=short -q; fi"
           }
         ]
       },
