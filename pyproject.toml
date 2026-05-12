@@ -33,7 +33,12 @@ testpaths = ["tests"]
 # 9950X3D dev box, full suite drops from ~125s serial to ~34s. Operator can
 # override with -p no:xdist for serial. PostToolUse single-file pytest hook
 # disables xdist explicitly since worker-spawn overhead would dominate.
-addopts = "--cov=app --cov-report=term-missing --cov-fail-under=80 -n 8"
+#
+# WOR-468: coverage flags moved out of addopts to CI workflow. Local dev
+# pytest is now ~20s faster (no coverage instrumentation overhead). Pass
+# --cov=app explicitly when you want coverage locally:
+#   pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+addopts = "-n 8"
 
 [tool.mypy]
 python_version = "3.12"
