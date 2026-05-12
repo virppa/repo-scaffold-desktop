@@ -29,6 +29,8 @@ from .watcher_subprocess import launch_worker
 from .watcher_types import ActiveWorker, LinearClientProtocol
 from .watcher_worktrees import (
     backup_plan_files,
+    cleanup_orphan_dir,
+    cleanup_stale_artifacts,
     copy_manifest_to_worktree,
     create_worktree,
     write_worker_pytest_config,
@@ -75,6 +77,8 @@ def start_ticket(
         return
     if not _check_epic_drift(linear, manifest, _repo_root, linear_id, ticket_id):
         return
+    if not _check_in_progress_local(linear, linear_id, ticket_id):
+        return
     if not _check_path_overlap(
         manifest, _local_active, _cloud_active, ticket_id, _dedup_state
     ):
@@ -90,6 +94,10 @@ def start_ticket(
         return
     if not _check_vllm_health(effective_mode, services, ticket_id, _dedup_state):
         return
+
+    # WOR-458: pre-dispatch cleanup — remove stale artifacts and orphan dirs
+    # that would otherwise block the new worktree creation.
+    _cleanup_stale_state(_repo_root, manifest, ticket_id)
 
     worktree_path = create_worktree(_repo_root, manifest)
     copy_manifest_to_worktree(_repo_root, manifest, worktree_path)
@@ -311,6 +319,29 @@ def _check_path_overlap(
     return False
 
 
+def _check_in_progress_local(
+    linear: LinearClientProtocol,
+    linear_id: str,
+    ticket_id: str,
+) -> bool:
+    """WOR-458: guard against double-launch when Linear state is InProgressLocal.
+
+    A ticket that is already ``InProgressLocal`` must not be dispatched again —
+    the Linear state lock prevents the watcher from picking it up, but this check
+    acts as a safety net for edge cases (e.g. state race during dispatch).
+    """
+    state_name = linear.get_current_state_name(linear_id)
+    if state_name == "InProgressLocal":
+        logger.warning(
+            "Deferring %s — ticket is already InProgressLocal (state=%s). "
+            "Double-launch guard.",
+            ticket_id,
+            state_name,
+        )
+        return False
+    return True
+
+
 def _check_pool_capacity(
     effective_mode: str,
     _cloud_active: list[ActiveWorker],
@@ -345,6 +376,30 @@ def _check_vllm_health(
         return False
     services.ensure_vllm_anthropic_mode()
     return True
+
+
+def _cleanup_stale_state(
+    repo_root: Path,
+    manifest: ExecutionManifest,
+    ticket_id: str,
+) -> None:
+    """WOR-458: remove stale artifacts and orphan directories before dispatch.
+
+    Cleans up:
+    - Stale ``result.json`` and ``worker_*.log`` in the artifact dir.
+    - Orphan worktree directory at the expected path (not tracked by git).
+    """
+    from .watcher_types import _WORKTREE_BASE
+
+    artifact_dir = (repo_root / manifest.artifact_paths.result_json).parent
+    cleaned = cleanup_stale_artifacts(artifact_dir, ticket_id)
+    if cleaned:
+        logger.info("Cleaned %d stale artifact(s) for %s", len(cleaned), ticket_id)
+
+    # Remove orphan worktree directory if present
+    worktree_name = manifest.worktree_name or manifest.worker_branch
+    worktree_path = repo_root.parent / _WORKTREE_BASE / worktree_name
+    cleanup_orphan_dir(worktree_path)
 
 
 def _snapshot_vllm_solo(
