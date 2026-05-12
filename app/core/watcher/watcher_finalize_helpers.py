@@ -168,8 +168,6 @@ def _execute_finalization(
         ticket_id=ticket_id,
         project_id=project_id,
     )
-    if not checks_ok:
-        worker.attempt_count += 1
     if not checks_ok and manifest.failure_policy.on_check_failure == "abort":
         escalated = _record_failure_state(
             worker,
