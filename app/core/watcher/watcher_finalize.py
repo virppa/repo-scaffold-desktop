@@ -36,11 +36,7 @@ from .watcher_finalize_helpers import (
     safe_set_state,
 )
 from .watcher_helpers import (
-    _parse_hook_trust_violations,
-    _parse_worker_api_retries,
-    _parse_worker_behavior,
-    _parse_worker_subagent_spawns,
-    _parse_worker_usage,
+    _parse_worker_telemetry,
     _read_result_flags,
     capture_vllm_metrics,
     compute_vllm_metrics_delta,
@@ -477,16 +473,20 @@ def finalize_worker(
     )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-    input_tokens, output_tokens, context_compactions, compact_duration_ms = (
-        _parse_worker_usage(log_path)
-    )
-    api_retry_count = _parse_worker_api_retries(log_path)
-    subagent_spawns = _parse_worker_subagent_spawns(log_path)
-    hook_trust_violations = _parse_hook_trust_violations(log_path)
+    # WOR-466: single-pass JSONL walk replaces 5 separate parsers. On large
+    # logs (>100MB) this saves seconds; on typical 2-MB logs it saves ~25ms.
+    telemetry = _parse_worker_telemetry(log_path)
+    input_tokens = telemetry.input_tokens
+    output_tokens = telemetry.output_tokens
+    context_compactions = telemetry.context_compactions
+    compact_duration_ms = telemetry.compact_duration_ms
+    api_retry_count = telemetry.api_retries
+    subagent_spawns = telemetry.subagent_spawns
+    hook_trust_violations = telemetry.hook_trust_violations
     _warn_hook_trust(worker.ticket_id, hook_trust_violations)
     # WOR-380: per-worker behavior telemetry. Concurrency-safe — extracted
     # from this worker's own log file.
-    behavior = _parse_worker_behavior(log_path)
+    behavior = telemetry.behavior
     tool_breakdown_json: str | None = (
         json.dumps(behavior.tool_calls_breakdown, sort_keys=True)
         if behavior.tool_calls_breakdown is not None

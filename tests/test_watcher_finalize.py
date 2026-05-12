@@ -15,6 +15,7 @@ from app.core.linear_client import LinearError
 from app.core.watcher.watcher_finalize import finalize_worker
 from app.core.watcher.watcher_helpers import (
     WorkerBehavior,
+    WorkerTelemetry,
 )
 from app.core.watcher.watcher_types import ActiveWorker
 from tests.conftest import make_manifest
@@ -1188,18 +1189,23 @@ def test_finalize_worker_retry_behavior_parse_fails_then_succeeds(
             return_value="https://gh/pr/1",
         ),
         patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        # WOR-466: parsers unified into _parse_worker_telemetry; first call
+        # raises (simulating the WOR-420 parse-race scenario), second call
+        # returns the expected telemetry with usage + behavior populated.
         patch(
-            "app.core.watcher.watcher_finalize._parse_worker_usage",
-            side_effect=[
-                (1000, 500, 0, 0),
-                (1000, 500, 0, 0),
-            ],
-        ),
-        patch(
-            "app.core.watcher.watcher_finalize._parse_worker_behavior",
+            "app.core.watcher.watcher_finalize._parse_worker_telemetry",
             side_effect=[
                 Exception("parse error"),
-                expected_behavior,
+                WorkerTelemetry(
+                    input_tokens=1000,
+                    output_tokens=500,
+                    context_compactions=0,
+                    compact_duration_ms=0,
+                    subagent_spawns=0,
+                    api_retries=0,
+                    hook_trust_violations=0,
+                    behavior=expected_behavior,
+                ),
             ],
         ),
     ):
