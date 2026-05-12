@@ -20,6 +20,21 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Flags consumed by the parent process that must NOT be forwarded to the
+# child watcher process.
+_CHILD_ARGV_STRIP_SET = frozenset({"--detach", "--visible"})
+
+
+def _build_child_argv(argv: list[str]) -> list[str]:
+    """Strip *--detach* and *--visible* from *argv*, return the remainder.
+
+    Used so the operator can forward every CLI flag the user passed alongside
+    ``--detach`` / ``--visible`` to the spawned child watcher process, except
+    for the two flags that only make sense on the parent side.
+    """
+    return [arg for arg in argv if arg not in _CHILD_ARGV_STRIP_SET]
+
+
 # Windows CreateProcess flags — defined here so we don't need win32 deps.
 _DETACHED_PROCESS = 0x00000008
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -68,12 +83,18 @@ def load_env_file(repo_root: Path | None = None) -> int:
     return loaded
 
 
-def launch_detached(repo_root: Path | None = None) -> int:
+def launch_detached(
+    repo_root: Path | None = None, extra_args: list[str] | None = None
+) -> int:
     """Spawn the watcher daemon as a fully detached subprocess.
 
     The child inherits the parent's environment (which by the time this is
     called includes any keys loaded from .env). stdout + stderr are
     redirected to ``.claude/watcher.log`` (appended); stdin is /dev/null.
+
+    *extra_args* — additional CLI flags to forward to the child watcher
+    process.  ``--detach`` and ``--visible`` are stripped so they are not
+    forwarded.
 
     Returns the child PID. Parent should print + exit immediately; the
     child writes its own ``.claude/watcher.pid`` on startup via the
@@ -87,7 +108,8 @@ def launch_detached(repo_root: Path | None = None) -> int:
     claude_dir.mkdir(exist_ok=True)
     log_path = claude_dir / "watcher.log"
 
-    cmd = [sys.executable, "-m", "app.cli", "watcher"]
+    base_cmd = [sys.executable, "-m", "app.cli", "watcher"]
+    cmd = base_cmd + (_build_child_argv(extra_args or []) if extra_args else [])
 
     # Open the log file once; child inherits the fd. We close our handle
     # after Popen returns — the child keeps its own copy alive.
@@ -121,12 +143,18 @@ def launch_detached(repo_root: Path | None = None) -> int:
     return proc.pid
 
 
-def launch_in_new_terminal(repo_root: Path | None = None) -> int:
+def launch_in_new_terminal(
+    repo_root: Path | None = None, extra_args: list[str] | None = None
+) -> int:
     """Windows: open a new cmd.exe window with the watcher running attached.
 
     The new window's title is "watcher"; the watcher runs in the foreground
     inside it so the operator can see live logs. `.env` is auto-loaded by
     the child's own `_run_watcher` call.
+
+    *extra_args* — additional CLI flags to forward to the child watcher
+    process.  ``--detach`` and ``--visible`` are stripped so they are not
+    forwarded.
 
     Returns 0 on success, 1 on non-Windows (with a clear stderr message).
     Does not wait for the spawned window.
@@ -140,8 +168,10 @@ def launch_in_new_terminal(repo_root: Path | None = None) -> int:
         return 1
 
     root = repo_root or Path.cwd()
+    forwarded = _build_child_argv(extra_args) if extra_args else []
+    extra = " " + " ".join(f'"{a}"' for a in forwarded) if forwarded else ""
     # `start "watcher" cmd /k "cd /d <root> && python -m app.cli watcher"`
-    inner = f'cd /d "{root}" && "{sys.executable}" -m app.cli watcher'
+    inner = f'cd /d "{root}" && "{sys.executable}" -m app.cli watcher{extra}'
     subprocess.run(  # nosec B603 B607
         ["cmd.exe", "/c", "start", "watcher", "cmd", "/k", inner],
         check=False,

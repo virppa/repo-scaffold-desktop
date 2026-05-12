@@ -727,6 +727,22 @@ class TestTicketRunLog:
         assert row["output_tok_per_s"] is None
         assert row["context_compactions"] is None
 
+    def test_same_epic_pair_column_exists_and_stores_value(self, tmp_path):
+        """same_epic_pair column is created and stores 1/True correctly."""
+        store = _store(tmp_path)
+        store.record_run(_run_log(same_epic_pair=True))
+        with store._connect() as conn:
+            row = conn.execute("SELECT same_epic_pair FROM ticket_run_log").fetchone()
+        assert row["same_epic_pair"] == 1
+
+    def test_same_epic_pair_default_false(self, tmp_path):
+        """same_epic_pair defaults to 0 (False) when not specified."""
+        store = _store(tmp_path)
+        store.record_run(_run_log())  # no same_epic_pair passed
+        with store._connect() as conn:
+            row = conn.execute("SELECT same_epic_pair FROM ticket_run_log").fetchone()
+        assert row["same_epic_pair"] == 0
+
 
 # ---------------------------------------------------------------------------
 # compute_tags — individual rule tests (9 rules)
@@ -848,13 +864,13 @@ class TestComputeTags:
         assert "escalated" not in compute_tags(m, "success")
 
     def test_high_waste(self):
-        """high_waste: waste_score > 80."""
-        m = _metrics(waste_score=85)
+        """high_waste: waste_score > 55."""
+        m = _metrics(waste_score=56)
         assert "high_waste" in compute_tags(m, "success")
 
     def test_high_waste_below_threshold(self):
-        """Does not fire when waste_score <= 80."""
-        m = _metrics(waste_score=80)
+        """Does not fire when waste_score <= 55."""
+        m = _metrics(waste_score=55)
         assert "high_waste" not in compute_tags(m, "success")
 
     def test_high_waste_none(self):

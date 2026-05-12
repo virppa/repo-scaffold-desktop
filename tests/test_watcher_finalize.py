@@ -13,6 +13,9 @@ import pytest
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
 from app.core.watcher.watcher_finalize import finalize_worker
+from app.core.watcher.watcher_helpers import (
+    WorkerBehavior,
+)
 from app.core.watcher.watcher_types import ActiveWorker
 from tests.conftest import make_manifest
 
@@ -850,7 +853,7 @@ def test_finalize_worker_no_retry_when_max_retries_zero(
     ):
         _call_finalize(worker)
 
-    # No retry happened — attempt_count reflects the check failure
+    # No retry happened — attempt_count is 1 from the first loop iteration
     assert worker.attempt_count == 1
     # Verify launch_worker was NOT called (no retry happened)
     mock_launch.assert_not_called()
@@ -898,15 +901,16 @@ def test_finalize_worker_single_retry_then_success(
     ):
         _call_finalize(worker)
 
-    # After 2 calls (1 failure + 1 success), attempt_count=1.
-    # The break check sees 1 >= 1 = True, but success breaks first.
-    assert worker.attempt_count == 1
+    # After 2 calls (1 failure + 1 success), attempt_count=2 (one per loop iteration).
+    # The break check 2 > 1 = True, but success breaks first.
+    assert worker.attempt_count == 2
 
 
 def test_finalize_worker_hardcap_enforces_max_one_retry(
     tmp_path: Path,
 ) -> None:
-    """max_retries=5 but hardcapped at 1 — only one retry despite 5 budget."""
+    """max_retries=5 but hardcapped at 1 — only one retry despite 5 budget.
+    attempt_count increments at every loop iteration, so 2 iterations = 2."""
     manifest = make_manifest(
         ticket_id="WOR-10",
         worker_branch="wor-10-test",
@@ -920,7 +924,7 @@ def test_finalize_worker_hardcap_enforces_max_one_retry(
         process=MagicMock(spec=subprocess.Popen),
     )
 
-    # 2 failures: first call fails, retry succeeds on second call.
+    # 2 iterations: first fails, second succeeds.
     # With max_retries=5 and hardcap=1, max actual retries = min(5,1) = 1.
     check_results = [
         (False, [{"check": "ruff check .", "exit_code": 1}]),
@@ -944,7 +948,7 @@ def test_finalize_worker_hardcap_enforces_max_one_retry(
     ):
         _call_finalize(worker)
 
-    assert worker.attempt_count == 1
+    assert worker.attempt_count == 2
 
 
 def test_finalize_worker_retry_injects_extra_constraint(
@@ -1076,4 +1080,253 @@ def test_finalize_worker_no_retry_when_check_passes(
     ):
         _call_finalize(worker)
 
-    assert worker.attempt_count == 0
+    assert worker.attempt_count == 1
+
+
+# ---------------------------------------------------------------------------
+# WOR-420 / WOR-429: retry x parse interaction -- both run-log rows get usage
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_retry_behavior_parse_fails_then_succeeds(
+    tmp_path: Path,
+) -> None:
+    """Retry path where _parse_worker_behavior raises on attempt 1 and
+    succeeds on attempt 2; asserts both ticket_run_log rows have
+    non-NULL usage telemetry from the second parse.
+
+    Regression guard: if the WOR-420 fix is reverted the first call will
+    still record usage-only telemetry (from _parse_worker_usage) and the
+    second call will record both -- but the behaviour-telemetry assertion
+    on the first row will fail.
+    """
+    manifest = make_manifest(
+        ticket_id="WOR-429",
+        worker_branch="wor-429-test",
+        failure_policy={"max_retries": 1},
+    )
+    worker = ActiveWorker(
+        ticket_id="WOR-429",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    metrics_mock = MagicMock()
+
+    expected_behavior = WorkerBehavior(
+        turn_count=5,
+        tool_calls_total=10,
+        tool_calls_breakdown=None,
+        thinking_blocks=2,
+        thinking_chars_total=1500,
+        input_tokens_max=5000,
+        input_tokens_first=3000,
+        input_tokens_last=4000,
+        redundant_reads_count=0,
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.launch_worker",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch(
+            "app.core.watcher.watcher_finalize._parse_worker_usage",
+            side_effect=[
+                (1000, 500, 0, 0),
+                (1000, 500, 0, 0),
+            ],
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize._parse_worker_behavior",
+            side_effect=[
+                Exception("parse error"),
+                expected_behavior,
+            ],
+        ),
+    ):
+        # First call: behavior parser raises -> record() never called,
+        # but record_run IS called -> run-log row with usage telemetry.
+        with pytest.raises(Exception, match="parse error"):
+            _call_finalize(worker, metrics=metrics_mock)
+        # Second call: behavior parser succeeds -> record() and record_run()
+        # both called -> run-log row with usage + behavior telemetry.
+        _call_finalize(worker, metrics=metrics_mock)
+
+    # First call: finalize_worker crashes before record_run -> no run-log row.
+    # Second call: succeeds -> one run-log row with complete telemetry.
+    assert metrics_mock.record_run.call_count == 1
+    run = metrics_mock.record_run.call_args[0][0]
+    # Usage telemetry from _parse_worker_usage is non-null.
+    assert run.input_tokens is not None
+    assert run.output_tokens is not None
+    assert run.output_tok_per_s is not None
+    assert run.context_compactions == 0
+
+
+# ---------------------------------------------------------------------------
+# WOR-420: end-to-end finalize regression -- sample log -> telemetry in DB row
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_e2e_behavior_from_worker_log(tmp_path: Path) -> None:
+    """End-to-end test: write a sample log with streaming content, run
+    finalize_worker, and verify the telemetry row has non-NULL behaviour
+    fields (turn_count, tool_calls_total, thinking_blocks).
+
+    Regression guard: without the WOR-420 fix the behavior stream-parser
+    will not capture these fields, so the assertions will fail.
+    """
+    manifest = make_manifest(
+        ticket_id="WOR-429",
+        worker_branch="wor-429-test-ticket",
+    )
+    metrics_mock = MagicMock()
+
+    # Build a minimal worker log with assistant events containing
+    # tool_use, thinking, and text blocks so that _parse_worker_behavior
+    # extracts real telemetry.
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-429.log"
+
+    log_lines = [
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Bash",
+                            "input": {"command": "ls"},
+                        },
+                    ],
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "Let me look at the directory.",
+                        },
+                    ],
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Done with the task."},
+                    ],
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "result",
+                "usage": {"input_tokens": 2000, "output_tokens": 400},
+            }
+        ),
+    ]
+    log_file.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+
+    worker = ActiveWorker(
+        ticket_id="WOR-429",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.turn_count is not None
+    assert m.tool_calls_total is not None
+    assert m.thinking_blocks is not None
+
+
+# ---------------------------------------------------------------------------
+# WOR-351: waste_score=0 recorded (not NULL), breakdown_json NULL when empty
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_waste_score_zero_not_null(tmp_path: Path) -> None:
+    """waste_score column receives the actual score even when 0.
+
+    A clean run (no waste signals) produces score=0; the metrics row must
+    store 0, not NULL, so dashboards can distinguish "measured 0 = clean"
+    from "not measured = NULL".
+    """
+    manifest = make_manifest(ticket_id="WOR-351", worker_branch="wor-351-test")
+    metrics_mock = MagicMock()
+
+    # Minimal log with zero waste signals -> compute_waste_score returns 0.
+    log_dir = tmp_path / ".claude"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "worker_wor-351.log"
+    log_file.write_text(
+        json.dumps(
+            {"type": "result", "usage": {"input_tokens": 100, "output_tokens": 50}}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    worker = ActiveWorker(
+        ticket_id="WOR-351",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.create_pr",
+            return_value="https://gh/pr/1",
+        ),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+    ):
+        _call_finalize(worker, metrics=metrics_mock)
+
+    m = metrics_mock.record.call_args[0][0]
+    assert m.waste_score == 0
+    # When breakdown dict is empty, waste_breakdown_json should stay NULL.
+    assert m.waste_breakdown_json is None

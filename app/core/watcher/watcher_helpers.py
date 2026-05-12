@@ -36,6 +36,7 @@ __all__ = [
     "format_elapsed",
     "format_worker_token_count",
     "check_allowed_paths_overlap",
+    "get_active_parent_ids",
     "build_worker_env",
     "build_worker_cmd",
     "resolve_effective_mode",
@@ -44,6 +45,7 @@ __all__ = [
     "count_main_ahead_of_epic",
     "capture_vllm_metrics",
     "compute_vllm_metrics_delta",
+    "picker_sort_key",
     "WorkerBehavior",
     "_parse_worker_behavior",
 ]
@@ -520,8 +522,58 @@ def compute_vllm_metrics_delta(
 
 
 # ---------------------------------------------------------------------------
-# Per-worker behavior telemetry (WOR-380)
+# Same-epic pair detection (WOR-220)
 # ---------------------------------------------------------------------------
+
+
+def get_active_parent_ids(workers: list[ActiveWorker]) -> set[str]:
+    """Return the set of parent issue IDs for all active workers.
+
+    Each worker's manifest carries an ``epic_id`` that is the Linear parent
+    issue ID of the ticket it is implementing.  This is used by the picker
+    to prefer dispatching a candidate whose parent matches an already-running
+    worker's parent, maximising API-cache (APC) hit rate across same-epic
+    concurrent workers.
+    """
+    return {w.manifest.epic_id for w in workers if w.manifest.epic_id}
+
+
+def picker_sort_key(
+    candidate: dict[str, Any],
+    active_parent_ids: set[str],
+    candidate_index: int,
+) -> tuple[int, int, str]:
+    """Sort key for candidate tickets at dispatch pick time.
+
+    When there is at least one active worker (slot index > 0), candidates
+    whose Linear parent matches an active worker's parent get a lower key
+    so they sort first.  The full key is ``(parent_match, priority, id)``
+    where ``parent_match`` is 0 when the candidate is a same-epic sibling
+    and 1 otherwise — meaning same-epic tickets always sort before
+    cross-epic ones, and within each group the current ordering
+    (priority, then id) is preserved.
+
+    This is a *stable* sort key: if no active workers exist, the key
+    collapses to ``(1, priority, id)`` for every candidate which
+    preserves the original ordering (WOR-220: solo dispatch is
+    byte-for-byte unchanged).
+    """
+    parent_id = candidate.get("parent") or {}
+    if isinstance(parent_id, dict):
+        parent_id = parent_id.get("id") or ""
+    else:
+        parent_id = ""
+
+    parent_match = 0 if parent_id in active_parent_ids else 1
+
+    priority = candidate.get("priority") or 0
+    if not isinstance(priority, int):
+        try:
+            priority = int(priority)
+        except (ValueError, TypeError):
+            priority = 0
+
+    return (parent_match, priority, candidate.get("id", ""))
 
 
 class WorkerBehavior:
