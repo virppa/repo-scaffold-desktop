@@ -628,3 +628,56 @@ def cleanup_orphaned_worktrees(repo_root: Path) -> None:
             continue
         logger.warning("Orphaned worktree detected: %s — removing", worktree_dir)
         cleanup_worktree(repo_root, worktree_dir)
+
+
+def cleanup_stale_artifacts(
+    artifact_dir: Path,
+    ticket_id: str,
+) -> list[str]:
+    """Archive or remove stale result.json / worker logs before re-dispatch.
+
+    When a ticket is re-dispatched after a prior failure (Blocked → ReadyForLocal),
+    leftover ``result.json`` and ``worker_*.log`` files from the previous run must
+    be removed so they do not leak stale data into the new worktree.
+
+    Returns a list of file paths that were cleaned up, for logging.
+    """
+    cleaned: list[str] = []
+
+    # Remove stale result.json
+    result_path = artifact_dir / "result.json"
+    if result_path.exists():
+        logger.warning("Removing stale result.json for %s — %s", ticket_id, result_path)
+        result_path.unlink()
+        cleaned.append(str(result_path))
+
+    # Remove stale worker logs (worker_<ticket>.log)
+    log_prefix = f"worker_{ticket_id.lower()}"
+    if artifact_dir.is_dir():
+        for child in sorted(artifact_dir.iterdir()):
+            if child.is_file() and child.name.startswith(log_prefix):
+                logger.warning("Removing stale worker log %s — %s", ticket_id, child)
+                child.unlink()
+                cleaned.append(str(child))
+
+    return cleaned
+
+
+def cleanup_orphan_dir(path: Path) -> None:
+    """Remove an orphan worktree directory not tracked by ``git worktree list``.
+
+    A directory at the expected path may persist on disk after a prior watcher run
+    crashes or is killed mid-cleanup. It is not registered as a git worktree — the
+    subsequent ``git worktree add`` will fail with ``already exists`` unless removed
+    first.
+
+    Uses ``shutil.rmtree(..., ignore_errors=True)`` so the caller does not need to
+    handle ``OSError`` / ``PermissionError`` for locked / read-only directories.
+    Logs a WARN so the operator sees what happened (audit trail, WOR-66).
+    """
+    if path.exists():
+        logger.warning(
+            "Orphan directory at %s is not a git worktree — removing via rmtree",
+            path,
+        )
+        shutil.rmtree(path, ignore_errors=True)

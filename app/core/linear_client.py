@@ -195,6 +195,26 @@ class LinearClient:
             raise LinearError(f"Issue {identifier!r} not found")
         return cast(dict[str, Any], issue)
 
+    def get_current_state_name(self, issue_id: str) -> str | None:
+        """Return the current workflow state name for *issue_id*.
+
+        Returns ``None`` when the issue does not exist (e.g. already deleted).
+        """
+        data = self._query(
+            """
+            query GetIssueStateById($id: String!) {
+              issue(id: $id) {
+                state { name }
+              }
+            }
+            """,
+            {"id": issue_id},
+        )
+        issue = data.get("issue")
+        if issue is None:
+            return None
+        return cast(str, issue["state"]["name"])
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
