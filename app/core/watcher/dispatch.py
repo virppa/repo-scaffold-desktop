@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from app.core.linear_client import DONE_STATE_TYPES
 from app.core.manifest import ExecutionManifest
@@ -19,6 +20,7 @@ from .watcher_helpers import (
     capture_vllm_metrics,
     check_allowed_paths_overlap,
     count_main_ahead_of_epic,
+    get_active_parent_ids,
     resolve_effective_mode,
     suppress_dedup,
 )
@@ -56,8 +58,13 @@ def start_ticket(
     ticket_id: str,
     _escalation_policy: object,
     _dedup_state: dict[str, str],
+    _candidate: dict[str, Any] | None = None,
 ) -> None:
-    """Run the full ticket-start flow (WOR-431: prereqs + dispatch)."""
+    """Run the full ticket-start flow (WOR-431: prereqs + dispatch).
+
+    *candidate* is the raw Linear ticket dict with parent info (WOR-220)
+    used to compute ``same_epic_pair`` at dispatch time.
+    """
     if not _check_blocker_preconditions(linear, manifest, linear_id, ticket_id):
         return
     if not _check_epic_branch_overlap(
@@ -104,6 +111,14 @@ def start_ticket(
         dispatch_concurrency, _local_active, _cloud_active
     )
 
+    # WOR-220: compute same_epic_pair — True when this candidate's parent
+    # matches any active worker's parent (epic_id).
+    same_epic_pair = False
+    if _candidate is not None:
+        parent_id = (_candidate.get("parent") or {}).get("id") or ""
+        active_parents = get_active_parent_ids(_local_active + _cloud_active)
+        same_epic_pair = bool(parent_id and parent_id in active_parents)
+
     process = launch_worker(
         _repo_root, manifest, worktree_path, effective_mode, worker_verbose
     )
@@ -117,6 +132,7 @@ def start_ticket(
         dispatch_concurrency=dispatch_concurrency,
         vllm_metrics_before=vllm_metrics_before,
         remained_solo=remained_solo,
+        same_epic_pair=same_epic_pair,
     )
     if effective_mode == "local":
         _local_active.append(worker)

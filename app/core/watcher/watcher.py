@@ -571,6 +571,8 @@ class Watcher:
     # ------------------------------------------------------------------
 
     def _dispatch_next_ticket(self) -> None:
+        from .watcher_helpers import get_active_parent_ids, picker_sort_key
+
         dispatch_count = 0
         try:
             tickets = self._linear.list_ready_for_local()
@@ -578,9 +580,13 @@ class Watcher:
             logger.warning("Linear poll failed: %s", exc)
             return
 
+        all_active = self._local_active + self._cloud_active
+
+        # Collect eligible tickets (not already active, not spike).
+        # WOR-220: sort by same-epic preference when active workers exist.
+        eligible: list[dict[str, Any]] = []
         for ticket in tickets:
             ticket_id: str = ticket["identifier"]
-            all_active = self._local_active + self._cloud_active
             if any(w.ticket_id == ticket_id for w in all_active):
                 continue
             labels = [
@@ -588,12 +594,24 @@ class Watcher:
             ]
             if any(label.lower() == "spike" for label in labels):
                 logger.warning(
-                    "Skipping %s - Spike label detected; implement interactively",
-                    ticket_id,
+                    "Skipping %s — labelled as Spike", ticket.get("identifier", "?")
                 )
                 continue
+            eligible.append(ticket)
+
+        # Apply same-epic sort key when there are active workers.
+        # The sort is stable — within each (parent_match, priority) bucket the
+        # original Linear order is preserved.  When no active workers exist the
+        # key collapses to (1, priority, id) for every candidate, leaving the
+        # original ordering byte-for-byte unchanged (WOR-220 regression guard).
+        if all_active:
+            active_parent_ids = get_active_parent_ids(all_active)
+            eligible.sort(key=lambda t: picker_sort_key(t, active_parent_ids, 0))
+
+        for ticket in eligible:
+            ticket_id = ticket["identifier"]
             try:
-                self._start_ticket(ticket_id, ticket["id"])
+                self._start_ticket(ticket_id, ticket["id"], candidate=ticket)
                 dispatch_count += 1
                 if dispatch_count >= MAX_DISPATCHES_PER_CYCLE:
                     break
@@ -601,13 +619,18 @@ class Watcher:
             except Exception as exc:
                 logger.exception("Failed to start %s: %s", ticket_id, exc)
 
-    def _start_ticket(self, ticket_id: str, linear_id: str) -> None:
+    def _start_ticket(
+        self, ticket_id: str, linear_id: str, *, candidate: dict[str, Any] | None = None
+    ) -> None:
         """Load + enrich the manifest, then delegate to dispatch.start_ticket.
 
         WOR-431: All dispatch logic (prereq checks, epic-branch gate, manifest
         quality gates, stale-epic refusal, pool/vLLM readiness, worker spawn)
         lives in dispatch.start_ticket. This wrapper handles the watcher-side
         manifest loading + retry-context enrichment that dispatch can't do.
+
+        *candidate* is the raw Linear ticket dict (with parent info) used to
+        compute same-epic pair at dispatch time (WOR-220).
         """
         manifest = self._load_manifest(ticket_id)
         manifest = self._enrich_with_retry_context(manifest)
@@ -625,6 +648,7 @@ class Watcher:
             ticket_id=ticket_id,
             _escalation_policy=self._escalation_policy,
             _dedup_state=self._last_deferral_state,
+            _candidate=candidate,
         )
 
     # ------------------------------------------------------------------

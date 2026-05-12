@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS ticket_run_log (
     output_tokens   INTEGER,
     output_tok_per_s REAL,
     context_compactions INTEGER,
+    same_epic_pair  INTEGER NOT NULL DEFAULT 0,
     recorded_at     TEXT NOT NULL DEFAULT (datetime('now'))
 )
 """
@@ -158,6 +159,19 @@ class MetricsStore:
 
     # WOR-Sonar: columns added by ALTER TABLE ADD COLUMN over time.
     # Data-driven migration; new columns just append to this list.
+
+    # ticket_run_log — added by ALTER TABLE ADD COLUMN over time.
+    _TICKET_RUN_LOG_ADDED_COLUMNS: list[tuple[str, str]] = [
+        (
+            "same_epic_pair",
+            (
+                "ALTER TABLE ticket_run_log ADD COLUMN same_epic_pair "
+                "INTEGER NOT NULL DEFAULT 0"
+            ),
+        ),
+    ]
+
+    # ticket_metrics — columns added by ALTER TABLE ADD COLUMN over time.
     _TICKET_METRICS_ADDED_COLUMNS: list[tuple[str, str]] = [
         # (column_name, full_alter_sql) — literal SQL keeps semgrep's
         # SQL-injection rules happy (the f-string version trips
@@ -320,6 +334,15 @@ class MetricsStore:
 
         for col, alter_sql in self._TICKET_METRICS_ADDED_COLUMNS:
             if col not in existing:
+                conn.execute(alter_sql)
+
+        # ticket_run_log columns
+        run_log_existing = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(ticket_run_log)").fetchall()
+        }
+        for col, alter_sql in self._TICKET_RUN_LOG_ADDED_COLUMNS:
+            if col not in run_log_existing:
                 conn.execute(alter_sql)
 
     @contextmanager
@@ -510,11 +533,11 @@ class MetricsStore:
                 INSERT INTO ticket_run_log
                     (ticket_id, attempt, implementation_mode, outcome,
                      failed_check, wall_time_s, input_tokens, output_tokens,
-                     output_tok_per_s, context_compactions)
+                     output_tok_per_s, context_compactions, same_epic_pair)
                 VALUES
                     (:ticket_id, :attempt, :implementation_mode, :outcome,
                      :failed_check, :wall_time_s, :input_tokens, :output_tokens,
-                     :output_tok_per_s, :context_compactions)
+                     :output_tok_per_s, :context_compactions, :same_epic_pair)
                 """,
                 entry.model_dump(),
             )

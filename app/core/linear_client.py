@@ -77,6 +77,7 @@ class LinearClient:
                   id
                   identifier
                   title
+                  parent { id }
                 }
               }
             }

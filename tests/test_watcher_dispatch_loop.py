@@ -11,7 +11,7 @@ import logging
 import subprocess
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -133,7 +133,7 @@ def test_dispatch_proceeds_for_non_spike_ticket(tmp_path: Path) -> None:
     with patch.object(w, "_start_ticket") as mock_start:
         w._dispatch_next_ticket()
 
-    mock_start.assert_called_once_with("WOR-99", "fake-linear-id")
+    mock_start.assert_called_with("WOR-99", "fake-linear-id", candidate=ANY)
 
 
 def test_dispatch_missing_labels_field_no_crash(tmp_path: Path) -> None:
@@ -146,7 +146,7 @@ def test_dispatch_missing_labels_field_no_crash(tmp_path: Path) -> None:
     with patch.object(w, "_start_ticket") as mock_start:
         w._dispatch_next_ticket()
 
-    mock_start.assert_called_once_with("WOR-99", "fake-linear-id")
+    mock_start.assert_called_with("WOR-99", "fake-linear-id", candidate=ANY)
 
 
 # ---------------------------------------------------------------------------
