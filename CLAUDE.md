@@ -281,11 +281,8 @@ The informational scan runs on `github.base_ref != 'main'`; the blocking scan ru
 
 `.claude/settings.json` ships with hooks that run automatically:
 
-- **PostToolUse** — ruff lint + format after any Python file edit
-- **PostToolUse** — mypy type-check on the edited file after any Python file edit
-- **PostToolUse** — bandit security scan after any Python file edit (if bandit is installed)
-- **PostToolUse** — `lint-imports` architecture contract check after any Python file edit
-- **PostToolUse** — pytest (no coverage) on the edited test file after changes to `tests/` files only
+- **PostToolUse** — `.claude/hooks/posttooluse_parallel.py` runs ruff lint+format first (sequential, mutator phase) then mypy + bandit + lint-imports concurrently (WOR-463). Cuts per-edit wall from ~0.6s warm / ~5.4s cold to ~0.3s warm / ~2.4s cold (2× speedup).
+- **PostToolUse** — pytest (no coverage, no xdist) on the edited test file after changes to `tests/` files only
 - **PreToolUse** — blocks destructive shell commands and writes to sensitive files (`.env`, `.mcp.json`, `.claude/settings*`)
 
 `.pre-commit-config.yaml` uses a **tiered split** — fast checks at `pre-commit`, slow checks at `pre-push` — to keep local commit latency under 3 seconds. The latency investigation (WOR-242) measured per-hook durations on a clean tree: semgrep 7.5s, mypy 1.35s, detect-secrets 1.12s, bandit 0.41s, the rest <0.5s. CI runs the full set plus pytest, deptry, and SonarCloud.
@@ -294,7 +291,7 @@ The informational scan runs on `github.base_ref != 'main'`; the blocking scan ru
 
 **Slow tier (pre-push):** mypy 1.35s, semgrep 7.5s.
 
-**PostToolUse hooks** (Claude Code only): ruff, mypy, bandit, lint-imports after any Python file edit; pytest on edited test files. These are separate from the pre-commit config — they run per-tool-use to give immediate feedback during implementation.
+**PostToolUse hooks** (Claude Code only): a single consolidated runner (`.claude/hooks/posttooluse_parallel.py`) executes ruff lint+format first (mutator phase, sequential) then mypy + bandit + lint-imports concurrently after any Python file edit; pytest on edited test files. These are separate from the pre-commit config — they run per-tool-use to give immediate feedback during implementation.
 
 ---
 
