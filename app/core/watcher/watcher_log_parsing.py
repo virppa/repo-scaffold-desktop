@@ -219,6 +219,8 @@ def _parse_worker_api_retries(log_path: Path) -> int | None:
 
 # WOR-274: commands whose manual invocation during step 3 is a hook-trust
 # violation. Case-sensitive — 'Ruff' does not match 'ruff'.
+# Public (no leading underscore) so the unified telemetry parser in
+# watcher_helpers.py can reference the same set without re-declaring.
 _HOOK_VIOLATION_TOKENS = frozenset(
     ("ruff", "mypy", "pytest", "bandit", "lint-imports"),
 )
