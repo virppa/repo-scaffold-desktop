@@ -424,7 +424,7 @@ Construct the manifest from the planning context gathered in steps 1–4:
   "allowed_paths": ["<glob patterns for files to change, from step 2>"],
   "forbidden_paths": ["app/ui/**", ".env", ".mcp.json", ".claude/settings*"],
   "related_files_hint": ["<files listed as relevant in step 2>"],
-  "required_checks": ["ruff check .", "mypy app/", "pytest"],
+  "required_checks": ["ruff check .", "mypy app/", "pytest --no-cov"],
   "optional_checks": [],
   "done_definition": "<plain-English done criteria>",
   "failure_policy": {

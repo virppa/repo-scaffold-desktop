@@ -307,15 +307,25 @@ def test_restore_plan_files_no_op_on_empty_list() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_write_worker_pytest_config(tmp_path: Path) -> None:
+def test_write_worker_pytest_config_is_noop(tmp_path: Path) -> None:
+    """WOR-462: write_worker_pytest_config no longer writes pytest.ini.
+
+    The previous behavior shadowed pyproject.toml's
+    [tool.pytest.ini_options] (testpaths, --cov, etc.), causing the
+    watcher's required_checks pytest step to fail with
+    "WARNING: ignoring pytest config in pyproject.toml". Coverage is
+    now disabled per-call via `--no-cov` in the PostToolUse hook and
+    `required_checks` template — see WOR-462.
+    """
     worktree_path = tmp_path / "worktree"
     worktree_path.mkdir(parents=True)
 
     write_worker_pytest_config(worktree_path)
 
     config_file = worktree_path / "pytest.ini"
-    assert config_file.exists()
-    assert config_file.read_text() == "[pytest]\naddopts = --tb=short\n"
+    assert not config_file.exists(), (
+        "write_worker_pytest_config must not create pytest.ini (WOR-462)"
+    )
 
 
 # ---------------------------------------------------------------------------
