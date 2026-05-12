@@ -117,6 +117,25 @@ Store `{ ticket_id, branch_name, files: [...] }` for conflict detection in step 
 
 ---
 
+### 3.5. Populate context_snippets from related_files_hint
+
+Before writing manifests (step 5b), pre-populate the `context_snippets` field for **each ticket**
+so the local worker can read file headers without round-trip Read calls.
+
+For each eligible ticket, use its `related_files_hint` (populated in step 3b/3c):
+1. Read the first ~60 lines of each file using the **Read** tool — one Read call per file.
+2. If a file has fewer than 80 lines, read the entire file.
+3. Cap each snippet at **min(80 lines, 3000 characters)** — truncate at whichever limit is hit first.
+4. Store as a JSON object keyed by file path: `{ "<file_path>": "<snippet_content>" }`.
+5. If `related_files_hint` has **more than 10 files**, take only the first 10.
+
+If `related_files_hint` is empty for a ticket, leave `context_snippets` as null (omit it from that manifest).
+
+Write the populated `context_snippets` object into each manifest at the `context_snippets` key
+(see step 5b for the full manifest structure).
+
+---
+
 ### 4. Conflict detection and batching
 
 Compare the inferred file sets across all planned tickets:
@@ -213,6 +232,9 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
   "allowed_paths": ["<glob patterns from step 3b>"],
   "forbidden_paths": ["app/ui/**", ".env", ".mcp.json", ".claude/settings*"],
   "related_files_hint": ["<files from step 3b>"],
+  "context_snippets": {
+    "<file_path>": "<snippet content, capped at 80 lines / 3000 chars>"
+  },
   "required_checks": ["ruff check .", "mypy app/", "pytest"],
   "optional_checks": [],
   "done_definition": "<plain-English done criteria>",
