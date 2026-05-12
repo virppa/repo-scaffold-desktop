@@ -364,6 +364,8 @@ Rules for local worker sessions (watcher-spawned `claude` processes). Each tool 
 
 **The four required checks specifically should always be parallel (WOR-413).** `ruff check .`, `mypy app/`, `pytest`, `lint-imports` have no data dependencies on each other. Emit all four as `tool_use` blocks in one assistant message. WOR-412 measured the per-session parallel-tool-use rate at 9-25%; the check sweep is the easiest 100% target. Halves wall-time of the pre-finalize phase.
 
+**pytest runs `-n 8` by default (WOR-464).** `pytest-xdist` is in `requirements-dev.txt` and `-n 8` is in `pyproject.toml` addopts, so every `pytest` invocation (worker manual runs, `required_checks`, CI) parallelises across 8 workers. On a 16C/32T box the full 1830-test suite drops from ~125s serial to ~34s. The PostToolUse single-file pytest hook explicitly passes `-p no:xdist` because worker-spawn overhead dominates short single-file runs. Override globally with `pytest -p no:xdist` when debugging serial behaviour.
+
 **No standalone `cd` commands.** Every `cd` is a wasted round-trip. Use absolute paths or chain with the actual command:
 ```bash
 # bad  — two round-trips
