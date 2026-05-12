@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import subprocess  # nosec B404
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -162,6 +163,27 @@ def _write_vllm_metrics_artifact(
 
 
 # ---------------------------------------------------------------------------
+# PR lock registry (WOR-451)
+# ---------------------------------------------------------------------------
+#
+# When multiple workers' finalize runs are submitted to a ThreadPoolExecutor
+# they may race on `gh pr create` / `git push` against the same base branch.
+# We serialise PR creation per base_branch via a module-level lock registry.
+# Different base branches still parallelise — only same-base PRs serialise.
+
+_pr_locks: dict[str, threading.Lock] = {}
+_pr_locks_lock = threading.Lock()
+
+
+def _get_pr_lock(base_branch: str) -> threading.Lock:
+    """Return the (lazily-created) lock for a base branch."""
+    with _pr_locks_lock:
+        if base_branch not in _pr_locks:
+            _pr_locks[base_branch] = threading.Lock()
+        return _pr_locks[base_branch]
+
+
+# ---------------------------------------------------------------------------
 # Public helpers
 # ---------------------------------------------------------------------------
 
@@ -175,33 +197,41 @@ def attempt_pr(
     """Attempt PR creation.  Returns (outcome, pr_url).
 
     When *tracked_prs* is provided the PR is registered there on success.
+
+    WOR-451: Serialised per base_branch via _get_pr_lock so concurrent
+    finalize threads cannot race on `git push` / `gh pr create` to the same
+    epic branch. PRs to different bases parallelise normally.
     """
     ticket_id = worker.ticket_id
     linear_id = worker.linear_id
-    try:
-        pr_url = create_pr(manifest, worker.worktree_path)
-    except subprocess.CalledProcessError as exc:
-        err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
-        logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
-        # Preserve any uncommitted worktree changes so a retry worker can
-        # resume from them (WOR-267, WOR-288). attempt_pr does not own the
-        # worktree teardown decision — finalize_worker handles that based on
-        # the returned WipPreservationResult — but we still call commit_wip_state
-        # here so the WIP commit happens before checks/PR phase artifacts diverge.
-        commit_wip_state(
-            worker.worktree_path,
-            ticket_id,
-            manifest.worker_branch,
-        )
-        safe_set_state(linear, linear_id, manifest.ticket_state_map.failed, ticket_id)
-        _try_post_comment(
-            linear,
-            linear_id,
-            ticket_id,
-            f"PR creation failed for `{ticket_id}`:\n```\n{err_detail}\n```",
-        )
-        return "failure", None
-    logger.info("PR created for %s: %s", ticket_id, pr_url)
+    with _get_pr_lock(manifest.base_branch):
+        try:
+            pr_url = create_pr(manifest, worker.worktree_path)
+        except subprocess.CalledProcessError as exc:
+            err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
+            logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
+            # Preserve any uncommitted worktree changes so a retry worker
+            # can resume from them (WOR-267, WOR-288). attempt_pr does not
+            # own the worktree teardown decision — finalize_worker handles
+            # that based on the returned WipPreservationResult — but we
+            # still call commit_wip_state here so the WIP commit happens
+            # before checks/PR phase artifacts diverge.
+            commit_wip_state(
+                worker.worktree_path,
+                ticket_id,
+                manifest.worker_branch,
+            )
+            safe_set_state(
+                linear, linear_id, manifest.ticket_state_map.failed, ticket_id
+            )
+            _try_post_comment(
+                linear,
+                linear_id,
+                ticket_id,
+                f"PR creation failed for `{ticket_id}`:\n```\n{err_detail}\n```",
+            )
+            return "failure", None
+        logger.info("PR created for %s: %s", ticket_id, pr_url)
 
     # Register PR for auto-merge tracking (Phase 1).
     if tracked_prs is not None:

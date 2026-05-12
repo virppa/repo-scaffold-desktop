@@ -40,6 +40,7 @@ python -m app.cli watcher --visible              # Windows only: open new cmd.ex
 python -m app.cli watcher --max-local-workers 8  # default 8; vLLM handles concurrency
 python -m app.cli watcher --max-cloud-workers 3  # default 3; parallelisable
 python -m app.cli watcher --max-workers 2        # backward-compat alias: sets both to 2
+python -m app.cli watcher --max-concurrent-checks 4  # default max(local//2, 2); parallel finalize-checks (WOR-451)
 python -m app.cli watcher --verbose              # stream worker stdout/stderr live, prefixed with [WOR-NN]
 python -m app.cli watcher --no-epic-shutdown     # keep daemon running after current epic completes
 # Smoke test (5s): LINEAR_API_KEY=dummy python -m app.cli watcher --no-epic-shutdown

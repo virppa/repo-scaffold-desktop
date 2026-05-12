@@ -191,6 +191,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     watcher.add_argument(
+        "--max-concurrent-checks",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of worker finalize sweeps "
+            "(ruff/mypy/pytest/lint-imports) running in parallel (WOR-451). "
+            "Default: max(max_local_workers // 2, 2). Lower this on memory-"
+            "constrained boxes; set to 1 to revert to fully serial finalize."
+        ),
+    )
+    watcher.add_argument(
         "--verbose",
         action="store_true",
         default=False,
