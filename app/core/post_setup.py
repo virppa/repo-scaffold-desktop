@@ -291,7 +291,7 @@ def create_github_repo(
 
     Args:
         repo_name: Desired repository name (must be unique for the authenticated user).
-        prefs: User preferences (currently unused; retained for API compatibility).
+
         private: Whether the repository should be private. Defaults to ``True``.
         description: Optional repository description.
 
@@ -299,7 +299,7 @@ def create_github_repo(
         The HTML clone URL (e.g. ``https://github.com/owner/repo``).
 
     Example:
-        >>> create_github_repo("my-repo", prefs)  # doctest: +SKIP
+        >>> create_github_repo("my-repo")  # doctest: +SKIP
     """
     token = get_token()
     if token is None:
