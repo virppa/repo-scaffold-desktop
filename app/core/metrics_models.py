@@ -291,6 +291,13 @@ class TicketRunLog(BaseModel):
         default=None,
         description="Claude Code context compaction count during the session",
     )
+    same_epic_pair: bool = Field(
+        default=False,
+        description=(
+            "True when this worker's parent matches any other active worker's "
+            "parent at dispatch time"
+        ),
+    )
 
 
 class CheckRunEntry(BaseModel):

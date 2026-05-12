@@ -110,6 +110,10 @@ class ActiveWorker:
     pending_sonar_fetch: bool = False
     sonar_fetch_attempts: int = 0
     sonar_first_attempted_at: float | None = None
+    # WOR-220: True when this worker's parentId matches any other active
+    # worker's parentId at dispatch time. Populated by dispatch.start_ticket;
+    # read back at finalize to record in ticket_run_log.
+    same_epic_pair: bool = False
 
 
 # ---------------------------------------------------------------------------

@@ -548,6 +548,7 @@ def finalize_worker(
             output_tokens=output_tokens,
             output_tok_per_s=cost["output_tokens_per_wall_second"],
             context_compactions=context_compactions,
+            same_epic_pair=worker.same_epic_pair,
         )
     )
 
