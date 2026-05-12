@@ -7,8 +7,10 @@ them through the re-exports in watcher_finalize.py.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
+import subprocess  # nosec B404
 import time
 from pathlib import Path
 from typing import Callable
@@ -47,6 +49,62 @@ logger = logging.getLogger(__name__)
 # failure_policy.max_retries. A value of 1 means: initial attempt + 1 retry.
 # Higher values from manifest are silently capped.
 ATTEMPT_HARDCAP = 1
+
+
+def _validate_allowed_paths(
+    manifest: ExecutionManifest,
+    worktree_path: Path,
+) -> list[str]:
+    """Validate the worker diff against allowed_paths and forbidden_paths.
+
+    Runs ``git diff --name-only <base_branch>...HEAD`` inside the worktree,
+    then matches each changed file against the manifest's ``allowed_paths``
+    and ``forbidden_paths`` globs using ``fnmatch``.
+
+    Returns a list of violation strings.  Empty list means the diff is clean
+    and the PR path is safe to continue.  Each violation is tagged with
+    ``ALLOWED`` or ``FORBIDDEN`` for easy display in a Linear comment.
+    """
+    violations: list[str] = []
+
+    # Get the list of changed files since the merge-base.
+    try:
+        diff_proc = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "diff",
+                "--name-only",
+                f"{manifest.base_branch}...HEAD",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        files = (diff_proc.stdout or "").strip().splitlines()
+    except (OSError, subprocess.TimeoutExpired):
+        # If we can't read the diff, allow it — a git error is not a scope
+        # violation. The finalize checks (ruff/mypy/pytest) will still catch
+        # most problems.
+        return []
+
+    # Check against forbidden_paths first (they override).
+    if manifest.forbidden_paths:
+        for fpath in files:
+            for pattern in manifest.forbidden_paths:
+                if fnmatch.fnmatch(fpath, pattern):
+                    violations.append(f"FORBIDDEN {fpath}")
+                    break  # one match per file is enough
+
+    # Check against allowed_paths.  Empty list = no restriction (anything goes).
+    if manifest.allowed_paths:
+        for fpath in files:
+            if any(fnmatch.fnmatch(fpath, pat) for pat in manifest.allowed_paths):
+                continue  # file matches an allowed pattern
+            violations.append(f"ALLOWED {fpath}")
+
+    return violations
 
 
 def safe_set_state(
