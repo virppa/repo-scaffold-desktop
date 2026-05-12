@@ -19,6 +19,7 @@ import sys
 import threading
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import IO
@@ -165,6 +166,30 @@ def launch_worker(
 _LAST_FAILURE_FILENAME = "last_failure.json"
 
 
+def _run_single_check(
+    check_cmd: str,
+    worktree_path: Path,
+    check_env: dict[str, str],
+) -> tuple[str, subprocess.CompletedProcess[str], float]:
+    """Run one check command in the worktree. Returns (cmd, result, duration).
+
+    Helper extracted so run_checks can submit multiple checks to a thread
+    pool concurrently (WOR-467). subprocess.run is fine to call from
+    multiple threads — each spawns a separate OS process.
+    """
+    logger.info("Running check: %s", check_cmd)
+    start = datetime.now(timezone.utc).timestamp()
+    result = subprocess.run(  # nosec B603
+        shlex.split(check_cmd),
+        cwd=str(worktree_path),
+        capture_output=True,
+        text=True,
+        env=check_env,
+    )
+    duration = datetime.now(timezone.utc).timestamp() - start
+    return check_cmd, result, duration
+
+
 def run_checks(
     manifest: ExecutionManifest,
     worktree_path: Path,
@@ -173,18 +198,33 @@ def run_checks(
     ticket_id: str = "",
     project_id: str = "",
 ) -> tuple[bool, list[dict[str, int | str]]]:
-    """Run manifest.required_checks in the worktree.
+    """Run manifest.required_checks in the worktree concurrently (WOR-467).
 
     Returns (all_passed, failed_checks) where *failed_checks* is a list of
-    ``{check: str, exit_code: int}`` for each check that returned non-zero.
+    ``{check: str, exit_code: int}`` for each check that returned non-zero,
+    in deterministic manifest order.
+
+    WOR-467: the standard 4 checks (ruff/mypy/pytest/lint-imports) are
+    independent — none reads another's output. They now run in a
+    ThreadPoolExecutor with one slot per check. Total wall ≈ max(check
+    walls) + small overhead, not the sum. On the post-WOR-464 baseline
+    that's ~34s (pytest-bound) instead of ~37s serial.
+
+    Output ordering and accumulation remain deterministic — futures are
+    drained in `manifest.required_checks` order, so logger output and
+    `failed_checks` list both match the serial behavior. `last_failure.json`
+    is written for the FIRST manifest-order failure (matches old "first
+    failure wins" semantics even though concurrent runs may finish in
+    any order).
 
     When *metrics* is provided, each check execution is recorded to the
-    check_run_log table via ``MetricsStore.record_check_run``.
+    check_run_log table via ``MetricsStore.record_check_run``. Concurrent
+    recording is safe — MetricsStore opens a fresh SQLite connection per
+    `_connect` context and SQLite handles concurrent writes via file lock.
     """
     artifact_dir = worktree_path / Path(manifest.artifact_paths.result_json).parent
     failure_artifact = artifact_dir / _LAST_FAILURE_FILENAME
 
-    failed_checks: list[dict[str, int | str]] = []
     check_env = os.environ.copy()
     # WOR-398: WOR-391's skipif on tests/test_contribute_skills_workflow.py only
     # fires when WATCHER_WORKER=1. The worker subprocess gets that flag from
@@ -192,17 +232,32 @@ def run_checks(
     # in a fresh subprocess that inherits the daemon's env, where the flag is
     # absent — so the skip misses and pytest fails on contribute-skills tests.
     check_env["WATCHER_WORKER"] = "1"
-    for check_cmd in manifest.required_checks:
-        logger.info("Running check: %s", check_cmd)
-        start = datetime.now(timezone.utc).timestamp()
-        result = subprocess.run(  # nosec B603
-            shlex.split(check_cmd),
-            cwd=str(worktree_path),
-            capture_output=True,
-            text=True,
-            env=check_env,
-        )
-        duration = datetime.now(timezone.utc).timestamp() - start
+
+    # Submit all checks concurrently. Empty required_checks → no executor.
+    checks = list(manifest.required_checks)
+    if not checks:
+        if failure_artifact.exists():
+            failure_artifact.unlink()
+        return True, []
+
+    results: dict[str, tuple[subprocess.CompletedProcess[str], float]] = {}
+    with ThreadPoolExecutor(
+        max_workers=len(checks), thread_name_prefix="run-checks"
+    ) as ex:
+        futures = {
+            ex.submit(_run_single_check, cmd, worktree_path, check_env): cmd
+            for cmd in checks
+        }
+        for future in futures:
+            cmd, result, duration = future.result()
+            results[cmd] = (result, duration)
+
+    # Process in manifest order so output / metrics / last_failure.json
+    # write order is deterministic regardless of thread completion order.
+    failed_checks: list[dict[str, int | str]] = []
+    first_failure_written = False
+    for check_cmd in checks:
+        result, duration = results[check_cmd]
         if metrics is not None and ticket_id:
             metrics.record_check_run(
                 CheckRunEntry(
@@ -218,18 +273,20 @@ def run_checks(
                 "Check failed: %s\n%s", check_cmd, result.stdout + result.stderr
             )
             failed_checks.append({"check": check_cmd, "exit_code": result.returncode})
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            failure_artifact.write_text(
-                json.dumps(
-                    {
-                        "failed_at": datetime.now(timezone.utc).isoformat(),
-                        "check": check_cmd,
-                        "stdout": result.stdout[:4000],
-                        "stderr": result.stderr,
-                    }
-                ),
-                encoding="utf-8",
-            )
+            if not first_failure_written:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                failure_artifact.write_text(
+                    json.dumps(
+                        {
+                            "failed_at": datetime.now(timezone.utc).isoformat(),
+                            "check": check_cmd,
+                            "stdout": result.stdout[:4000],
+                            "stderr": result.stderr,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                first_failure_written = True
 
     if not failed_checks and failure_artifact.exists():
         failure_artifact.unlink()
