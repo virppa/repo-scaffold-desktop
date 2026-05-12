@@ -235,7 +235,7 @@ Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
   "context_snippets": {
     "<file_path>": "<snippet content, capped at 80 lines / 3000 chars>"
   },
-  "required_checks": ["ruff check .", "mypy app/", "pytest"],
+  "required_checks": ["ruff check .", "mypy app/", "pytest --no-cov"],
   "optional_checks": [],
   "done_definition": "<plain-English done criteria>",
   "failure_policy": {
