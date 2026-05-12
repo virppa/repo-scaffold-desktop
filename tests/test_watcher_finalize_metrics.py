@@ -650,6 +650,8 @@ def _finalize_with_real_diff(repo: Path, ticket_id: str = "WOR-354") -> object:
         ticket_id=ticket_id,
         worker_branch="worker",
         base_branch="epic",
+        allowed_paths=[],
+        forbidden_paths=[],
     )
     metrics_mock = MagicMock()
     worker = ActiveWorker(

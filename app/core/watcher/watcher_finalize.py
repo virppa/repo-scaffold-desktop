@@ -27,7 +27,9 @@ from .watcher_finalize_helpers import (
     ATTEMPT_HARDCAP,
     _execute_finalization,
     _read_result_status,
+    _record_failure_state,
     _try_post_comment,
+    _validate_allowed_paths,
     _write_wip_sha_to_last_failure,
     _write_wip_state_to_last_failure,
     safe_set_state,
@@ -403,6 +405,30 @@ def finalize_worker(
     tracked_prs: list[TrackedPR] | None = None,
 ) -> Outcome:
     eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
+
+    # Validate that the worker only touched allowed_paths / did not touch
+    # forbidden_paths.  Run BEFORE the retry loop — violations are a scope
+    # failure, not a transient check failure, so retries won't help.
+    violations = _validate_allowed_paths(
+        worker.manifest,
+        worker.worktree_path,
+    )
+    if violations:
+        comment = (
+            f"Allowed-paths enforcement failed for `{worker.ticket_id}`. "
+            f"The worker diff touched files outside the declared scope:\n\n"
+            f"```\n" + "\n".join(violations) + "\n```\n\n"
+            f"Manifest allowed: `{worker.manifest.allowed_paths}`. "
+            f"Forbidden: `{worker.manifest.forbidden_paths}`. "
+            f"PR creation aborted."
+        )
+        _record_failure_state(
+            worker,
+            linear,
+            f"allowed_paths violation — {len(violations)} file(s) outside scope",
+        )
+        _try_post_comment(linear, worker.linear_id, worker.ticket_id, comment)
+        return "failure"
 
     # WOR-312: in-dispatch retry loop. Helper avoids the slower Linear
     # Blocked -> ReadyForLocal redispatch when checks transiently fail.
