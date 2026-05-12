@@ -250,6 +250,7 @@ def _run_retry_loop(
                 project_id=project_id,
             )
         )
+        worker.attempt_count += 1
         if not failed_checks:
             return (
                 outcome,
@@ -480,7 +481,7 @@ def finalize_worker(
             output_tokens_per_wall_second=cost["output_tokens_per_wall_second"],
             escalated_to_cloud=escalated,
             outcome=outcome,
-            retry_count=worker.attempt_count,
+            retry_count=worker.attempt_count - 1,
             context_compactions=context_compactions,
             check_failures=check_failures,
             lines_changed=lines_changed,

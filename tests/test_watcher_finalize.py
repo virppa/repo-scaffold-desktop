@@ -850,7 +850,7 @@ def test_finalize_worker_no_retry_when_max_retries_zero(
     ):
         _call_finalize(worker)
 
-    # No retry happened — attempt_count reflects the check failure
+    # No retry happened — attempt_count is 1 from the first loop iteration
     assert worker.attempt_count == 1
     # Verify launch_worker was NOT called (no retry happened)
     mock_launch.assert_not_called()
@@ -898,15 +898,16 @@ def test_finalize_worker_single_retry_then_success(
     ):
         _call_finalize(worker)
 
-    # After 2 calls (1 failure + 1 success), attempt_count=1.
-    # The break check sees 1 >= 1 = True, but success breaks first.
-    assert worker.attempt_count == 1
+    # After 2 calls (1 failure + 1 success), attempt_count=2 (one per loop iteration).
+    # The break check 2 > 1 = True, but success breaks first.
+    assert worker.attempt_count == 2
 
 
 def test_finalize_worker_hardcap_enforces_max_one_retry(
     tmp_path: Path,
 ) -> None:
-    """max_retries=5 but hardcapped at 1 — only one retry despite 5 budget."""
+    """max_retries=5 but hardcapped at 1 — only one retry despite 5 budget.
+    attempt_count increments at every loop iteration, so 2 iterations = 2."""
     manifest = make_manifest(
         ticket_id="WOR-10",
         worker_branch="wor-10-test",
@@ -920,7 +921,7 @@ def test_finalize_worker_hardcap_enforces_max_one_retry(
         process=MagicMock(spec=subprocess.Popen),
     )
 
-    # 2 failures: first call fails, retry succeeds on second call.
+    # 2 iterations: first fails, second succeeds.
     # With max_retries=5 and hardcap=1, max actual retries = min(5,1) = 1.
     check_results = [
         (False, [{"check": "ruff check .", "exit_code": 1}]),
@@ -944,7 +945,7 @@ def test_finalize_worker_hardcap_enforces_max_one_retry(
     ):
         _call_finalize(worker)
 
-    assert worker.attempt_count == 1
+    assert worker.attempt_count == 2
 
 
 def test_finalize_worker_retry_injects_extra_constraint(
@@ -1076,4 +1077,4 @@ def test_finalize_worker_no_retry_when_check_passes(
     ):
         _call_finalize(worker)
 
-    assert worker.attempt_count == 0
+    assert worker.attempt_count == 1
