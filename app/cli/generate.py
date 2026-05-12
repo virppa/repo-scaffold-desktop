@@ -19,6 +19,7 @@ from app.core.post_setup import (
     run_precommit_install,
 )
 from app.core.presets import get_preset
+from app.core.summary import render_summary
 from app.core.user_prefs import PrefsStore, UserPreferences
 from app.core.wizard import (
     WizardStep,
@@ -149,27 +150,41 @@ def _run_interactive(args: argparse.Namespace) -> int:
         PrefsStore.save(updated)
         print("Saved defaults.", file=sys.stderr)
 
+    output_path = Path(str(results["output"]))
+
     # Execute the non-interactive generate flow
     try:
-        _render_and_report(config, Path(str(results["output"])))
+        written = _render_and_report(config, output_path)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     try:
-        _fetch_skills_for_preset(Path(str(results["output"])), config)
+        _fetch_skills_for_preset(output_path, config)
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     try:
-        _run_post_setup(config, Path(str(results["output"])))
+        _run_post_setup(config, output_path)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    # Print the final summary — only on the success path (after all stages above)
+    print(
+        render_summary(
+            files_written=len(written),
+            output_path=str(output_path),
+            git_init_done=config.git_init,
+            precommit_installed=config.install_precommit,
+            linear_mcp_generated=config.include_linear_mcp,
+            github_repo_created=False,
+            git_pushed=False,
+        )
+    )
+
     # Ask user if they want to save wizard answers as defaults
-    output_path = Path(str(results.get("output", "")))
     try:
         prompt = "Save these as your defaults for next time? [y/N]: "
         answer = input(prompt).strip().lower()
