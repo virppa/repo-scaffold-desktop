@@ -138,6 +138,49 @@ def safe_set_state(
         logger.warning("set_state failed for %s (state=%s): %s", ticket_id, state, exc)
 
 
+# WOR-469: Module-level executor for parallelising independent Linear API
+# writes (set_state + post_comment on the same issue). Each call is a
+# blocking ~300-800ms HTTP roundtrip; firing them in parallel halves the
+# wait. Separate from the WOR-465 Sonar executor and the WOR-451 finalize
+# executor to keep failure domains isolated.
+_linear_executor: ThreadPoolExecutor | None = None
+
+
+def _get_linear_executor() -> ThreadPoolExecutor:
+    """Lazy-init the Linear-API executor on first use."""
+    global _linear_executor
+    if _linear_executor is None:
+        _linear_executor = ThreadPoolExecutor(
+            max_workers=8, thread_name_prefix="watcher-linear"
+        )
+    return _linear_executor
+
+
+def safe_set_state_and_comment(
+    linear: LinearClientProtocol,
+    linear_id: str,
+    state: str,
+    ticket_id: str,
+    body: str,
+) -> None:
+    """Fire safe_set_state and _try_post_comment concurrently (WOR-469).
+
+    Linear is consistent within an issue but doesn't require ordering
+    between a state transition and a comment post — both are independent
+    writes on the same issue. Running them in parallel halves the
+    blocking Linear API wait from ~600-1600ms to ~300-800ms per pair.
+
+    Errors in either call are swallowed by the wrapped helpers (their
+    existing semantics — neither raises). Both calls always complete
+    before this function returns.
+    """
+    ex = _get_linear_executor()
+    f1 = ex.submit(safe_set_state, linear, linear_id, state, ticket_id)
+    f2 = ex.submit(_try_post_comment, linear, linear_id, ticket_id, body)
+    f1.result()
+    f2.result()
+
+
 def _read_result_status(repo_root: Path, manifest: ExecutionManifest) -> str | None:
     """Return the worker's self-reported status from result.json, or None.
 
@@ -175,10 +218,12 @@ def _record_failure_state(
     escalated = bool(manifest.failure_policy.escalate_to_cloud)
     if escalated:
         logger.info("Escalating %s to cloud per failure policy", ticket_id)
-        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
-        _try_post_comment(
+        # WOR-469: state + comment are independent on the same issue;
+        # run concurrently to halve the Linear API wait.
+        safe_set_state_and_comment(
             linear,
             linear_id,
+            _IN_PROGRESS_STATE,
             ticket_id,
             f"Local worker failed for `{ticket_id}` ({escalate_reason}). "
             f"Escalating to cloud per failure policy.",
@@ -304,10 +349,11 @@ def _handle_policy_outcome(
     if action == "escalate":
         triggering = next((f for f in _POLICY_FLAGS if flags.get(f)), "unknown")
         logger.info("Escalating %s to cloud (flag=%s)", ticket_id, triggering)
-        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
-        _try_post_comment(
+        # WOR-469: parallelise the independent set_state + comment writes.
+        safe_set_state_and_comment(
             linear,
             linear_id,
+            _IN_PROGRESS_STATE,
             ticket_id,
             f"Local worker escalating `{ticket_id}` to cloud. "
             f"Triggering flag: `{triggering}`.",
@@ -343,10 +389,11 @@ def _handle_policy_outcome(
         worker.sonar_fetch_attempts = 1
         worker.sonar_first_attempted_at = time.monotonic()
     if _sonar_requires_escalation(sonar_findings, ticket_id, escalation_policy):
-        safe_set_state(linear, linear_id, _IN_PROGRESS_STATE, ticket_id)
-        _try_post_comment(
+        # WOR-469: parallelise the independent set_state + comment writes.
+        safe_set_state_and_comment(
             linear,
             linear_id,
+            _IN_PROGRESS_STATE,
             ticket_id,
             f"Local worker escalating `{ticket_id}` to cloud due "
             f"to Sonar finding requiring immediate action.",

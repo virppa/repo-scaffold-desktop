@@ -34,6 +34,7 @@ from .watcher_finalize_helpers import (
     _write_wip_sha_to_last_failure,
     _write_wip_state_to_last_failure,
     safe_set_state,
+    safe_set_state_and_comment,
 )
 from .watcher_helpers import (
     _parse_worker_telemetry,
@@ -217,12 +218,11 @@ def attempt_pr(
                 ticket_id,
                 manifest.worker_branch,
             )
-            safe_set_state(
-                linear, linear_id, manifest.ticket_state_map.failed, ticket_id
-            )
-            _try_post_comment(
+            # WOR-469: parallelise the independent set_state + comment writes.
+            safe_set_state_and_comment(
                 linear,
                 linear_id,
+                manifest.ticket_state_map.failed,
                 ticket_id,
                 f"PR creation failed for `{ticket_id}`:\n```\n{err_detail}\n```",
             )
