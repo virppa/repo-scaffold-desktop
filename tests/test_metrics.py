@@ -48,6 +48,34 @@ class TestSchemaCreation:
         MetricsStore(db_path=tmp_path / "app.db")
         MetricsStore(db_path=tmp_path / "app.db")
 
+    def test_concurrent_init_does_not_raise(self, tmp_path):
+        """Regression: xdist `-n 8` (WOR-464) parallelizes tests that all
+        create `MetricsStore()` against the same default DB path. The
+        `if col not in existing` migration check is non-atomic, so two
+        processes can both pass it and race on `ALTER TABLE ADD COLUMN`,
+        producing `sqlite3.OperationalError: duplicate column name`.
+        The fix catches that error and treats the column as already
+        added.
+        """
+        import threading
+
+        db = tmp_path / "app.db"
+        errors: list[Exception] = []
+
+        def init_store() -> None:
+            try:
+                MetricsStore(db_path=db)
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=init_store) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent init raised: {errors}"
+
 
 class TestRecordAndRetrieve:
     def test_insert_and_retrieve_by_ticket(self, tmp_path):
