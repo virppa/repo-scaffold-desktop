@@ -527,6 +527,30 @@ def squash_wip_commits(
         return None
 
 
+def _safe_copy(src: Path, dst: Path, description: str, ticket_id: str = "") -> bool:
+    """Copy src -> dst tolerating disappearance between exists() and copy2().
+
+    The exists() / copy2() pair is a TOCTOU race; on CI Linux tmpfs the
+    source can vanish between the two calls (observed under xdist with the
+    finalize-retry tests). Swallow the FileNotFoundError so the preservation
+    pass remains best-effort (its callers don't depend on every artifact
+    being present).
+    """
+    if not src.exists():
+        return False
+    try:
+        shutil.copy2(src, dst)
+        logger.info("%s preserved at %s", description, dst)
+        return True
+    except FileNotFoundError:
+        logger.warning(
+            "%s vanished between exists() and copy2() for %s — skipping",
+            description,
+            ticket_id or "<unknown ticket>",
+        )
+        return False
+
+
 def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:
     """Copy worker log and result.json from the worktree to the repo artifact dir.
 
@@ -538,15 +562,18 @@ def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     log_src = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
-    if log_src.exists():
-        shutil.copy2(log_src, artifact_dir / log_src.name)
-        logger.info("Worker log preserved at %s", artifact_dir / log_src.name)
+    _safe_copy(log_src, artifact_dir / log_src.name, "Worker log", worker.ticket_id)
 
     result_src = worker.worktree_path / worker.manifest.artifact_paths.result_json
-    if result_src.exists():
-        shutil.copy2(result_src, artifact_dir / result_src.name)
-        logger.info("Result artifact preserved at %s", artifact_dir / result_src.name)
-    else:
+    if (
+        not _safe_copy(
+            result_src,
+            artifact_dir / result_src.name,
+            "Result artifact",
+            worker.ticket_id,
+        )
+        and not result_src.exists()
+    ):
         logger.warning(
             "No result artifact found at %s for %s",
             result_src,
@@ -557,10 +584,11 @@ def preserve_worker_artifacts(repo_root: Path, worker: ActiveWorker) -> None:
         worker.worktree_path / worker.manifest.artifact_paths.result_json
     ).parent / _LAST_FAILURE_FILENAME
     repo_failure = artifact_dir / _LAST_FAILURE_FILENAME
-    if wt_failure.exists():
-        shutil.copy2(wt_failure, repo_failure)
-        logger.info("Failure context preserved at %s", repo_failure)
-    elif repo_failure.exists():
+    if (
+        not _safe_copy(wt_failure, repo_failure, "Failure context", worker.ticket_id)
+        and not wt_failure.exists()
+        and repo_failure.exists()
+    ):
         repo_failure.unlink()
         logger.debug("Cleared last_failure.json after successful run: %s", repo_failure)
 
