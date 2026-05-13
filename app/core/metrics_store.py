@@ -334,7 +334,15 @@ class MetricsStore:
 
         for col, alter_sql in self._TICKET_METRICS_ADDED_COLUMNS:
             if col not in existing:
-                conn.execute(alter_sql)
+                try:
+                    conn.execute(alter_sql)
+                except sqlite3.OperationalError:
+                    # Concurrent migration from another process already added
+                    # the column between our PRAGMA read and ALTER write
+                    # (xdist test parallelism exposes this race against the
+                    # shared default DB path). The column we wanted is now
+                    # there, so the migration goal is satisfied either way.
+                    pass
 
         # ticket_run_log columns
         run_log_existing = {
@@ -343,7 +351,10 @@ class MetricsStore:
         }
         for col, alter_sql in self._TICKET_RUN_LOG_ADDED_COLUMNS:
             if col not in run_log_existing:
-                conn.execute(alter_sql)
+                try:
+                    conn.execute(alter_sql)
+                except sqlite3.OperationalError:
+                    pass  # Same race window as above; column is already there.
 
     @contextmanager
     def _connect(self) -> Generator[sqlite3.Connection, None, None]:
