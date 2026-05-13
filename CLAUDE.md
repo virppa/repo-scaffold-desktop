@@ -352,6 +352,8 @@ Only interact with the **repo-scaffold-desktop** project in Linear unless explic
 
 Test core logic only. Priority: config validation, preset selection, file generation, option toggles, overwrite behavior. Skip UI tests unless the UI contains meaningful logic.
 
+**Local `pytest` is coverage-free by default (WOR-468).** Coverage instrumentation slows the 1860-test suite by ~20s. CI explicitly opts in via the workflow's `pytest --cov=app --cov-report=term-missing --cov-fail-under=80 --cov-report=xml` invocation (also produces the `coverage.xml` SonarCloud needs). To check coverage locally, pass `--cov=app` yourself: `pytest --cov=app --cov-report=term-missing`. The 80% gate is enforced at CI — local runs skip it for fast iteration.
+
 ---
 
 ## Worker efficiency

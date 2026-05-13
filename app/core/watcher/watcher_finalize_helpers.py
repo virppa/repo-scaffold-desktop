@@ -12,6 +12,7 @@ import json
 import logging
 import subprocess  # nosec B404
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
@@ -49,6 +50,24 @@ logger = logging.getLogger(__name__)
 # failure_policy.max_retries. A value of 1 means: initial attempt + 1 retry.
 # Higher values from manifest are silently capped.
 ATTEMPT_HARDCAP = 1
+
+# WOR-465: Dedicated thread pool for fetching SonarCloud findings in parallel
+# with run_checks. Separate from WOR-451's _finalize_executor so a Sonar
+# fetch cannot deadlock waiting for a finalize-thread slot. Module-level
+# singleton; 8 workers is plenty for the WOR-451 default of 4 concurrent
+# finalizes (each fires one Sonar fetch) and well within SonarCloud's
+# free-tier ~60 req/min ceiling.
+_sonar_executor: ThreadPoolExecutor | None = None
+
+
+def _get_sonar_executor() -> ThreadPoolExecutor:
+    """Lazy-init the Sonar-fetch executor on first use."""
+    global _sonar_executor
+    if _sonar_executor is None:
+        _sonar_executor = ThreadPoolExecutor(
+            max_workers=8, thread_name_prefix="watcher-sonar"
+        )
+    return _sonar_executor
 
 
 def _validate_allowed_paths(
@@ -219,6 +238,15 @@ def _execute_finalization(
             returncode,
         )
 
+    # WOR-465: fire Sonar fetch concurrent with run_checks. Sonar typically
+    # takes 5-15s; run_checks 30-125s. By the time checks return the future
+    # is usually done, saving ~10s/finalize on the fix_locally path. On
+    # escalate/human action paths the future result is discarded (wasted
+    # ~10s of background HTTP — acceptable for the common-case win).
+    sonar_future = _get_sonar_executor().submit(
+        fetch_sonar_findings, manifest.worker_branch
+    )
+
     checks_ok, failed_checks = run_checks(
         manifest,
         worker.worktree_path,
@@ -247,6 +275,7 @@ def _execute_finalization(
         attempt_pr_fn,
         manifest.objective,
         tracked_prs=tracked_prs,
+        sonar_future=sonar_future,
     )
     return outcome, escalated, True, sonar_findings, [], pr_url
 
@@ -260,6 +289,7 @@ def _handle_policy_outcome(
     attempt_pr_fn: AttemptPrFn,
     final_message: str = "Implementation complete",
     tracked_prs: list[TrackedPR] | None = None,
+    sonar_future: "Future[list[str] | None] | None" = None,
 ) -> tuple[Outcome, bool, list[str] | None, str | None]:
     """Map a policy action to an outcome, posting Linear comments as needed.
 
@@ -295,8 +325,18 @@ def _handle_policy_outcome(
         )
         return "aborted", False, None, None
 
-    # fix_locally — check Sonar findings before creating PR
-    sonar_findings = fetch_sonar_findings(manifest.worker_branch)
+    # fix_locally — check Sonar findings before creating PR.
+    # WOR-465: when a pre-fired Sonar future is available, join it
+    # (it was started before run_checks and is usually already done).
+    # Fall back to the synchronous call for older code paths that didn't
+    # fire one — keeps the public API back-compat for tests/direct callers.
+    if sonar_future is not None:
+        try:
+            sonar_findings = sonar_future.result()
+        except Exception:
+            sonar_findings = None
+    else:
+        sonar_findings = fetch_sonar_findings(manifest.worker_branch)
     if sonar_findings is None:
         # Immediate fetch failed — mark for async retry in the poll loop
         worker.pending_sonar_fetch = True
