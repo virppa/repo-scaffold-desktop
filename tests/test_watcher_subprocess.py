@@ -766,18 +766,23 @@ def test_run_checks_deletes_last_failure_json_on_success(tmp_path: Path) -> None
     )
 
 
-def test_run_checks_last_failure_overwritten_by_last_failing_check(
+def test_run_checks_last_failure_written_for_first_manifest_failure(
     tmp_path: Path,
 ) -> None:
+    """WOR-467: under parallel run_checks, `last_failure.json` records the
+    FIRST manifest-order failure (deterministic regardless of which check
+    completes first). Previously the serial implementation let later
+    failures overwrite earlier ones — that was an accident of execution
+    order, not a design intent. First-failure-wins is more useful: the
+    first broken thing is what the worker should fix first.
+    """
     manifest = _make_manifest(required_checks=["ruff check .", "mypy app/"])
-    call_count = 0
 
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
-        nonlocal call_count
-        call_count += 1
         result = MagicMock()
         result.returncode = 1
-        result.stdout = f"output from check {call_count}"
+        # Encode the command in stdout so we can assert which one was kept.
+        result.stdout = f"output from {cmd[0]}"
         result.stderr = ""
         return result
 
@@ -792,9 +797,67 @@ def test_run_checks_last_failure_overwritten_by_last_failing_check(
     data = json_mod.loads(
         (artifact_dir / "last_failure.json").read_text(encoding="utf-8")
     )
-    # Last failing check (mypy) should overwrite the first (ruff)
-    assert data["check"] == "mypy app/"
-    assert data["stdout"] == "output from check 2"
+    # First failing check in manifest order (ruff) wins.
+    assert data["check"] == "ruff check ."
+    assert data["stdout"] == "output from ruff"
+
+
+def test_run_checks_executes_in_parallel(tmp_path: Path) -> None:
+    """WOR-467: independent checks run concurrently via ThreadPoolExecutor.
+    With 3 checks each sleeping 200ms, wall time must be <500ms (parallel
+    + executor overhead), not 600ms+ (serial).
+    """
+    import time
+
+    manifest = _make_manifest(
+        required_checks=["ruff check .", "mypy app/", "lint-imports"]
+    )
+
+    def slow_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        time.sleep(0.2)
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=slow_run
+    ):
+        t0 = time.perf_counter()
+        all_passed, failed = run_checks(manifest, tmp_path)
+        elapsed = time.perf_counter() - t0
+
+    assert all_passed
+    assert failed == []
+    # Serial = 3 × 0.2s = 0.6s; parallel = max(0.2s) + overhead. Ceiling 0.5s.
+    assert elapsed < 0.5, f"Checks did not run in parallel: {elapsed:.2f}s"
+
+
+def test_run_checks_metrics_recorded_in_manifest_order(tmp_path: Path) -> None:
+    """WOR-467: even though checks run concurrently, `metrics.record_check_run`
+    is called in manifest order so the check_run_log table has a deterministic
+    sequence for retro analysis.
+    """
+    manifest = _make_manifest(required_checks=["ruff check .", "mypy app/", "pytest"])
+    metrics_mock = MagicMock()
+
+    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
+        result = MagicMock()
+        result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    with patch(
+        "app.core.watcher.watcher_subprocess.subprocess.run", side_effect=fake_run
+    ):
+        run_checks(manifest, tmp_path, metrics=metrics_mock, ticket_id="WOR-1")
+
+    recorded = [
+        call.args[0].check_cmd for call in metrics_mock.record_check_run.call_args_list
+    ]
+    assert recorded == ["ruff check .", "mypy app/", "pytest"]
 
 
 def test_run_checks_records_check_run_per_check(tmp_path: Path) -> None:
