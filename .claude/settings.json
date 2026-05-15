@@ -92,6 +92,24 @@
             "command": "python .claude/hooks/check_patch_paths_post_tool_use.py"
           }
         ]
+      },
+      {
+        "matcher": "Read|Bash|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/posttooluse_parallel_nudge.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/posttooluse_thrash_detector.py"
+          }
+        ]
       }
     ],
     "Stop": [
