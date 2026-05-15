@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import subprocess  # nosec B404
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import IO, Any
 
@@ -57,6 +57,10 @@ __all__ = [
     "kv_concurrency_ceiling",
     "PRODUCTION_KV_CACHE_TOKENS",
     "COMPACTION_CONTEXT_CEILING",
+    "KV_BUDGET_TOKENS",
+    "DEFAULT_KV_RESERVATION",
+    "EFFORT_KV_RESERVATION",
+    "kv_admission_ok",
 ]
 from .watcher_types import (
     _ENV_VARS_TO_STRIP_FOR_CLOUD,
@@ -84,6 +88,26 @@ PRODUCTION_KV_CACHE_TOKENS = 148_816
 # real-worker tickets in ticket_metrics topped out at input_tokens_max
 # ~134,643; one such worker single-handedly fills most of the KV pool.
 COMPACTION_CONTEXT_CEILING = 134_000
+
+
+# CALIBRATED CONSTANTS — transcribe verbatim.
+# Source: app.db ticket_metrics.input_tokens_max n=91 + WOR-336
+# empirical 2-way-safe/6-way-thrash ceiling. Do NOT re-derive.
+KV_BUDGET_TOKENS = (
+    133_934  # 0.9 * 148_816 (vLLM KV pool, WOR-336 prefix-survival headroom)
+)
+DEFAULT_KV_RESERVATION = 90_000  # unknown/None effort -> treat as xhigh (conservative)
+EFFORT_KV_RESERVATION: dict[str, int] = {
+    "low": 33_000,  # ~4 concurrent
+    "medium": 45_000,  # ~3 concurrent
+    # ~2 concurrent (= WOR-336 safe ceiling; dominant tier)
+    "high": 67_000,
+    "xhigh": 90_000,  # ~1-2 concurrent
+    # 1 concurrent (<= budget so it still admits alone)
+    "max": 130_000,
+}
+# admit candidate iff sum(reservation(e) for e in in_flight)
+# + reservation(candidate) <= budget
 
 
 def kv_concurrency_ceiling(
@@ -142,6 +166,32 @@ def kv_concurrency_ceiling(
     budget = kv_cache_tokens * utilization_target
     ceiling = int(budget // per_worker_context_tokens)
     return max(min_workers, ceiling)
+
+
+def kv_admission_ok(
+    in_flight_efforts: Sequence[str | None],
+    candidate_effort: str | None,
+    *,
+    budget: int = KV_BUDGET_TOKENS,
+) -> bool:
+    """Whether a candidate ticket fits within the KV-token budget.
+
+    Sums the KV reservation for every in-flight worker's effort level plus
+    the candidate's own reservation.  Returns ``True`` when the sum is
+    within *budget*, ``False`` otherwise.
+
+    Unknown / ``None`` effort falls back to ``DEFAULT_KV_RESERVATION``.
+    """
+
+    def _reservation(effort: str | None) -> int:
+        if effort is None:
+            return DEFAULT_KV_RESERVATION
+        return EFFORT_KV_RESERVATION.get(effort, DEFAULT_KV_RESERVATION)
+
+    total = sum(_reservation(e) for e in in_flight_efforts) + _reservation(
+        candidate_effort
+    )
+    return total <= budget
 
 
 # ---------------------------------------------------------------------------

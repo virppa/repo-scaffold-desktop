@@ -239,6 +239,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "Falls back to line-based logging when stderr is piped."
         ),
     )
+    watcher.add_argument(
+        "--kv-budget",
+        type=int,
+        default=None,
+        help=(
+            "KV-token budget for local-dispatch admission control (WOR-502). "
+            "Each ticket reserves tokens proportional to its effort level; "
+            "the watcher admits a worker only while the sum of in-flight "
+            "reservations plus the candidate stays within budget. "
+            "Default: None (off — admit based on --max-local-workers only)."
+        ),
+    )
     # WOR-435: programmatic launch flags.
     watcher.add_argument(
         "--detach",

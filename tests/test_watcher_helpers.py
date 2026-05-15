@@ -5,10 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.core.watcher.watcher_helpers import (
+    DEFAULT_KV_RESERVATION,
+    KV_BUDGET_TOKENS,
     build_worker_cmd,
     build_worker_env,
     check_allowed_paths_overlap,
     count_main_ahead_of_epic,
+    kv_admission_ok,
     resolve_effective_mode,
 )
 from tests.conftest import make_active_worker, make_manifest
@@ -429,3 +432,70 @@ def test_count_main_ahead_of_epic_fails_open_when_branch_missing(
     """If the epic branch doesn't exist on origin, return 0 (do not block)."""
     _, clone = _setup_remote_and_main(tmp_path)
     assert count_main_ahead_of_epic("epic/wor-100-nonexistent", clone) == 0
+
+
+# ---------------------------------------------------------------------------
+# KV-budget admission control (WOR-502)
+# ---------------------------------------------------------------------------
+
+
+def test_kv_admission_empty_pool_allows_candidate() -> None:
+    """Empty in-flight pool: any candidate with reservation <= budget admits."""
+    assert kv_admission_ok([], "low", budget=KV_BUDGET_TOKENS) is True
+    assert (
+        kv_admission_ok([], "max", budget=KV_BUDGET_TOKENS) is True
+    )  # 130000 <= 133934
+
+
+def test_kv_admission_unknown_effort_uses_default() -> None:
+    """Unknown / None effort falls back to DEFAULT_KV_RESERVATION."""
+    assert kv_admission_ok([], None, budget=KV_BUDGET_TOKENS) is True
+    assert (
+        kv_admission_ok([], "low", budget=DEFAULT_KV_RESERVATION) is True
+    )  # 33000 <= 90000
+    assert (
+        kv_admission_ok([], "max", budget=DEFAULT_KV_RESERVATION) is False
+    )  # 130000 > 90000
+
+
+def test_kv_admission_mixed_batch_respects_budget() -> None:
+    """A max-effort worker (130000) already in flight blocks a second max."""
+    assert (
+        kv_admission_ok(["max"], "max", budget=KV_BUDGET_TOKENS) is False
+    )  # 130k+130k > 133934
+    # low + low should still fit: 33k+33k=66k <= 133934
+    assert (
+        kv_admission_ok(["low", "low"], "low", budget=KV_BUDGET_TOKENS) is True
+    )  # 99k <= 133934
+    # low + low + low = 99k, add high (67k) = 166k > 133934
+    assert (
+        kv_admission_ok(["low", "low", "low"], "high", budget=KV_BUDGET_TOKENS) is False
+    )
+
+
+def test_kv_admission_all_small_packs_wide() -> None:
+    """All-low workers should allow several concurrent (budget // 33000)."""
+    # 3 × low = 99000 <= 133934 + 1 more low = 132000 <= 133934
+    assert kv_admission_ok(["low"] * 3, "low", budget=KV_BUDGET_TOKENS) is True
+    # 4 × low = 132000 <= 133934 + 1 more low = 165000 > 133934
+    assert kv_admission_ok(["low"] * 4, "low", budget=KV_BUDGET_TOKENS) is False
+
+
+def test_kv_admission_max_effort_runs_alone() -> None:
+    """A single max-effort ticket (130000) admits when pool is empty."""
+    assert (
+        kv_admission_ok([], "max", budget=KV_BUDGET_TOKENS) is True
+    )  # 130000 <= 133934
+
+
+def test_kv_admission_custom_budget() -> None:
+    """A custom budget caps the admission regardless of effort levels."""
+    assert (
+        kv_admission_ok(["high"], "high", budget=100_000) is False
+    )  # 67000+67000=134000 > 100000
+    assert (
+        kv_admission_ok(["medium"], "medium", budget=90_000) is True
+    )  # 45000+45000=90000 <= 90000
+    assert (
+        kv_admission_ok(["medium", "high"], "low", budget=100_000) is False
+    )  # 45k+67k+33k=145k > 100k
