@@ -135,7 +135,7 @@ class ExecutionManifest(BaseModel):
     decide where to dispatch a ticket.
     """
 
-    routing: Literal["local", "cloud_preferred", "cloud_only"]
+    routing: Literal["local", "cloud_preferred", "cloud_only"] = "local"
     """Routing decision for the watcher — where to dispatch the ticket.
 
     ``local``   — dispatch to a local worker (default for backwards

@@ -105,7 +105,6 @@ def test_failure_policy_default_abort():
         "parallel_safe",
         "risk_level",
         "implementation_mode",
-        "routing",
         "review_mode",
         "base_branch",
         "worker_branch",
@@ -118,6 +117,37 @@ def test_manifest_missing_required_field_raises(missing_field):
     del payload[missing_field]
     with pytest.raises(ValidationError):
         ExecutionManifest(**payload)
+
+
+# ---------------------------------------------------------------------------
+# WOR-505: routing back-compat default (legacy manifests have no routing key)
+# ---------------------------------------------------------------------------
+
+
+def test_routing_defaults_to_local_when_absent_legacy_manifest():
+    """A pre-WOR-290 manifest has no ``routing`` key. It must load — the
+    WOR-290 mode='after' shim assumed a 'local' default that was never
+    added, so legacy manifests previously crashed the epic scan."""
+    payload = _minimal_manifest()
+    del payload["routing"]
+    m = ExecutionManifest(**payload)  # must not raise
+    assert m.routing == "local"
+
+
+@pytest.mark.parametrize("legacy_mode", ["cloud", "hybrid"])
+def test_routing_derived_from_implementation_mode_for_legacy(legacy_mode):
+    """With routing absent, the WOR-290 shim now actually fires:
+    implementation_mode cloud/hybrid derives routing='cloud_preferred'."""
+    payload = _minimal_manifest(implementation_mode=legacy_mode)
+    del payload["routing"]
+    m = ExecutionManifest(**payload)
+    assert m.routing == "cloud_preferred"
+
+
+def test_explicit_routing_is_not_overridden_by_shim():
+    """An explicit non-local routing decision is preserved."""
+    m = _make_manifest(routing="cloud_only", implementation_mode="local")
+    assert m.routing == "cloud_only"
 
 
 # ---------------------------------------------------------------------------
