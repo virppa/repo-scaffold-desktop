@@ -112,8 +112,17 @@ For each eligible ticket (process them all before writing any manifests):
   - `tech_stack` — comma-separated tags of the technologies involved, e.g. `python,sqlite,pydantic` or `markdown,yaml`
   - `raw_extensions` — JSON array string of file extensions touched, e.g. `[".py",".md"]`
 
+**3b.5. Split-on-multi-feature check (WOR-443)**
+Apply the same criteria as `/start-ticket` step 2. All three must hold to flag:
+
+1. The ticket's AC enumerates **3 or more** bullets that each describe a *separately-scoped feature* (not 3+ bullets describing edge cases of one feature)
+2. The features touch **distinct files or surfaces** (not just different methods of the same class)
+3. Each feature could be **independently tested and shipped**
+
+If all three hold, record `split_candidate: true` for this ticket along with the separable feature list (`split_features: [<X>, <Y>, <Z>]`). **Do not split automatically** — surface it in step 4's batching plan. If any criterion fails, set `split_candidate: false` and continue.
+
 **3c. Record inferred file set**
-Store `{ ticket_id, branch_name, files: [...] }` for conflict detection in step 4.
+Store `{ ticket_id, branch_name, files: [...], split_candidate, split_features }` for conflict detection and the step 4 plan.
 
 ---
 
@@ -165,6 +174,15 @@ Batch 2 — blocked until batch 1 merges (file conflicts):
 Skipped (already past Groomed):
   WOR-47  InProgressLocal
 ```
+
+If any ticket was marked `split_candidate: true` in step 3b.5, append a section to the plan after "Skipped":
+
+```
+Split candidates (multi-feature — consider re-filing before queuing):
+  WOR-NNN  <N> separable improvements (<X>, <Y>, <Z>) — each independently testable, distinct files
+```
+
+Default recommendation: **re-file**. A multi-feature ticket inside a bundle bogs down the whole batch — it runs disproportionately long, risks mid-session compaction, and can lock a shared file gating its batch peers (WOR-306 retro: 77 min wall, compaction, `watcher.py` locked ~60 min). The operator can either approve the bundle as-is or close-and-re-file the flagged ticket as `<N>` sub-tickets and re-run `/start-epic`. The decision is the operator's; the recommendation must be surfaced.
 
 **STOP HERE. Do not write any manifests or create branches until the human approves this batching plan.**
 
