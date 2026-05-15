@@ -466,11 +466,12 @@ def test_cleanup_worktree_rmtree_fallback_when_not_a_working_tree(
     orphan.mkdir(parents=True)
     (orphan / "leftover.txt").write_text("stale", encoding="utf-8")
 
-    call_count = {"n": 0}
-
     def _side_effect(*args: object, **kwargs: object) -> MagicMock:
-        call_count["n"] += 1
-        if call_count["n"] == 1:
+        cmd = args[0] if args else []
+        # WOR-450 added a `git clean` sweep before `git worktree remove`;
+        # branch on the command rather than call order so the fallback is
+        # triggered by the real `worktree remove`, not the sweep.
+        if isinstance(cmd, list) and "worktree" in cmd and "remove" in cmd:
             raise subprocess.CalledProcessError(
                 128,
                 "git",
@@ -491,6 +492,69 @@ def test_cleanup_worktree_rmtree_fallback_when_not_a_working_tree(
         "Untracked worktree directory removed via rmtree" in r.message
         for r in caplog.records
     )
+
+
+def test_cleanup_worktree_sweeps_stray_files_before_remove(tmp_path: Path) -> None:
+    """WOR-450: `git clean -fdx -e .claude/artifacts/` runs before remove."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    worktree = tmp_path / "worktrees" / "wor-450-test"
+    worktree.mkdir(parents=True)
+
+    calls: list[list[str]] = []
+
+    def _record(*args: object, **kwargs: object) -> MagicMock:
+        cmd = args[0] if args else []
+        if isinstance(cmd, list):
+            calls.append([str(c) for c in cmd])
+        mock = MagicMock()
+        mock.returncode = 0
+        return mock
+
+    with patch("subprocess.run", side_effect=_record):
+        cleanup_worktree(repo_root, worktree)
+
+    clean_idx = next(
+        i for i, c in enumerate(calls) if "clean" in c and "worktree" not in c
+    )
+    remove_idx = next(
+        i for i, c in enumerate(calls) if "worktree" in c and "remove" in c
+    )
+    # Sweep must precede worktree removal.
+    assert clean_idx < remove_idx
+    sweep = calls[clean_idx]
+    # -x reaches the .gitignore'd worker_*.log strays; the artifacts dir
+    # is excluded so audit artifacts are preserved.
+    assert "-fdx" in sweep
+    assert "-e" in sweep
+    assert ".claude/artifacts/" in sweep
+
+
+def test_cleanup_worktree_sweep_failure_does_not_block_removal(
+    tmp_path: Path,
+) -> None:
+    """A `git clean` failure is swallowed; worktree removal still proceeds."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    worktree = tmp_path / "worktrees" / "wor-450-test"
+    worktree.mkdir(parents=True)
+
+    removed = {"called": False}
+
+    def _side_effect(*args: object, **kwargs: object) -> MagicMock:
+        cmd = args[0] if args else []
+        if isinstance(cmd, list) and "clean" in cmd and "worktree" not in cmd:
+            raise subprocess.CalledProcessError(1, "git", stderr="clean boom")
+        if isinstance(cmd, list) and "worktree" in cmd and "remove" in cmd:
+            removed["called"] = True
+        mock = MagicMock()
+        mock.returncode = 0
+        return mock
+
+    with patch("subprocess.run", side_effect=_side_effect):
+        cleanup_worktree(repo_root, worktree)
+
+    assert removed["called"], "worktree remove must still run after sweep failure"
 
 
 # ---------------------------------------------------------------------------
