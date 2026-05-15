@@ -31,6 +31,7 @@ def _make_manifest(ticket_id: str = "WOR-10") -> ExecutionManifest:
         parallel_safe=True,
         risk_level="low",
         implementation_mode="local",
+        routing="local",
         review_mode="auto",
         base_branch="epic/wor-96",
         worker_branch=f"wor-{ticket_id.lower().replace('-', '')}-branch",

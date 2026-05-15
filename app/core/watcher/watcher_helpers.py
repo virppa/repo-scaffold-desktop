@@ -242,18 +242,39 @@ def build_worker_cmd(
     return base + ["-p", prompt]
 
 
-def resolve_effective_mode(worker_mode: str, manifest_mode: str) -> str:
-    """Return the effective implementation mode.
+_RESOLVE_REFUSED = "refused"
 
-    worker_mode takes precedence when it is not 'default'.
-    Falls back to manifest_mode ('local', 'cloud', or 'hybrid').
-    Hybrid is treated as 'cloud' for subprocess purposes.
+
+def resolve_effective_mode(worker_mode: str, routing: str) -> str:
+    """Return the effective execution mode based on worker_mode x routing.
+
+    Implements the four-way (worker_mode x routing) matrix:
+
+    +----------------+-----------+------------------+-------------+
+    |                | local     | cloud_preferred  | cloud_only  |
+    +----------------+-----------+------------------+-------------+
+    | default        | local     | cloud            | cloud       |
+    | cloud          | local     | cloud            | cloud       |
+    | local          | local     | local            | refused     |
+    +----------------+-----------+------------------+-------------+
+
+    Returns ``"refused"`` when ``routing=cloud_only`` and ``worker_mode=local``.
+    The caller (dispatch.start_ticket) checks for this sentinel and returns
+    early — before pool capacity, worktree, or state changes.
     """
-    if worker_mode != "default":
-        return worker_mode
-    if manifest_mode == "hybrid":
+    if worker_mode == "default":
+        if routing == "local":
+            return "local"
         return "cloud"
-    return manifest_mode
+
+    # Worker mode is an explicit override — "local" or "cloud".
+    if routing == "cloud_only" and worker_mode == "local":
+        return _RESOLVE_REFUSED
+
+    if routing == "cloud_preferred" and worker_mode == "local":
+        return "local"
+
+    return worker_mode
 
 
 # ---------------------------------------------------------------------------
