@@ -123,6 +123,7 @@ class Watcher:
         no_epic_shutdown: bool = False,
         tui_mode: bool = False,
         max_concurrent_checks: int | None = None,
+        kv_budget: int | None = None,
     ) -> None:
         if linear_client is None:
             from app.core.linear_client import LinearClient  # lazy import
@@ -183,6 +184,8 @@ class Watcher:
         self._paused: bool = False
         self._forcestopping: bool = False
         self._killing: list[str] = []  # ticket IDs being processed by kill
+        # WOR-502: KV-budget admission gate. None = unlimited (off).
+        self._kv_budget = kv_budget
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -671,6 +674,7 @@ class Watcher:
             _escalation_policy=self._escalation_policy,
             _dedup_state=self._last_deferral_state,
             _candidate=candidate,
+            _kv_budget=self._kv_budget,
         )
 
     # ------------------------------------------------------------------

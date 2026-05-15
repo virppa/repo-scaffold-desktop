@@ -17,10 +17,13 @@ from app.core.manifest import ExecutionManifest
 
 from .watcher_finalize import safe_set_state
 from .watcher_helpers import (
+    DEFAULT_KV_RESERVATION,
+    EFFORT_KV_RESERVATION,
     capture_vllm_metrics_diagnostic,
     check_allowed_paths_overlap,
     count_main_ahead_of_epic,
     get_active_parent_ids,
+    kv_admission_ok,
     resolve_effective_mode,
     suppress_dedup,
 )
@@ -61,6 +64,7 @@ def start_ticket(
     _escalation_policy: object,
     _dedup_state: dict[str, str],
     _candidate: dict[str, Any] | None = None,
+    _kv_budget: int | None = None,
 ) -> None:
     """Run the full ticket-start flow (WOR-431: prereqs + dispatch).
 
@@ -81,6 +85,11 @@ def start_ticket(
         return
     if not _check_path_overlap(
         manifest, _local_active, _cloud_active, ticket_id, _dedup_state
+    ):
+        return
+
+    if not _check_kv_budget(
+        manifest, _local_active, ticket_id, _dedup_state, _kv_budget
     ):
         return
 
@@ -394,6 +403,49 @@ def _check_vllm_health(
             logger.warning("%s", reason_msg)
         return False
     services.ensure_vllm_anthropic_mode()
+    return True
+
+
+def _check_kv_budget(
+    manifest: ExecutionManifest,
+    _local_active: list[ActiveWorker],
+    ticket_id: str,
+    _dedup_state: dict[str, str],
+    _kv_budget: int | None = None,
+) -> bool:
+    """WOR-502: effort-aware KV-budget admission for local workers.
+
+    Only applies when ``effective_mode`` will be ``"local"`` — checked via
+    ``manifest.routing`` (cloud_preferred / cloud_only route to cloud and
+    skip this gate).  Sums KV reservations of in-flight local workers plus
+    the candidate's own reservation and admits only when within budget.
+
+    Returns ``True`` to proceed; ``False`` to defer.
+    """
+    # Skip for cloud-bound tickets (local routing is the only path to
+    # local workers; cloud_preferred/cloud_only route to the cloud).
+    if manifest.routing not in ("local",):
+        return True
+
+    # Budget is optional — when None the gate is effectively infinite.
+    budget = _kv_budget if _kv_budget is not None else 2**31
+
+    in_flight_efforts = [w.manifest.effort for w in _local_active]
+    if not kv_admission_ok(in_flight_efforts, manifest.effort, budget=budget):
+
+        def _kv_for(e: str | None) -> int:
+            return EFFORT_KV_RESERVATION.get(e, DEFAULT_KV_RESERVATION)  # type: ignore[arg-type]
+
+        in_flight_kv = sum(_kv_for(e) for e in in_flight_efforts)
+        candidate_kv = _kv_for(manifest.effort)
+        reason_msg = (
+            "Deferring %s — KV budget exhausted "
+            "(in-flight=%d, candidate=%d, budget=%d)"
+            % (ticket_id, in_flight_kv, candidate_kv, budget)
+        )
+        if suppress_dedup(ticket_id, "kv_budget_full", reason_msg, _dedup_state):
+            logger.info(reason_msg)
+        return False
     return True
 
 
