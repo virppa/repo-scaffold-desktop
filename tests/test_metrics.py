@@ -9,6 +9,7 @@ import pytest
 from app.core.metrics import (
     CheckRunEntry,
     CheckStats,
+    CostRollup,
     EpicSummary,
     MetricsStore,
     TicketMetrics,
@@ -1136,3 +1137,175 @@ class TestUpdateSonarCount:
         store.update_sonar_count("WOR-99", "proj-a", 5)
         # Should complete without error
         store.get_by_ticket("WOR-99", "proj-a") is None
+
+
+class TestBillingBucketMigration:
+    def test_migration_adds_billing_bucket(self, tmp_path):
+        """Billing bucket column is added by _migrate."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        store.record(_ticket(ticket_id="T1", local_used=True))
+        row = store.get_by_ticket("T1", "proj-a")
+        assert row.billing_bucket is None
+
+    def test_billing_bucket_defaults_to_none(self, tmp_path):
+        """New rows have billing_bucket=None until finalize writes it."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        row = store.get_by_ticket("T1", "proj-a")
+        assert row is None  # no rows yet
+
+    def test_migration_idempotent(self, tmp_path):
+        """Second _migrate call does not raise."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        with store._connect() as conn:
+            store._migrate(conn)
+            store._migrate(conn)
+
+
+class TestBillingBucketAssignment:
+    def test_local_assignment(self, tmp_path):
+        """eff=='local' always maps to 'local' bucket."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        store.record(
+            _ticket(
+                implementation_mode="local",
+                local_used=True,
+                billing_bucket="local",
+            )
+        )
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.billing_bucket == "local"
+
+    def test_subscription_assignment(self, tmp_path):
+        """Pre-cutover cloud tickets map to 'subscription'."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        store.record(
+            _ticket(
+                implementation_mode="cloud",
+                cloud_used=True,
+                billing_bucket="subscription",
+            )
+        )
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.billing_bucket == "subscription"
+
+    def test_agent_sdk_credit_assignment(self, tmp_path):
+        """Post-cutover cloud tickets map to 'agent_sdk_credit'."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        store.record(
+            _ticket(
+                implementation_mode="cloud",
+                cloud_used=True,
+                billing_bucket="agent_sdk_credit",
+            )
+        )
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result is not None
+        assert result.billing_bucket == "agent_sdk_credit"
+
+    def test_legacy_unknown(self, tmp_path):
+        """Rows with billing_bucket=None remain None (legacy)."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        store.record(_ticket(ticket_id="WOR-1", local_used=True))
+        result = store.get_by_ticket("WOR-1", "proj-a")
+        assert result.billing_bucket is None
+
+
+class TestCostRollupByBucket:
+    def test_by_bucket_segregates_cloud_local(self, tmp_path):
+        """Bucket-segregated rollup returns dict with separate cloud/local entries."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                local_used=True,
+                local_input_tokens=100_000,
+                local_output_tokens=5_000,
+                local_wall_time=60.0,
+                billing_bucket="local",
+            )
+        )
+        store.record(
+            _ticket(
+                ticket_id="WOR-2",
+                cloud_used=True,
+                cloud_cost_estimate=0.15,
+                billing_bucket="subscription",
+            )
+        )
+        result = store.get_cost_rollup("all", by_bucket=True)
+        assert isinstance(result, dict)
+        assert "local" in result
+        assert "subscription" in result
+
+    def test_by_bucket_ignores_none_buckets(self, tmp_path):
+        """Legacy rows with billing_bucket=None do not appear in by_bucket result."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        store.record(_ticket(ticket_id="WOR-1", local_used=True, billing_bucket=None))
+        store.record(
+            _ticket(
+                ticket_id="WOR-2",
+                local_used=True,
+                local_input_tokens=100_000,
+                local_output_tokens=5_000,
+                billing_bucket="local",
+            )
+        )
+        result = store.get_cost_rollup("all", by_bucket=True)
+        assert "local" in result
+        assert None not in result
+
+    def test_by_bucket_all_buckets(self, tmp_path):
+        """Multiple buckets (local, subscription, agent_sdk_credit) coexist."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                local_used=True,
+                billing_bucket="local",
+            )
+        )
+        store.record(
+            _ticket(
+                ticket_id="WOR-2",
+                cloud_used=True,
+                cloud_cost_estimate=0.10,
+                billing_bucket="subscription",
+            )
+        )
+        store.record(
+            _ticket(
+                ticket_id="WOR-3",
+                cloud_used=True,
+                cloud_cost_estimate=0.20,
+                billing_bucket="agent_sdk_credit",
+            )
+        )
+        result = store.get_cost_rollup("all", by_bucket=True)
+        assert isinstance(result, dict)
+        assert len(result) == 3
+        assert set(result.keys()) == {"local", "subscription", "agent_sdk_credit"}
+
+    def test_by_bucket_false_returns_single_rollup(self, tmp_path):
+        """Default (by_bucket=False) returns CostRollup, not dict."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                local_used=True,
+                local_input_tokens=100_000,
+                local_output_tokens=5_000,
+                local_wall_time=60.0,
+                billing_bucket="local",
+            )
+        )
+        result = store.get_cost_rollup("all")
+        assert isinstance(result, CostRollup)
+        assert result.local_ticket_count == 1
+
+    def test_by_bucket_no_rows(self, tmp_path):
+        """Empty table returns empty dict when by_bucket=True."""
+        store = MetricsStore(db_path=tmp_path / "app.db")
+        result = store.get_cost_rollup("all", by_bucket=True)
+        assert result == {}
