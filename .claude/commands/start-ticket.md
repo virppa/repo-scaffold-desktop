@@ -419,6 +419,41 @@ unchanged. Non-test paths (e.g. `app/core/metrics.py`) are left unchanged.
 The architect does NOT need to enumerate sibling tests manually — this step
 handles it mechanically before the manifest is written.
 
+### 5.9. Auto-scope allowed_paths for shared-model + risk_flag ripple (WOR-500)
+
+After the WOR-353 test-glob expansion and before writing the manifest, expand
+`allowed_paths` so a *correct* cross-cutting edit is never Blocked. An
+over-broad `allowed_paths` never Blocks correct work; an under-scoped one
+Blocks flawless implementations — WOR-290 (a clean 21-file refactor,
+ruff/lint-imports/mypy clean, 1911 pytest passing, Blocked solely for this)
+and WOR-502 (a correct KV-admission feature Blocked because `parser.py` /
+`dispatch.py` were omitted).
+
+Apply all three rules mechanically:
+
+1. **Shared model/fixture ripple.** If any `allowed_paths` entry is
+   `app/core/manifest.py` or `tests/conftest.py` (or another widely-imported
+   shared model/fixture that many tests construct), also add
+   `tests/conftest.py`, `app/core/manifest_builder.py`, and `tests/test_*.py`.
+   A model-field change unavoidably ripples to the shared `make_manifest`
+   fixture and every manifest-constructing test.
+
+2. **risk_flag meta-rule.** Re-read every `risk_flag` written in step 3. If a
+   risk_flag names a module/file as where logic "lives", "belongs", "is
+   located", or must be "found" (e.g. "the arg-parser is in another module",
+   "admission belongs in the dispatch path"), that file is **required** in
+   `allowed_paths`. A risk_flag naming another module is you having already
+   spotted the scope hole — close it here, do not merely describe it.
+
+3. **Common implicit pairs.** If the ticket adds or changes a CLI flag,
+   include the argparse module (`app/cli/parser.py`), not only the consumer
+   (`app/cli/operator.py`). If it adds watcher dispatch/admission logic,
+   include `app/core/watcher/dispatch.py`, not only
+   `app/core/watcher/watcher.py`.
+
+When uncertain, over-scope. The architect does NOT need to perfectly predict
+the worker's file set — these rules close the systematic under-scoping gaps.
+
 ### 5.6. After human approves the plan — generate the execution manifest
 
 Once the human says to proceed, generate and write an `ExecutionManifest` JSON to disk. This is the handoff artifact the local worker reads — it must not require re-reading Linear or re-planning.

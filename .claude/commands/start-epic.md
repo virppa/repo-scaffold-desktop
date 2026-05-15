@@ -205,7 +205,7 @@ git checkout main
 
 **5b. Write the execution manifest**
 
-Before writing, run these three pre-flight checks for each ticket:
+Before writing, run these four pre-flight checks for each ticket:
 
 **A. Context snippets** — Read the key functions the worker will call or test from `related_files_hint`. If any function's behaviour depends on a constant defined in another module or a non-obvious path indirection (e.g. `repo_root.parent / _WORKTREE_BASE` where `_WORKTREE_BASE` is in `watcher_types.py`), copy those lines verbatim into `context_snippets` as `"# <file>:<start>-<end>\n<lines>"`. Rule: if you needed to read a second file to understand the first, the worker needs it too — inline it as a snippet.
 
@@ -213,6 +213,8 @@ Before writing, run these three pre-flight checks for each ticket:
 `"Fix code by editing test files directly with Edit/Write tools. Do not use Bash to experiment with Python path logic or prototype solutions — reason from the source code, then edit."`
 
 **C. AC function name validation** — For any function or method name mentioned in `acceptance_criteria`, verify it exists in the source: `grep -rn "def <name>" app/`. Correct any mismatch before writing — this prevents the worker from testing non-existent symbols.
+
+**D. Auto-scope allowed_paths (WOR-500)** — expand `allowed_paths` so a correct cross-cutting edit is never Blocked (over-broad never Blocks correct work; under-scoped Blocked flawless implementations — WOR-290, WOR-502): (1) if any entry is `app/core/manifest.py` or `tests/conftest.py` (or another widely-imported shared model/fixture), also add `tests/conftest.py`, `app/core/manifest_builder.py`, and `tests/test_*.py` — a model-field change ripples to the shared `make_manifest` fixture and every manifest-constructing test; (2) re-read every `risk_flag` — any module a risk_flag names as where logic "lives"/"belongs"/"is located" is **required** in `allowed_paths` (a risk_flag naming another module is the scope hole already spotted — close it, don't just describe it); (3) CLI-flag tickets must include the argparse module (`app/cli/parser.py`), not only the consumer; dispatch/admission tickets must include `app/core/watcher/dispatch.py`, not only `watcher.py`. When uncertain, over-scope.
 
 Write to `.claude/artifacts/<ticket_id_lower>/manifest.json`:
 
