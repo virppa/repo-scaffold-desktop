@@ -417,6 +417,8 @@ and convert every match to `patch("new.module.path.function_name")`.
 
 **Test allowed_paths are auto-globbed at `/start-ticket` time.** When the architect lists `tests/test_X.py` in `allowed_paths`, the manifest writer expands it to `tests/test_X*.py` so sibling test files are explicitly in scope. Architects do NOT need to enumerate sibling tests manually. Already-globbed entries (e.g. `tests/test_*.py`) are left unchanged.
 
+**allowed_paths auto-scoping for shared-model + risk_flag ripple (WOR-500).** Beyond the test-glob, the `/start-ticket` and `/start-epic` manifest writers also expand `allowed_paths`: (a) if it touches `app/core/manifest.py` or `tests/conftest.py`, they add `tests/conftest.py` + `app/core/manifest_builder.py` + `tests/test_*.py` (a model-field change ripples to the shared `make_manifest` fixture and every manifest-constructing test); (b) any module a `risk_flag` names as where logic "lives"/"belongs" is force-added; (c) CLI-flag tickets include `app/cli/parser.py`, dispatch tickets include `app/core/watcher/dispatch.py`. An over-broad `allowed_paths` never Blocks correct work; an under-scoped one Blocked flawless implementations (WOR-290's clean 21-file refactor, WOR-502's correct KV-admission feature).
+
 ---
 
 ## Escalation policy
