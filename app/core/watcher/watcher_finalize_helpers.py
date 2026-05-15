@@ -13,6 +13,7 @@ import logging
 import subprocess  # nosec B404
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -124,6 +125,53 @@ def _validate_allowed_paths(
             violations.append(f"ALLOWED {fpath}")
 
     return violations
+
+
+def _validate_checks_passed(
+    manifest: ExecutionManifest,
+    repo_root: Path,
+) -> list[str]:
+    """Cross-check the worker's self-reported checks against required_checks.
+
+    Workers sometimes write ``status: success`` to result.json with a
+    ``checks_passed`` list populated from *pre-commit hook names*
+    (``ruff``, ``ruff-format``, ``bandit`` …) instead of the manifest's
+    ``required_checks`` command strings (``mypy app/``, ``pytest`` …) —
+    see WOR-456 / WOR-66. The worker ran pre-commit, saw it pass, and
+    self-reported success without ever invoking the contract checks.
+
+    Returns the list of ``required_checks`` entries the worker did NOT
+    report as passed (exact string match). Empty list = no violation.
+
+    This gate fires *only* when the worker made a **non-empty**
+    ``checks_passed`` claim that fails to cover ``required_checks`` — the
+    exact WOR-456 / WOR-66 bug (worker lists pre-commit hook names instead
+    of the contract checks). It deliberately does NOT fire when:
+
+    - ``required_checks`` is empty (nothing to enforce), or
+    - ``result.json`` is unreadable (the returncode path's job), or
+    - ``checks_passed`` is absent or empty.
+
+    A worker that makes no checks claim at all is a different situation
+    from one that makes a *wrong* claim — the empty case is covered by
+    the returncode logic and the WOR-353 unscoped-pytest soft rule plus
+    the watcher's own ``run_checks`` sweep, not by this contract gate.
+    """
+    if not manifest.required_checks:
+        return []
+    result_path = repo_root / manifest.artifact_paths.result_json
+    try:
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    raw_passed = data.get("checks_passed") if isinstance(data, dict) else None
+    if isinstance(raw_passed, list):
+        passed = {c for c in raw_passed if isinstance(c, str)}
+    else:
+        passed = set()
+    if not passed:
+        return []
+    return [rc for rc in manifest.required_checks if rc not in passed]
 
 
 def safe_set_state(
@@ -433,6 +481,117 @@ def _sonar_requires_escalation(
             "Sonar finding for %s: severity=%s — fix_locally", ticket_id, severity
         )
     return False
+
+
+# WOR-457: known finalize stages for the last_failure.json `stage`
+# discriminator. `check` is retained for backward-compat (watcher.py's
+# retry-hint reader does `data.get("check", "unknown")`).
+_FINALIZE_STAGES = (
+    "run_checks",
+    "rebase",
+    "push",
+    "pr_create",
+    "pr_merge",
+    "validate_allowed_paths",
+    "validate_checks_passed",
+    "parse",
+    "other",
+)
+
+
+def _artifact_dir_for(worker: ActiveWorker) -> Path:
+    """The worktree artifact dir holding result.json / last_failure.json."""
+    return (worker.worktree_path / worker.manifest.artifact_paths.result_json).parent
+
+
+def _classify_stage(exc: BaseException) -> str:
+    """Best-effort map an exception to a finalize stage string (WOR-457)."""
+    if isinstance(exc, json.JSONDecodeError):
+        return "parse"
+    parts: list[str] = [type(exc).__name__.lower(), str(exc).lower()]
+    if isinstance(exc, subprocess.CalledProcessError):
+        cmd = exc.cmd
+        parts.append(
+            cmd.lower()
+            if isinstance(cmd, str)
+            else " ".join(str(c) for c in (cmd or [])).lower()
+        )
+    blob = " ".join(parts)
+    if "rebase" in blob:
+        return "rebase"
+    if "pr create" in blob or "gh pr create" in blob:
+        return "pr_create"
+    if "pr merge" in blob or "auto-merge" in blob:
+        return "pr_merge"
+    if "push" in blob:
+        return "push"
+    if any(c in blob for c in ("pytest", "mypy", "ruff", "lint-imports")):
+        return "run_checks"
+    if "json" in blob or "parse" in blob or "decode" in blob:
+        return "parse"
+    return "other"
+
+
+def _record_failure_artifact(
+    artifact_dir: Path,
+    stage: str,
+    *,
+    exception: BaseException | None = None,
+    check: str | None = None,
+    stdout: str = "",
+    stderr: str = "",
+    keep_existing_stage: bool = False,
+) -> None:
+    """Write/merge last_failure.json for ANY finalize failure (WOR-457).
+
+    Before WOR-457, last_failure.json was written only by the run_checks
+    path (watcher_subprocess). Failures at rebase / push / pr_create /
+    pr_merge / validation gates / parse left the operator with a Linear
+    "Blocked" and no diagnostic artifact (WOR-441 incident).
+
+    `stage` is the new discriminator. `check` is kept (optional) for
+    backward-compat with parsers that read it. The file is *merged* into
+    any existing last_failure.json so wip_status / wip_commit_sha / the
+    run_checks `check` + stdout already written are preserved (the WOR-66
+    artifact round-trips: existing {check:"pytest", stdout:…} gains
+    {stage:"run_checks", failed_at:…}).
+
+    Best-effort — never raises; a diagnostics-write failure must not mask
+    the original error.
+    """
+    failure_file = artifact_dir / "last_failure.json"
+    try:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        data: dict[str, object] = {}
+        if failure_file.exists():
+            try:
+                existing = json.loads(failure_file.read_text(encoding="utf-8"))
+                if isinstance(existing, dict):
+                    data.update(existing)
+            except (json.JSONDecodeError, OSError):
+                data = {}
+        # First-failure timestamp wins: a later stage-refinement / wip
+        # merge must not reset failed_at (preserves an already-recorded
+        # failure time across the multiple writers in one finalize run).
+        data.setdefault("failed_at", datetime.now(timezone.utc).isoformat())
+        # keep_existing_stage: a generic catch-all ("other") must not
+        # downgrade a more specific stage a prior writer already set
+        # (e.g. attempt_pr recorded "pr_create" before this runs).
+        if not (keep_existing_stage and data.get("stage")):
+            data["stage"] = stage
+        if check is not None:
+            data["check"] = check
+        elif "check" not in data:
+            data["check"] = None
+        if stdout:
+            data["stdout"] = stdout
+        if stderr:
+            data["stderr"] = stderr
+        if exception is not None:
+            data["exception"] = f"{type(exception).__name__}: {exception}"
+        failure_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not write last_failure.json (%s): %s", failure_file, exc)
 
 
 def _write_wip_state_to_last_failure(

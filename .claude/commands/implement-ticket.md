@@ -342,6 +342,8 @@ ticket summary in `notes`; keep it focused on unexpected findings.
 }
 ```
 
+**HARD RULE — `checks_passed` must list the manifest's exact `required_checks` strings (WOR-456).** `checks_passed` records that you ran the manifest's `required_checks`, NOT that pre-commit / PostToolUse hooks passed. Copy the exact command strings from `manifest.required_checks` (e.g. `"ruff check ."`, `"mypy app/"`, `"pytest"`, `"lint-imports"`) verbatim into `checks_passed`. Do **not** list pre-commit hook names (`ruff`, `ruff-format`, `bandit`, `trailing-whitespace`, `end-of-file-fixer`, …) — those are not the contract checks, and the watcher now cross-checks the two lists at finalize time. If `checks_passed` does not contain every `required_checks` entry (exact string match), the watcher rejects the result as a contract violation and marks the ticket Blocked — even though you wrote `status: success`. Only write `status: success` after you have actually run every `required_checks` command and it passed.
+
 **On failure:**
 ```json
 {

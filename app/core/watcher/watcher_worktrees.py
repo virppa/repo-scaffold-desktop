@@ -601,6 +601,39 @@ def cleanup_worktree(repo_root: Path, worktree_path: Path) -> None:
     cleanup failed mid-run, leaving a directory on disk that git no longer
     tracks.
     """
+    # WOR-450: sweep stray untracked files before removing the worktree.
+    # Workers occasionally write a probe log to the worktree ROOT using a
+    # test-fixture filename (e.g. `worker_wor-99.log`); `worker_*.log` is
+    # .gitignore'd so it never gets committed, but it lingers and confuses
+    # retro tooling that scans `*.log`. `-x` is required to reach the
+    # gitignored strays; `-e .claude/artifacts/` preserves the audit
+    # artifacts (preserve_worker_artifacts has already copied them out by
+    # this point in finalize). Best-effort — a clean failure must never
+    # block worktree removal.
+    if worktree_path.exists():
+        try:
+            subprocess.run(  # nosec B603 B607
+                [
+                    "git",
+                    "-C",
+                    str(worktree_path),
+                    "clean",
+                    "-fdx",
+                    "-e",
+                    ".claude/artifacts/",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning(
+                "git clean sweep failed for %s (continuing to removal): %s",
+                worktree_path,
+                exc,
+            )
+
     try:
         subprocess.run(  # nosec B603 B607
             [
