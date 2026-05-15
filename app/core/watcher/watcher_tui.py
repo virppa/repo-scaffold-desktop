@@ -184,6 +184,15 @@ class WatcherDisplay:
         table.add_column("Local Saved", justify="right")
         table.add_column("Cloud #", justify="right")
         table.add_column("Local #", justify="right")
+        all_empty = not any(
+            (isinstance(v, CostRollup) and (v.cloud_spent != 0 or v.local_saved != 0))
+            for v in (
+                state.cost_rollups if isinstance(state.cost_rollups, dict) else {}
+            ).values()
+        )
+        if all_empty:
+            table.add_row("—", "—", "No data yet", "—", "—")
+            return table
         for period in ("today", "week", "all"):
             cr = state.cost_rollups.get(period, CostRollup())
             if period in state.cost_rollups:
@@ -201,10 +210,23 @@ class WatcherDisplay:
         table = Table(title="Session Totals", show_header=True, expand=True)
         table.add_column("Metric", style="cyan")
         table.add_column("Value", justify="right")
+        if not state.workers:
+            table.add_row("—", "—", "No data yet", "—")
+            return table
         total_cloud = sum(w.cloud_cost for w in state.workers if w.mode == "cloud")
         total_local = sum(w.local_saved for w in state.workers if w.mode == "local")
         table.add_row("Session Cloud Spent", "$" + f"{total_cloud:.4f}")
         table.add_row("Session Local Saved", "$" + f"{total_local:.4f}")
+        today_rollup = state.cost_rollups.get("today", CostRollup())
+        if isinstance(today_rollup, CostRollup):
+            table.add_row(
+                "Tickets Dispatched Today",
+                str(today_rollup.cloud_ticket_count + today_rollup.local_ticket_count),
+            )
+            table.add_row(
+                "Total Cost Saved Estimate",
+                "$" + f"{today_rollup.local_saved:.4f}",
+            )
         table.add_row("Active Workers", str(len(state.workers)))
         for pr in state.tracked_prs:
             if pr.last_status == "MERGED":
