@@ -198,3 +198,155 @@ def test_finalize_checks_passed_violation_writes_stage(tmp_path: Path) -> None:
     )
     assert data["stage"] == "validate_checks_passed"
     assert "missing required_checks" in data["stderr"]
+
+
+# ---------------------------------------------------------------------------
+# wip_status round-trip: commit_wip_state → last_failure.json
+# ---------------------------------------------------------------------------
+
+
+def test_finalize_worker_writes_clean_wip_status(tmp_path: Path) -> None:
+    """clean tree → last_failure.json contains wip_status=clean."""
+    worker = _make_worker(tmp_path)
+    with (
+        patch("app.core.watcher.watcher_finalize.commit_wip_state") as mock_wip,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch(
+            "app.core.watcher.watcher_finalize._validate_allowed_paths",
+            return_value=[],
+        ),
+        patch("app.core.watcher.watcher_finalize.compute_tags", return_value=[]),
+    ):
+        from app.core.watcher.watcher_worktrees import WipPreservationResult
+
+        mock_wip.return_value = WipPreservationResult(
+            status="clean", sha=None, backup_path=None, error=None
+        )
+        finalize_worker(
+            worker,
+            returncode=0,
+            wall_time=1.0,
+            linear=MagicMock(),
+            metrics=MagicMock(),
+            escalation_policy=EscalationPolicy.from_toml(),
+            repo_root=tmp_path,
+            mode="default",
+            project_id="proj",
+        )
+
+    data = json.loads(
+        (_artifact_dir(tmp_path) / "last_failure.json").read_text(encoding="utf-8")
+    )
+    assert data["wip_status"] == "clean"
+
+
+def test_finalize_worker_writes_pushed_wip_status(tmp_path: Path) -> None:
+    """Successful push → wip_status=pushed with sha."""
+    worker = _make_worker(tmp_path)
+    with (
+        patch("app.core.watcher.watcher_finalize.commit_wip_state") as mock_wip,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch(
+            "app.core.watcher.watcher_finalize._validate_allowed_paths",
+            return_value=[],
+        ),
+        patch("app.core.watcher.watcher_finalize.compute_tags", return_value=[]),
+    ):
+        from app.core.watcher.watcher_worktrees import WipPreservationResult
+
+        mock_wip.return_value = WipPreservationResult(
+            status="pushed", sha="abc1234", backup_path=None, error=None
+        )
+        finalize_worker(
+            worker,
+            returncode=0,
+            wall_time=1.0,
+            linear=MagicMock(),
+            metrics=MagicMock(),
+            escalation_policy=EscalationPolicy.from_toml(),
+            repo_root=tmp_path,
+            mode="default",
+            project_id="proj",
+        )
+
+    data = json.loads(
+        (_artifact_dir(tmp_path) / "last_failure.json").read_text(encoding="utf-8")
+    )
+    assert data["wip_status"] == "pushed"
+    assert data["wip_commit_sha"] == "abc1234"
+
+
+def test_finalize_worker_writes_backup_wip_status(tmp_path: Path) -> None:
+    """Commit failed, backup succeeded → wip_status=backup with path."""
+    worker = _make_worker(tmp_path)
+    with (
+        patch("app.core.watcher.watcher_finalize.commit_wip_state") as mock_wip,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch(
+            "app.core.watcher.watcher_finalize._validate_allowed_paths",
+            return_value=[],
+        ),
+        patch("app.core.watcher.watcher_finalize.compute_tags", return_value=[]),
+    ):
+        from app.core.watcher.watcher_worktrees import WipPreservationResult
+
+        backup_path = tmp_path / ".claude" / "artifacts" / "wor_457" / "wip"
+        mock_wip.return_value = WipPreservationResult(
+            status="backup", sha=None, backup_path=backup_path, error="push failed"
+        )
+        finalize_worker(
+            worker,
+            returncode=0,
+            wall_time=1.0,
+            linear=MagicMock(),
+            metrics=MagicMock(),
+            escalation_policy=EscalationPolicy.from_toml(),
+            repo_root=tmp_path,
+            mode="default",
+            project_id="proj",
+        )
+
+    data = json.loads(
+        (_artifact_dir(tmp_path) / "last_failure.json").read_text(encoding="utf-8")
+    )
+    assert data["wip_status"] == "backup"
+    assert data["wip_backup_path"] == str(backup_path)
+
+
+def test_finalize_worker_writes_failed_wip_status(tmp_path: Path) -> None:
+    """commit + push + backup all failed → wip_status=failed."""
+    worker = _make_worker(tmp_path)
+    with (
+        patch("app.core.watcher.watcher_finalize.commit_wip_state") as mock_wip,
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch("app.core.watcher.watcher_finalize.preserve_worker_artifacts"),
+        patch(
+            "app.core.watcher.watcher_finalize._validate_allowed_paths",
+            return_value=[],
+        ),
+        patch("app.core.watcher.watcher_finalize.compute_tags", return_value=[]),
+    ):
+        from app.core.watcher.watcher_worktrees import WipPreservationResult
+
+        mock_wip.return_value = WipPreservationResult(
+            status="failed", sha=None, backup_path=None, error="git error"
+        )
+        finalize_worker(
+            worker,
+            returncode=0,
+            wall_time=1.0,
+            linear=MagicMock(),
+            metrics=MagicMock(),
+            escalation_policy=EscalationPolicy.from_toml(),
+            repo_root=tmp_path,
+            mode="default",
+            project_id="proj",
+        )
+
+    data = json.loads(
+        (_artifact_dir(tmp_path) / "last_failure.json").read_text(encoding="utf-8")
+    )
+    assert data["wip_status"] == "failed"
