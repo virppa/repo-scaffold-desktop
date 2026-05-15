@@ -119,6 +119,8 @@ class ManifestBuilder:
             "risk_level": opts.risk_level,
             "risk_flags": [],
             "implementation_mode": "local",
+            "routing": "local",
+            "routing_reason": "local dispatch",
             "effort": effort,
             "review_mode": "auto",
             "change_type": change_type,

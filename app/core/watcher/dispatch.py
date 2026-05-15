@@ -86,8 +86,26 @@ def start_ticket(
 
     effective_mode = resolve_effective_mode(
         services._mode if hasattr(services, "_mode") else "local",
-        manifest.implementation_mode,
+        manifest.routing,
     )
+    if effective_mode == "refused":
+        logger.warning(
+            "Skipping %s — manifest declares routing=cloud_only "
+            "but the watcher is in local-only mode",
+            ticket_id,
+        )
+        linear.post_comment(
+            linear_id,
+            (
+                "Skipping dispatch — the manifest declares "
+                "routing=cloud_only but the watcher daemon is "
+                "running in local-only mode (--worker-mode local). "
+                "Start the daemon with --worker-mode cloud or "
+                "--worker-mode default to dispatch this ticket."
+            ),
+        )
+        return
+
     if not _check_pool_capacity(
         effective_mode, _cloud_active, max_cloud_workers, ticket_id
     ):
@@ -225,8 +243,9 @@ def _check_manifest_quality(
     linear_id: str,
     ticket_id: str,
 ) -> bool:
-    """WOR-378 quality gates: empty allowed_paths or required_checks -> reject."""
-    if manifest.implementation_mode == "local" and not manifest.allowed_paths:
+    """WOR-378 quality gates: empty allowed_paths for local routing or empty
+    required_checks -> reject."""
+    if manifest.routing == "local" and not manifest.allowed_paths:
         logger.warning(
             "Refusing %s — local manifest has empty allowed_paths", ticket_id
         )

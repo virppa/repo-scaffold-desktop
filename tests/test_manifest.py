@@ -28,6 +28,7 @@ def _minimal_manifest(**overrides) -> dict:
         "parallel_safe": True,
         "risk_level": "low",
         "implementation_mode": "local",
+        "routing": "local",
         "review_mode": "auto",
         "base_branch": "wor-75-hybrid-execution-engine",
         "worker_branch": "wor-77-design-and-implement-execution-manifest-schema",
@@ -104,6 +105,7 @@ def test_failure_policy_default_abort():
         "parallel_safe",
         "risk_level",
         "implementation_mode",
+        "routing",
         "review_mode",
         "base_branch",
         "worker_branch",
@@ -411,3 +413,101 @@ def test_effort_roundtrip():
 def test_effort_none_is_valid():
     m = _make_manifest(effort=None)
     assert m.effort is None
+
+
+# ---------------------------------------------------------------------------
+# WOR-290 — routing field + back-compat validator
+# ---------------------------------------------------------------------------
+
+
+def test_routing_defaults_to_local() -> None:
+    m = _make_manifest()
+    assert m.routing == "local"
+
+
+def test_routing_reason_defaults_to_none() -> None:
+    m = _make_manifest()
+    assert m.routing_reason is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["local", "cloud_preferred", "cloud_only"],
+)
+def test_routing_accepts_valid_values(value: str) -> None:
+    m = _make_manifest(routing=value)
+    assert m.routing == value
+
+
+def test_routing_rejects_invalid_value() -> None:
+    with pytest.raises(ValidationError, match="Input should be"):
+        _make_manifest(routing="invalid")
+
+
+def test_routing_roundtrip() -> None:
+    m = _make_manifest(routing="cloud_only", routing_reason="client request")
+    assert m.routing_reason == "client request"
+    m2 = ExecutionManifest.model_validate_json(m.model_dump_json())
+    assert m2.routing == "cloud_only"
+    assert m2.routing_reason == "client request"
+
+
+def test_back_compat_derives_when_routing_local_and_implementation_mode_cloud() -> None:
+    """When routing is the default 'local', the back-compat validator derives
+    from implementation_mode even if the caller explicitly set it to 'local'.
+
+    This is intentional: old manifests without a routing field have the
+    default 'local' and must be derived.  For new manifests that set routing
+    to a non-local value (cloud_preferred / cloud_only), the validator leaves
+    them unchanged — see test_back_compat_no_override_when_routing_explicit."""
+    m = _make_manifest(
+        routing="local",
+        implementation_mode="cloud",
+    )
+    assert m.routing == "cloud_preferred"
+
+
+# Back-compat: when routing is the default "local", derive from
+# implementation_mode.
+
+
+def test_back_compat_derives_cloud_preferred_for_implementation_mode_cloud() -> None:
+    """Legacy manifest with implementation_mode=cloud gets routing=cloud_preferred."""
+    m = _make_manifest(routing="local", implementation_mode="cloud")
+    assert m.routing == "cloud_preferred"
+
+
+def test_back_compat_derives_cloud_preferred_for_implementation_mode_hybrid() -> None:
+    """Legacy manifest with implementation_mode=hybrid gets routing=cloud_preferred."""
+    m = _make_manifest(routing="local", implementation_mode="hybrid")
+    assert m.routing == "cloud_preferred"
+
+
+def test_back_compat_keeps_local_for_implementation_mode_local() -> None:
+    """Legacy manifest with implementation_mode=local keeps routing=local."""
+    m = _make_manifest(routing="local", implementation_mode="local")
+    assert m.routing == "local"
+
+
+def test_back_compat_no_override_when_routing_explicit() -> None:
+    """When routing is set to a non-default value, implementation_mode is ignored."""
+    m = _make_manifest(routing="cloud_preferred", implementation_mode="local")
+    assert m.routing == "cloud_preferred"
+
+    m2 = _make_manifest(routing="cloud_only", implementation_mode="local")
+    assert m2.routing == "cloud_only"
+
+
+def test_routing_required_in_json_schema() -> None:
+    """routing should appear in the JSON schema as a required string field."""
+    schema = ExecutionManifest.json_schema()
+    props = schema.get("properties", {})
+    assert "routing" in props
+    assert props["routing"].get("enum") == ["local", "cloud_preferred", "cloud_only"]
+
+
+def test_routing_reason_in_json_schema() -> None:
+    """routing_reason should be an optional nullable string."""
+    schema = ExecutionManifest.json_schema()
+    props = schema.get("properties", {})
+    assert "routing_reason" in props

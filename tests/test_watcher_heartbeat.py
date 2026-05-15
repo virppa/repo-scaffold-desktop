@@ -41,6 +41,7 @@ def _make_manifest(**overrides: Any) -> ExecutionManifest:
         "parallel_safe": True,
         "risk_level": "low",
         "implementation_mode": "local",
+        "routing": "local",
         "review_mode": "auto",
         "base_branch": "main",
         "worker_branch": "wor-10-test",
