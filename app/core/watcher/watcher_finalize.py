@@ -26,8 +26,11 @@ from app.core.metrics import (
 
 from .watcher_finalize_helpers import (
     ATTEMPT_HARDCAP,
+    _artifact_dir_for,
+    _classify_stage,
     _execute_finalization,
     _read_result_status,
+    _record_failure_artifact,
     _record_failure_state,
     _try_post_comment,
     _validate_allowed_paths,
@@ -208,6 +211,17 @@ def attempt_pr(
         except subprocess.CalledProcessError as exc:
             err_detail = (exc.stderr or exc.stdout or str(exc)).strip()
             logger.error("PR creation failed for %s: %s", ticket_id, err_detail)
+            # WOR-457: record a diagnostic artifact for the PR-creation
+            # failure stage. Written before commit_wip_state so the WIP
+            # helpers merge wip_status into the same file. This is the
+            # exact WOR-441 gap: a finalize failure outside run_checks
+            # that previously left no last_failure.json.
+            _record_failure_artifact(
+                _artifact_dir_for(worker),
+                _classify_stage(exc),
+                exception=exc,
+                stderr=err_detail,
+            )
             # Preserve any uncommitted worktree changes so a retry worker
             # can resume from them (WOR-267, WOR-288). attempt_pr does not
             # own the worktree teardown decision — finalize_worker handles
@@ -455,6 +469,12 @@ def finalize_worker(
             f"allowed_paths violation — {len(violations)} file(s) outside scope",
         )
         _try_post_comment(linear, worker.linear_id, worker.ticket_id, comment)
+        # WOR-457: validation-gate failures get a diagnostic artifact too.
+        _record_failure_artifact(
+            _artifact_dir_for(worker),
+            "validate_allowed_paths",
+            stderr="\n".join(violations),
+        )
         return "failure"
 
     # WOR-456: cross-check the worker's self-reported checks_passed against
@@ -486,6 +506,12 @@ def finalize_worker(
                 f"{len(missing_checks)} required check(s) not reported",
             )
             _try_post_comment(linear, worker.linear_id, worker.ticket_id, comment)
+            # WOR-457: validation-gate failures get a diagnostic artifact.
+            _record_failure_artifact(
+                _artifact_dir_for(worker),
+                "validate_checks_passed",
+                stderr="missing required_checks: " + ", ".join(missing_checks),
+            )
             return "failure"
 
     # WOR-312: in-dispatch retry loop. Helper avoids the slower Linear
@@ -503,6 +529,29 @@ def finalize_worker(
             project_id,
         )
     )
+
+    # WOR-457: ensure every "failure" outcome leaves a last_failure.json.
+    # - failed_checks present: the run_checks path already wrote
+    #   {check, stdout}; merge in stage="run_checks" so the WOR-66
+    #   artifact round-trips.
+    # - failed_checks empty: the failure came from a non-check stage
+    #   (rebase/push/pr_create swallowed by attempt_pr, etc.). attempt_pr
+    #   may already have recorded a precise stage; keep_existing_stage
+    #   avoids downgrading it, and "other" is the WOR-441 catch-all when
+    #   nothing more specific was recorded.
+    if outcome == "failure":
+        if failed_checks:
+            _record_failure_artifact(
+                _artifact_dir_for(worker),
+                "run_checks",
+                check=str(failed_checks[0]["check"]),
+            )
+        else:
+            _record_failure_artifact(
+                _artifact_dir_for(worker),
+                "other",
+                keep_existing_stage=True,
+            )
 
     log_path = worker.worktree_path / f".claude/worker_{worker.ticket_id.lower()}.log"
     # WOR-466: single-pass JSONL walk replaces 5 separate parsers. On large
