@@ -53,6 +53,9 @@ __all__ = [
     "picker_sort_key",
     "WorkerBehavior",
     "_parse_worker_behavior",
+    "kv_concurrency_ceiling",
+    "PRODUCTION_KV_CACHE_TOKENS",
+    "COMPACTION_CONTEXT_CEILING",
 ]
 from .watcher_types import (
     _ENV_VARS_TO_STRIP_FOR_CLOUD,
@@ -62,6 +65,83 @@ from .watcher_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# KV-budget concurrency ceiling (WOR-336 spike)
+# ---------------------------------------------------------------------------
+
+# Measured vLLM KV-cache token capacity for the production server config
+# (Qwen3.6-35B-A3B-NVFP4, --max-model-len 262144, --max-num-seqs 16,
+# --kv-cache-dtype fp8 on a 32 GiB RTX 5090): the paged-KV pool holds
+# ~148,816 tokens (~5.73 GiB). Source: WOR-336 forensic + live 6->2 A/B
+# (docs/spikes/vllm-max-num-seqs-sensitivity.md).
+PRODUCTION_KV_CACHE_TOKENS = 148_816
+
+# Observed peak per-worker input context before Claude Code compaction
+# fires (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=75 over a 240k window). Heavy
+# real-worker tickets in ticket_metrics topped out at input_tokens_max
+# ~134,643; one such worker single-handedly fills most of the KV pool.
+COMPACTION_CONTEXT_CEILING = 134_000
+
+
+def kv_concurrency_ceiling(
+    per_worker_context_tokens: int,
+    *,
+    kv_cache_tokens: int = PRODUCTION_KV_CACHE_TOKENS,
+    utilization_target: float = 0.9,
+    min_workers: int = 1,
+) -> int:
+    """Max concurrent local workers before vLLM KV-cache oversubscription.
+
+    Each in-flight worker holds roughly ``per_worker_context_tokens`` of
+    paged-KV state (its accumulated conversation, up to the compaction
+    ceiling). Once the aggregate working set exceeds the KV pool, vLLM
+    evicts prefix-cache blocks between turns and every subsequent turn
+    re-prefills the worker's full context. WOR-336 measured this collapse
+    directly: prefix-cache hit-rate ~67% at 2-way concurrency vs ~15% at
+    6-way, effective throughput ~40 -> ~4 tok/s — even though the
+    controlled NVFP4 bench shows raw decode sustains ~120 tok/s per
+    stream up to 8 concurrent streams (962 tok/s aggregate, VRAM-safe).
+    The binding limit is KV bytes, not ``--max-num-seqs`` slots.
+
+    Keep aggregate KV demand at or below ``utilization_target`` of
+    capacity so prefix-cache blocks survive across a worker's turns.
+
+    Args:
+        per_worker_context_tokens: typical/peak active context per
+            worker. Pass ``COMPACTION_CONTEXT_CEILING`` for the worst
+            case.
+        kv_cache_tokens: total KV-pool token capacity for the running
+            vLLM config. Defaults to the measured production value.
+        utilization_target: fraction of the pool to budget
+            (0 < x <= 1). Headroom below 1.0 leaves room for
+            prefix-cache reuse rather than 100% live-KV packing.
+        min_workers: floor on the return value. A single worker always
+            runs even if its context alone exceeds the pool (it just
+            forfeits cross-turn prefix-cache reuse).
+
+    Returns:
+        The largest worker count whose combined KV demand stays within
+        ``utilization_target * kv_cache_tokens``, never below
+        ``min_workers``.
+
+    Raises:
+        ValueError: if any argument is out of range.
+    """
+    if kv_cache_tokens <= 0:
+        raise ValueError("kv_cache_tokens must be positive")
+    if per_worker_context_tokens <= 0:
+        raise ValueError("per_worker_context_tokens must be positive")
+    if not 0.0 < utilization_target <= 1.0:
+        raise ValueError("utilization_target must be in (0, 1]")
+    if min_workers < 1:
+        raise ValueError("min_workers must be >= 1")
+
+    budget = kv_cache_tokens * utilization_target
+    ceiling = int(budget // per_worker_context_tokens)
+    return max(min_workers, ceiling)
+
 
 # ---------------------------------------------------------------------------
 # Escalation-policy flag names (also used by watcher.py orchestrator)
