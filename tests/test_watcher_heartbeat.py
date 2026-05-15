@@ -89,21 +89,21 @@ def _write_manifest(art_dir: Path, ticket_id: str, status: str) -> None:
 
 
 def test_live_cost_estimate_none_returns_zero() -> None:
-    """None output_tokens → 0.0."""
-    assert _live_cost_estimate(None) == 0.0
+    """Both None → 0.0."""
+    assert _live_cost_estimate(None, None) == 0.0
 
 
 def test_live_cost_estimate_zero_returns_zero() -> None:
-    """0 output_tokens → 0.0 (avoid division by zero artifacts)."""
-    assert _live_cost_estimate(0) == 0.0
+    """0 tokens → 0.0 (avoid division by zero artifacts)."""
+    assert _live_cost_estimate(0, 0) == 0.0
 
 
 def test_live_cost_estimate_scales_linearly() -> None:
     """Cost scales linearly at $15/M output tokens."""
-    # 1M tokens at $15/M = $15
-    assert _live_cost_estimate(1_000_000) == 15.0
-    # 100k tokens → $1.50
-    assert abs(_live_cost_estimate(100_000) - 1.50) < 1e-9
+    # 1M output tokens at $15/M = $15
+    assert _live_cost_estimate(None, 1_000_000) == 15.0
+    # 100k output tokens → $1.50
+    assert abs(_live_cost_estimate(None, 100_000) - 1.50) < 1e-9
 
 
 # ── _build_local_worker_log_path ────────────────────────────────────────────
