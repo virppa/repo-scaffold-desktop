@@ -17,7 +17,7 @@ from app.core.manifest import ExecutionManifest
 
 from .watcher_finalize import safe_set_state
 from .watcher_helpers import (
-    capture_vllm_metrics,
+    capture_vllm_metrics_diagnostic,
     check_allowed_paths_overlap,
     count_main_ahead_of_epic,
     get_active_parent_ids,
@@ -26,7 +26,7 @@ from .watcher_helpers import (
 )
 from .watcher_services import ServiceManager
 from .watcher_subprocess import launch_worker
-from .watcher_types import ActiveWorker, LinearClientProtocol
+from .watcher_types import _VLLM_BASE_URL, ActiveWorker, LinearClientProtocol
 from .watcher_worktrees import (
     backup_plan_files,
     cleanup_orphan_dir,
@@ -429,15 +429,27 @@ def _snapshot_vllm_solo(
     """WOR-370: vLLM /metrics attribution gate.
 
     1. Solo (dispatch_concurrency==0): snapshot /metrics for later delta;
-       returns (snapshot, True) on success or (None, False) if probe fails.
+       returns (snapshot, True) on success; on probe failure logs a
+       WARNING with the diagnostic reason and returns (None, False)
+       (WOR-439 — the failure used to be silent at debug level).
     2. Not solo: clear remained_solo on any peer that previously had it set
        — their deltas would now be polluted by this worker's traffic.
        Returns (None, False).
     """
     if dispatch_concurrency == 0:
-        snapshot = capture_vllm_metrics()
+        snapshot, reason = capture_vllm_metrics_diagnostic()
         if snapshot is not None:
             return snapshot, True
+        logger.warning(
+            "vLLM /metrics solo snapshot failed (reason=%s, base_url=%s) — "
+            "vllm_* columns will be NULL for this dispatch. If "
+            "'unreachable', start vLLM or set WATCHER_VLLM_BASE_URL; if "
+            "'no_counters_matched', this vLLM build renamed its Prometheus "
+            "counters and _VLLM_COUNTERS / _VLLM_COUNTER_ALIASES need a "
+            "verified update (WOR-439).",
+            reason,
+            _VLLM_BASE_URL,
+        )
         return None, False
     for peer in (*_local_active, *_cloud_active):
         if peer.remained_solo:

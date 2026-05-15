@@ -49,6 +49,7 @@ __all__ = [
     "suppress_dedup",
     "count_main_ahead_of_epic",
     "capture_vllm_metrics",
+    "capture_vllm_metrics_diagnostic",
     "compute_vllm_metrics_delta",
     "picker_sort_key",
     "WorkerBehavior",
@@ -489,6 +490,16 @@ _VLLM_COUNTERS = (
     "vllm:num_preemptions_total",
 )
 
+# vLLM has shipped the prefix-cache counters under both the bare name and a
+# ``gpu_`` prefix across engine versions (V0 vs V1). Accept either spelling
+# and fold it into the canonical key so a vLLM upgrade does not silently
+# blank these columns (WOR-439). Add verified spellings here as they are
+# observed against a live /metrics surface.
+_VLLM_COUNTER_ALIASES: dict[str, str] = {
+    "vllm:gpu_prefix_cache_hits_total": "vllm:prefix_cache_hits_total",
+    "vllm:gpu_prefix_cache_queries_total": "vllm:prefix_cache_queries_total",
+}
+
 
 def _fetch_vllm_metrics_body(timeout: float) -> str | None:
     """Fetch raw vLLM /metrics body via http.client; returns None on failure."""
@@ -529,20 +540,32 @@ def _parse_metric_line(line: str, targets: set[str]) -> tuple[str | None, float 
     return metric_name, value
 
 
-def capture_vllm_metrics(timeout: float = 5.0) -> dict[str, float] | None:
-    """Snapshot vLLM Prometheus metrics for per-ticket attribution.
+def capture_vllm_metrics_diagnostic(
+    timeout: float = 5.0,
+) -> tuple[dict[str, float] | None, str]:
+    """Snapshot vLLM Prometheus counters, with a failure reason (WOR-439).
 
-    Returns a dict {metric_name: aggregated_value} or None if the endpoint
-    is unreachable / malformed / not a vLLM /metrics surface. Aggregates
-    values across label combinations (typically one model/engine combo).
+    Returns ``(snapshot, reason)`` where ``reason`` is one of:
+
+    - ``"ok"`` — ``snapshot`` is a non-empty aggregated dict
+    - ``"unreachable"`` — /metrics did not respond, timed out, or
+      returned a non-200 status
+    - ``"no_counters_matched"`` — /metrics responded but none of the
+      expected counters were present (a vLLM build that renamed its
+      Prometheus metrics — the silent-NULL trap WOR-439 chases)
+
+    Counter names are matched against ``_VLLM_COUNTERS`` plus the
+    version-variant spellings in ``_VLLM_COUNTER_ALIASES`` (each folded
+    into its canonical key). Aggregates values across label combinations.
     """
     body = _fetch_vllm_metrics_body(timeout)
     if body is None:
-        return None
+        return None, "unreachable"
 
-    targets = set(_VLLM_COUNTERS)
-    aggregated: dict[str, float] = dict.fromkeys(targets, 0.0)
-    seen: dict[str, bool] = dict.fromkeys(targets, False)
+    canonical = set(_VLLM_COUNTERS)
+    targets = canonical | set(_VLLM_COUNTER_ALIASES)
+    aggregated: dict[str, float] = dict.fromkeys(canonical, 0.0)
+    seen: dict[str, bool] = dict.fromkeys(canonical, False)
 
     for raw in body.splitlines():
         line = raw.strip()
@@ -551,12 +574,25 @@ def capture_vllm_metrics(timeout: float = 5.0) -> dict[str, float] | None:
         name, value = _parse_metric_line(line, targets)
         if name is None or value is None:
             continue
-        aggregated[name] += value
-        seen[name] = True
+        canon = _VLLM_COUNTER_ALIASES.get(name, name)
+        aggregated[canon] += value
+        seen[canon] = True
 
     if not any(seen.values()):
-        return None
-    return aggregated
+        return None, "no_counters_matched"
+    return aggregated, "ok"
+
+
+def capture_vllm_metrics(timeout: float = 5.0) -> dict[str, float] | None:
+    """Snapshot vLLM Prometheus metrics for per-ticket attribution.
+
+    Back-compat thin wrapper over :func:`capture_vllm_metrics_diagnostic`
+    that discards the diagnostic reason. Returns the aggregated snapshot
+    dict, or ``None`` if the endpoint is unreachable / malformed / not a
+    vLLM /metrics surface.
+    """
+    snapshot, _reason = capture_vllm_metrics_diagnostic(timeout)
+    return snapshot
 
 
 def compute_vllm_metrics_delta(

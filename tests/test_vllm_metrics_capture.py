@@ -11,6 +11,7 @@ Three layers:
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,7 @@ import pytest
 
 from app.core.watcher.watcher_helpers import (
     capture_vllm_metrics,
+    capture_vllm_metrics_diagnostic,
     compute_vllm_metrics_delta,
 )
 
@@ -208,8 +210,8 @@ def test_dispatch_captures_vllm_snapshot_when_solo(tmp_path: Path) -> None:
         patch("app.core.watcher.dispatch.launch_worker", return_value=MagicMock()),
         patch("app.core.watcher.dispatch.safe_set_state"),
         patch(
-            "app.core.watcher.dispatch.capture_vllm_metrics",
-            return_value=sample_snapshot,
+            "app.core.watcher.dispatch.capture_vllm_metrics_diagnostic",
+            return_value=(sample_snapshot, "ok"),
         ) as mock_capture,
     ):
         start_ticket(
@@ -285,8 +287,8 @@ def test_dispatch_invalidates_solo_peer_when_second_worker_launches(
         patch("app.core.watcher.dispatch.safe_set_state"),
         # Should NOT be called: dispatch_concurrency > 0 means no snapshot
         patch(
-            "app.core.watcher.dispatch.capture_vllm_metrics",
-            return_value={"vllm:prompt_tokens_total": 200.0},
+            "app.core.watcher.dispatch.capture_vllm_metrics_diagnostic",
+            return_value=({"vllm:prompt_tokens_total": 200.0}, "ok"),
         ) as mock_capture,
     ):
         start_ticket(
@@ -317,8 +319,10 @@ def test_dispatch_invalidates_solo_peer_when_second_worker_launches(
 
 def test_dispatch_skips_snapshot_when_metrics_endpoint_unreachable(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """If /metrics returns None (unreachable), worker proceeds without solo flag."""
+    """If /metrics returns None (unreachable), worker proceeds without solo
+    flag — and the failure is logged loudly (WOR-439), not silent."""
     from app.core.watcher.dispatch import start_ticket
     from tests.conftest import make_manifest
 
@@ -329,6 +333,7 @@ def test_dispatch_skips_snapshot_when_metrics_endpoint_unreachable(
     services = _services()
     local_active: list = []
     cloud_active: list = []
+    caplog.set_level(logging.WARNING, logger="app.core.watcher.dispatch")
 
     with (
         patch(
@@ -341,8 +346,8 @@ def test_dispatch_skips_snapshot_when_metrics_endpoint_unreachable(
         patch("app.core.watcher.dispatch.launch_worker", return_value=MagicMock()),
         patch("app.core.watcher.dispatch.safe_set_state"),
         patch(
-            "app.core.watcher.dispatch.capture_vllm_metrics",
-            return_value=None,  # endpoint unreachable
+            "app.core.watcher.dispatch.capture_vllm_metrics_diagnostic",
+            return_value=(None, "unreachable"),  # endpoint unreachable
         ),
     ):
         start_ticket(
@@ -365,6 +370,11 @@ def test_dispatch_skips_snapshot_when_metrics_endpoint_unreachable(
     assert worker.dispatch_concurrency == 0
     assert worker.vllm_metrics_before is None
     assert worker.remained_solo is False
+    # WOR-439: the failure must be observable, not silent at debug level.
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "solo snapshot failed" in warnings[0].message
+    assert "unreachable" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -418,3 +428,145 @@ def test_finalize_writes_sentinel_artifact_for_concurrent_session(
     assert "before" in payload  # before is still useful for audit
     assert "after" not in payload
     assert "deltas" not in payload
+
+
+# ---------------------------------------------------------------------------
+# WOR-439: diagnostic reason, gpu_ alias compat, loud solo-failure warning,
+# and the _capture_vllm_post happy path
+# ---------------------------------------------------------------------------
+
+
+def test_diagnostic_reason_ok() -> None:
+    conn = _conn_with_response(200, _SAMPLE_METRICS)
+    with patch("http.client.HTTPConnection", return_value=conn):
+        snap, reason = capture_vllm_metrics_diagnostic()
+    assert reason == "ok"
+    assert snap is not None
+    assert snap["vllm:prefix_cache_hits_total"] == 1454624.0
+
+
+def test_diagnostic_reason_unreachable() -> None:
+    conn = MagicMock()
+    conn.request.side_effect = OSError("network down")
+    with patch("http.client.HTTPConnection", return_value=conn):
+        snap, reason = capture_vllm_metrics_diagnostic()
+    assert snap is None
+    assert reason == "unreachable"
+
+
+def test_diagnostic_reason_no_counters_matched() -> None:
+    """Reachable + 200 but renamed metrics — the silent-NULL trap."""
+    body = b'# random\nsome_unrelated{foo="bar"} 1.0\n'
+    conn = _conn_with_response(200, body)
+    with patch("http.client.HTTPConnection", return_value=conn):
+        snap, reason = capture_vllm_metrics_diagnostic()
+    assert snap is None
+    assert reason == "no_counters_matched"
+
+
+def test_gpu_prefixed_counters_fold_into_canonical() -> None:
+    """vLLM version-variant gpu_-prefixed counters map to canonical keys."""
+    body = (
+        b'vllm:gpu_prefix_cache_hits_total{engine="0"} 80.0\n'
+        b'vllm:gpu_prefix_cache_queries_total{engine="0"} 100.0\n'
+        b'vllm:prompt_tokens_total{engine="0"} 5.0\n'
+    )
+    conn = _conn_with_response(200, body)
+    with patch("http.client.HTTPConnection", return_value=conn):
+        snap, reason = capture_vllm_metrics_diagnostic()
+    assert reason == "ok"
+    assert snap is not None
+    assert snap["vllm:prefix_cache_hits_total"] == 80.0
+    assert snap["vllm:prefix_cache_queries_total"] == 100.0
+
+
+def test_capture_wrapper_is_backward_compatible() -> None:
+    """The thin wrapper still returns just the dict (no signature churn)."""
+    conn = _conn_with_response(200, _SAMPLE_METRICS)
+    with patch("http.client.HTTPConnection", return_value=conn):
+        result = capture_vllm_metrics()
+    assert isinstance(result, dict)
+    assert result["vllm:num_preemptions_total"] == 0.0
+
+
+def test_snapshot_solo_failure_logs_one_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """WOR-439 AC: a failed solo snapshot logs ONE clear warning, not silence."""
+    from app.core.watcher.dispatch import _snapshot_vllm_solo
+
+    with patch(
+        "app.core.watcher.dispatch.capture_vllm_metrics_diagnostic",
+        return_value=(None, "unreachable"),
+    ):
+        with caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"):
+            snap, solo = _snapshot_vllm_solo(0, [], [])
+    assert snap is None
+    assert solo is False
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "solo snapshot failed" in warnings[0].message
+    assert "unreachable" in caplog.text
+
+
+def test_snapshot_solo_success_logs_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.core.watcher.dispatch import _snapshot_vllm_solo
+
+    with patch(
+        "app.core.watcher.dispatch.capture_vllm_metrics_diagnostic",
+        return_value=({"vllm:prompt_tokens_total": 1.0}, "ok"),
+    ):
+        with caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"):
+            snap, solo = _snapshot_vllm_solo(0, [], [])
+    assert snap == {"vllm:prompt_tokens_total": 1.0}
+    assert solo is True
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+def test_capture_vllm_post_returns_non_none_deltas_for_solo(
+    tmp_path: Path,
+) -> None:
+    """WOR-439 AC: non-None deltas when before+after snapshots both have data."""
+    from app.core.watcher.watcher_finalize import _capture_vllm_post
+    from app.core.watcher.watcher_types import ActiveWorker
+    from tests.conftest import make_manifest
+
+    worker = ActiveWorker(
+        ticket_id="WOR-70",
+        linear_id="lin-70",
+        manifest=make_manifest(ticket_id="WOR-70"),
+        worktree_path=tmp_path / "wt-70",
+        process=MagicMock(),
+        vllm_metrics_before={
+            "vllm:prefix_cache_hits_total": 100.0,
+            "vllm:prefix_cache_queries_total": 200.0,
+            "vllm:prompt_tokens_total": 1000.0,
+            "vllm:generation_tokens_total": 50.0,
+            "vllm:time_to_first_token_seconds_sum": 5.0,
+            "vllm:time_to_first_token_seconds_count": 10.0,
+            "vllm:num_preemptions_total": 0.0,
+        },
+        remained_solo=True,
+    )
+    after = {
+        "vllm:prefix_cache_hits_total": 196.0,
+        "vllm:prefix_cache_queries_total": 300.0,
+        "vllm:prompt_tokens_total": 1500.0,
+        "vllm:generation_tokens_total": 70.0,
+        "vllm:time_to_first_token_seconds_sum": 11.0,
+        "vllm:time_to_first_token_seconds_count": 14.0,
+        "vllm:num_preemptions_total": 1.0,
+    }
+    with patch(
+        "app.core.watcher.watcher_finalize.capture_vllm_metrics",
+        return_value=after,
+    ):
+        attributable, deltas = _capture_vllm_post(worker, tmp_path)
+    assert attributable is True
+    assert deltas  # non-empty
+    assert deltas["prefix_cache_hits"] == 96
+    assert deltas["prefix_cache_hit_ratio"] == pytest.approx(0.96)
+    artifact = tmp_path / ".claude" / "artifacts" / "wor_70" / "vllm_metrics.json"
+    assert artifact.exists()
