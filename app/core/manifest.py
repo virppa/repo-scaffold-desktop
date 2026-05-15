@@ -8,6 +8,7 @@ re-interpret the project, or make architectural decisions on its own.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -126,7 +127,37 @@ class ExecutionManifest(BaseModel):
     """Specific risk notes, e.g. ['touches migrations', 'modifies CI config']."""
 
     implementation_mode: Literal["local", "cloud", "hybrid"]
-    """Which execution mode this manifest is targeting."""
+    """Which execution mode this manifest is targeting.
+
+    Deprecated in favour of ``routing`` (introduced in WOR-290).
+    The ``routing`` field replaces the single ``implementation_mode``
+    value with a three-way routing decision that the watcher uses to
+    decide where to dispatch a ticket.
+    """
+
+    routing: Literal["local", "cloud_preferred", "cloud_only"]
+    """Routing decision for the watcher — where to dispatch the ticket.
+
+    ``local``   — dispatch to a local worker (default for backwards
+                  compatibility; derived from ``implementation_mode`` for
+                  legacy manifests).
+
+    ``cloud_preferred`` — try the cloud first; if the cloud pool is full,
+                          fall back to a local worker.
+
+    ``cloud_only`` — must be handled by a cloud session.  The watcher
+                     refuses to dispatch when it is running in local-only
+                     mode (posts a Linear comment and leaves the ticket
+                     in ``ReadyForLocal``).
+
+    When a legacy manifest lacks this field (no ``routing`` key in the
+    JSON), the model validator derives it from ``implementation_mode``
+    so that old manifests continue to load.
+    """
+
+    routing_reason: str | None = None
+    """Free-text explanation for the routing choice.
+    Populated by /start-ticket at plan time; None for legacy manifests."""
 
     review_mode: Literal["auto", "human"]
     """auto — PR auto-merges to epic branch when CI passes.
@@ -281,6 +312,36 @@ class ExecutionManifest(BaseModel):
                 raise ValueError(
                     f"Paths appear in both allowed_paths and forbidden_paths: {overlap}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _derive_routing_from_implementation_mode(self) -> "ExecutionManifest":
+        """Back-compat: when ``routing`` was not explicitly provided (value is
+        the default ``"local"``), derive it from the legacy
+        ``implementation_mode`` field.
+
+        This allows old manifests (which have no ``routing`` key) to load
+        cleanly.  The model field ``routing`` defaults to ``"local"``, so
+        when a legacy manifest is parsed the validator sees ``routing="local"``
+        and derives the correct value from ``implementation_mode``.
+
+        When ``routing`` is anything other than ``"local"``, the manifest
+        already has an explicit routing decision — leave it unchanged.
+        """
+        if self.routing != "local":
+            return self
+
+        if self.implementation_mode in ("cloud", "hybrid"):
+            self.routing = "cloud_preferred"
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "Manifest %s declares routing='local' with "
+                "implementation_mode=%r — the routing has been derived "
+                "to 'cloud_preferred' (legacy back-compat, WOR-290). "
+                "Regenerate the manifest to populate the routing field explicitly.",
+                self.ticket_id,
+                self.implementation_mode,
+            )
         return self
 
     # ------------------------------------------------------------------

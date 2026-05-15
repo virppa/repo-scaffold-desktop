@@ -300,25 +300,38 @@ def test_build_worker_cmd_explicit_effort_ignored_by_mode(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
-# resolve_effective_mode
+# resolve_effective_mode — 4-way routing matrix (WOR-290)
 # ---------------------------------------------------------------------------
 
 
-def test_worker_mode_overrides_manifest_local() -> None:
-    assert resolve_effective_mode("cloud", "local") == "cloud"
+def test_worker_mode_cloud_routes_all_to_cloud() -> None:
+    for routing in ("local", "cloud_preferred", "cloud_only"):
+        assert resolve_effective_mode("cloud", routing) == "cloud"
 
 
-def test_worker_mode_overrides_manifest_cloud() -> None:
-    assert resolve_effective_mode("local", "cloud") == "local"
+def test_worker_mode_local_refuses_cloud_only() -> None:
+    assert resolve_effective_mode("local", "cloud_only") == "refused"
 
 
-def test_default_defers_to_manifest() -> None:
+def test_worker_mode_local_allows_local_routing() -> None:
+    assert resolve_effective_mode("local", "local") == "local"
+
+
+def test_worker_mode_local_allows_cloud_preferred() -> None:
+    """cloud_preferred under local mode falls back to local."""
+    assert resolve_effective_mode("local", "cloud_preferred") == "local"
+
+
+def test_default_mode_local_routing() -> None:
     assert resolve_effective_mode("default", "local") == "local"
-    assert resolve_effective_mode("default", "cloud") == "cloud"
 
 
-def test_default_hybrid_becomes_cloud() -> None:
-    assert resolve_effective_mode("default", "hybrid") == "cloud"
+def test_default_mode_cloud_preferred() -> None:
+    assert resolve_effective_mode("default", "cloud_preferred") == "cloud"
+
+
+def test_default_mode_cloud_only() -> None:
+    assert resolve_effective_mode("default", "cloud_only") == "cloud"
 
 
 # ---------------------------------------------------------------------------

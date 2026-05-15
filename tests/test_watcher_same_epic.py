@@ -177,6 +177,7 @@ def _make_manifest_kw(**overrides: Any) -> ExecutionManifest:
         "parallel_safe": True,
         "risk_level": "low",
         "implementation_mode": "local",
+        "routing": "local",
         "review_mode": "auto",
         "base_branch": "wor-96-local-worker-engine",
         "worker_branch": "wor-10-test-ticket",

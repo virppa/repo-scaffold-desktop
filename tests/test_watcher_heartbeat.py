@@ -41,6 +41,7 @@ def _make_manifest(**overrides: Any) -> ExecutionManifest:
         "parallel_safe": True,
         "risk_level": "low",
         "implementation_mode": "local",
+        "routing": "local",
         "review_mode": "auto",
         "base_branch": "main",
         "worker_branch": "wor-10-test",
@@ -88,21 +89,21 @@ def _write_manifest(art_dir: Path, ticket_id: str, status: str) -> None:
 
 
 def test_live_cost_estimate_none_returns_zero() -> None:
-    """None output_tokens → 0.0."""
-    assert _live_cost_estimate(None) == 0.0
+    """Both None → 0.0."""
+    assert _live_cost_estimate(None, None) == 0.0
 
 
 def test_live_cost_estimate_zero_returns_zero() -> None:
-    """0 output_tokens → 0.0 (avoid division by zero artifacts)."""
-    assert _live_cost_estimate(0) == 0.0
+    """0 tokens → 0.0 (avoid division by zero artifacts)."""
+    assert _live_cost_estimate(0, 0) == 0.0
 
 
 def test_live_cost_estimate_scales_linearly() -> None:
     """Cost scales linearly at $15/M output tokens."""
-    # 1M tokens at $15/M = $15
-    assert _live_cost_estimate(1_000_000) == 15.0
-    # 100k tokens → $1.50
-    assert abs(_live_cost_estimate(100_000) - 1.50) < 1e-9
+    # 1M output tokens at $15/M = $15
+    assert _live_cost_estimate(None, 1_000_000) == 15.0
+    # 100k output tokens → $1.50
+    assert abs(_live_cost_estimate(None, 100_000) - 1.50) < 1e-9
 
 
 # ── _build_local_worker_log_path ────────────────────────────────────────────
@@ -110,10 +111,12 @@ def test_live_cost_estimate_scales_linearly() -> None:
 
 def test_build_local_worker_log_path_normalises_ticket_id(tmp_path: Path) -> None:
     """Hyphen in ticket_id → underscore in JSONL filename; lives under
-    <worktree>/.claude/logs/. Case is preserved."""
+    <worktree>/.claude/logs/. ticket_id is lowercased to match the
+    repo-wide artifact convention (ArtifactPaths.from_ticket_id); a
+    case-preserving path fails on case-sensitive Linux CI (WOR-503)."""
     w = _make_active_worker(ticket_id="WOR-123", worktree_path=tmp_path)
     p = _build_local_worker_log_path(w)
-    assert p == tmp_path / ".claude" / "logs" / "WOR_123.jsonl"
+    assert p == tmp_path / ".claude" / "logs" / "wor_123.jsonl"
 
 
 # ── emit_idle_line ──────────────────────────────────────────────────────────
@@ -290,3 +293,87 @@ def test_count_queue_items_skips_unreadable_manifest(tmp_path: Path) -> None:
     qs = _count_queue_items(linear, tmp_path)
 
     assert qs.waiting == 1
+
+
+# ── emit_heartbeat — suppression & 30s boundary ─────────────────────────────
+
+
+def test_emit_heartbeat_skips_when_tick_not_advanced() -> None:
+    """When elapsed is still within the last 30s window, heartbeat is skipped."""
+    w = _make_active_worker(ticket_id="WOR-SKIP", elapsed_seconds=35)
+    heartbeat: dict[str, tuple[float, int]] = {"WOR-SKIP": (35.0, 1)}
+
+    result = emit_heartbeat([w], [], heartbeat)
+
+    # Still at tick=1, elapsed still gives tick 1 → skip
+    assert "WOR-SKIP" not in result or result["WOR-SKIP"] == (35.0, 1)
+
+
+def test_emit_heartbeat_crosses_30s_boundary() -> None:
+    """When elapsed crosses to a new 30s tick, heartbeat is emitted."""
+    w = _make_active_worker(ticket_id="WOR-CROSS", elapsed_seconds=65)
+    heartbeat: dict[str, tuple[float, int]] = {"WOR-CROSS": (30.0, 1)}
+
+    result = emit_heartbeat([w], [], heartbeat)
+
+    assert "WOR-CROSS" in result
+    assert result["WOR-CROSS"][1] == 2
+
+
+def test_emit_heartbeat_first_emission_at_30s_boundary() -> None:
+    """First emission at exactly 30s should emit (tick=1)."""
+    w = _make_active_worker(ticket_id="WOR-BOUND", elapsed_seconds=30.0)
+    heartbeat: dict[str, tuple[float, int]] = {}
+
+    result = emit_heartbeat([w], [], heartbeat)
+
+    assert "WOR-BOUND" in result
+    assert result["WOR-BOUND"][1] == 1
+
+
+# ── build_tui_state ─────────────────────────────────────────────────────────
+
+
+def test_build_tui_state_includes_cloud_workers() -> None:
+    """Cloud workers appear in TUI state with mode='cloud' and status='running'."""
+    from app.core.watcher.watcher_heartbeat import build_tui_state
+
+    local_w = _make_active_worker(ticket_id="WOR-LOCAL", elapsed_seconds=100.0)
+    cloud_w = _make_active_worker(ticket_id="WOR-CLOUD", elapsed_seconds=100.0)
+
+    metrics_mock = MagicMock()
+    metrics_mock.get_cost_rollup.return_value = MagicMock(total_cost=10.0)
+
+    state = build_tui_state(
+        local_active=[local_w],
+        cloud_active=[cloud_w],
+        metrics=metrics_mock,
+        tracked_prs=[],
+    )
+
+    worker_ids = {w.ticket_id for w in state.workers}
+    assert "WOR-LOCAL" in worker_ids
+    assert "WOR-CLOUD" in worker_ids
+
+    cloud_worker = next(w for w in state.workers if w.ticket_id == "WOR-CLOUD")
+    assert cloud_worker.mode == "cloud"
+    assert cloud_worker.status == "running"
+
+
+def test_build_tui_state_includes_cost_rollups() -> None:
+    """TUI state contains cost rollups for today, week, and all."""
+    from app.core.watcher.watcher_heartbeat import build_tui_state
+
+    metrics_mock = MagicMock()
+    metrics_mock.get_cost_rollup.return_value = MagicMock(total_cost=42.0)
+
+    state = build_tui_state(
+        local_active=[],
+        cloud_active=[],
+        metrics=metrics_mock,
+        tracked_prs=[],
+    )
+
+    assert "today" in state.cost_rollups
+    assert "week" in state.cost_rollups
+    assert "all" in state.cost_rollups

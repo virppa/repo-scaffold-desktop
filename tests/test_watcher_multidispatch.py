@@ -30,6 +30,7 @@ def _make_manifest(**overrides: Any) -> ExecutionManifest:
         "parallel_safe": True,
         "risk_level": "low",
         "implementation_mode": "local",
+        "routing": "local",
         "review_mode": "auto",
         "base_branch": "wor-96-local-worker-engine",
         "worker_branch": "wor-10-test-ticket",
@@ -393,3 +394,75 @@ class TestFailureDoesNotConsumeLimit:
         assert len(calls) == 2
         assert calls[0][0][0] == "WOR-FAIL"
         assert calls[1][0][0] == "WOR-10"
+
+
+class TestMultiDispatchTimingE2E:
+    """End-to-end timing: 4 tickets → 3 inter-dispatch sleep(2.5) calls."""
+
+    def test_4_dispatches_with_timing_assertion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Given 4 eligible tickets and an empty pool, watcher dispatches all
+        4 in one cycle with exactly 3 inter-dispatch gaps of 2.5s."""
+        sleep_times: list[float] = []
+
+        def record_sleep(seconds: float) -> None:
+            sleep_times.append(seconds)
+
+        manifests = [
+            _make_manifest(
+                ticket_id=f"WOR-{i}",
+                worker_branch=f"wor-{i}-test-ticket",
+                allowed_paths=[f"app/core/{chr(97 + i)}.py"],
+            )
+            for i in range(4)
+        ]
+
+        linear_mock = MagicMock()
+        linear_mock.get_open_blockers.return_value = []
+        linear_mock.list_ready_for_local.return_value = [
+            _regular_ticket(f"WOR-{i}") for i in range(4)
+        ]
+
+        w = Watcher(
+            linear_client=linear_mock,
+            repo_root=tmp_path,
+            max_local_workers=8,
+        )
+
+        load_index = [0]
+
+        def capture_load(ticket_id: str):
+            idx = load_index[0]
+            load_index[0] += 1
+            return manifests[idx]
+
+        fake_process = MagicMock(spec=subprocess.Popen)
+
+        with (
+            patch.object(w, "_load_manifest", side_effect=capture_load),
+            patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+            patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+            patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+            patch("app.core.watcher.dispatch.safe_set_state"),
+            patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
+            patch(
+                "app.core.watcher.dispatch.launch_worker",
+                return_value=fake_process,
+            ),
+            patch.object(w._services, "ensure_vllm_anthropic_mode"),
+            patch.object(w._services, "probe_vllm_health", return_value=True),
+            patch("app.core.watcher.watcher.time.sleep", record_sleep),
+        ):
+            w._dispatch_next_ticket()
+
+        # 4 dispatches, 3 sleep calls between them
+        assert len(sleep_times) == 3
+        for t in sleep_times:
+            assert t == 2.5
+
+        # All 4 tickets should have been dispatch_count
+        for tid in ("WOR-0", "WOR-1", "WOR-2", "WOR-3"):
+            assert any(w._local_active[i].ticket_id == tid for i in range(4)), (
+                f"{tid} not in local_active"
+            )

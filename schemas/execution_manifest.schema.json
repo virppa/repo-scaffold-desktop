@@ -135,6 +135,27 @@
       "title": "Implementation Mode",
       "type": "string"
     },
+    "routing": {
+      "enum": [
+        "local",
+        "cloud_preferred",
+        "cloud_only"
+      ],
+      "title": "Routing",
+      "type": "string"
+    },
+    "routing_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Routing Reason"
+    },
     "review_mode": {
       "enum": [
         "auto",
@@ -391,6 +412,7 @@
     "parallel_safe",
     "risk_level",
     "implementation_mode",
+    "routing",
     "review_mode",
     "base_branch",
     "worker_branch",

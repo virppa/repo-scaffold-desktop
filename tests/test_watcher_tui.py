@@ -9,10 +9,12 @@ and _render_line sub-widgets directly.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from rich.console import Console
 from rich.live import Live
 
@@ -630,3 +632,214 @@ def test_queue_table_shows_counts() -> None:
     assert "2" in text
     assert "1" in text
     assert "0" in text
+
+
+# ---------------------------------------------------------------------------
+# WOR-447 - Cost Economics table "no data yet" placeholder
+# ---------------------------------------------------------------------------
+
+
+def test_cost_table_shows_no_data_when_all_zero() -> None:
+    """When all cost rollups are zero, the table shows a 'No data yet' row."""
+    state = _tui_state(
+        cost_rollups={
+            "today": CostRollup(),  # all zeros
+            "week": CostRollup(),
+            "all": CostRollup(),
+        },
+    )
+    display = WatcherDisplay()
+    table = display._cost_table(state)
+    console = Console(record=True, width=120, force_terminal=True)
+    console.print(table)
+    text = console.export_text()
+
+    assert "No data yet" in text
+    assert "Cost Economics" in text
+
+
+def test_cost_table_hides_no_data_when_any_period_has_data() -> None:
+    """When at least one period has non-zero cost, no 'No data yet' placeholder."""
+    state = _tui_state(
+        cost_rollups={
+            "today": CostRollup(
+                cloud_spent=66.0,
+                local_saved=2.22,
+                cloud_ticket_count=3,
+                local_ticket_count=5,
+            ),
+            "week": CostRollup(),
+            "all": CostRollup(),
+        },
+    )
+    display = WatcherDisplay()
+    table = display._cost_table(state)
+    console = Console(record=True, width=120, force_terminal=True)
+    console.print(table)
+    text = console.export_text()
+
+    assert "No data yet" not in text
+    assert "Today" in text  # the non-empty period row
+
+
+# ---------------------------------------------------------------------------
+# WOR-447 - Session Totals "no data yet" when no workers
+# ---------------------------------------------------------------------------
+
+
+def test_session_totals_no_data_when_no_workers() -> None:
+    """When no active workers, Session Totals shows 'No data yet'."""
+    state = _tui_state(workers=[])
+    display = WatcherDisplay()
+    table = display._rollup_table(state)
+    console = Console(record=True, width=120, force_terminal=True)
+    console.print(table)
+    text = console.export_text()
+
+    assert "No data yet" in text
+    assert "Session Totals" in text
+
+
+def test_session_totals_shows_worked_data_with_workers() -> None:
+    """When active workers exist, Session Totals shows live metrics."""
+    state = _tui_state(
+        workers=[
+            WorkerState(
+                ticket_id="WOR-50",
+                mode="local",
+                status="running",
+                elapsed_s=125.0,
+                local_saved=3.75,
+            ),
+        ],
+        cost_rollups={
+            "today": CostRollup(cloud_spent=10.0, local_saved=5.0),
+            "week": CostRollup(),
+            "all": CostRollup(),
+        },
+    )
+    display = WatcherDisplay()
+    table = display._rollup_table(state)
+    console = Console(record=True, width=120, force_terminal=True)
+    console.print(table)
+    text = console.export_text()
+
+    assert "No data yet" not in text
+    assert "Session Local Saved" in text
+    assert "Active Workers" in text
+
+
+def test_session_totals_includes_tickets_dispatched_today() -> None:
+    """Session Totals includes 'Tickets Dispatched Today' row."""
+    state = _tui_state(
+        workers=[
+            WorkerState(
+                ticket_id="WOR-50",
+                mode="local",
+                status="running",
+                elapsed_s=60.0,
+            ),
+        ],
+        cost_rollups={
+            "today": CostRollup(
+                cloud_spent=10.0,
+                local_saved=5.0,
+                cloud_ticket_count=2,
+                local_ticket_count=3,
+            ),
+            "week": CostRollup(),
+            "all": CostRollup(),
+        },
+    )
+    display = WatcherDisplay()
+    table = display._rollup_table(state)
+    console = Console(record=True, width=120, force_terminal=True)
+    console.print(table)
+    text = console.export_text()
+
+    assert "Tickets Dispatched Today" in text
+    assert "5" in text  # 2 + 3
+
+
+def test_session_totals_includes_cost_saved_estimate() -> None:
+    """Session Totals includes 'Total Cost Saved Estimate' row."""
+    state = _tui_state(
+        workers=[
+            WorkerState(
+                ticket_id="WOR-50",
+                mode="local",
+                status="running",
+                elapsed_s=60.0,
+            ),
+        ],
+        cost_rollups={
+            "today": CostRollup(
+                cloud_spent=10.0,
+                local_saved=5.0,
+                cloud_ticket_count=2,
+                local_ticket_count=3,
+            ),
+            "week": CostRollup(),
+            "all": CostRollup(),
+        },
+    )
+    display = WatcherDisplay()
+    table = display._rollup_table(state)
+    console = Console(record=True, width=120, force_terminal=True)
+    console.print(table)
+    text = console.export_text()
+
+    assert "Total Cost Saved Estimate" in text
+    assert "$5.0000" in text
+
+
+# ---------------------------------------------------------------------------
+# WOR-447 - cost computation with input + output tokens
+# ---------------------------------------------------------------------------
+
+
+def test_build_tui_state_cost_uses_input_and_output_tokens(tmp_path: Path) -> None:
+    """build_tui_state computes cost from both input and output tokens."""
+    from app.core.watcher.watcher import Watcher
+
+    w = Watcher(
+        linear_client=MagicMock(),
+        repo_root=tmp_path,
+        no_epic_shutdown=True,
+    )
+
+    worker = MagicMock()
+    worker.ticket_id = "WOR-TEST"
+    worker.start_time = time.monotonic() - 60
+    # Create a log path that _parse_worker_usage can read
+    log_dir = tmp_path / "wor_test" / ".claude" / "logs"
+    log_dir.mkdir(parents=True)
+    log_path = log_dir / "wor_test.jsonl"
+    # Write an assistant event with usage (input + output tokens)
+    log_path.write_text(
+        json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "usage": {"input_tokens": 1000, "output_tokens": 2000},
+                    "content": [{"type": "text", "text": "hello"}],
+                },
+            }
+        )
+        + "\n"
+    )
+    worker.worktree_path = tmp_path / "wor_test"
+    w._local_active.append(worker)
+
+    state = build_tui_state(
+        w._local_active,
+        w._cloud_active,
+        w._metrics,
+        w._tracked_prs,
+    )
+
+    assert len(state.workers) == 1
+    ws = state.workers[0]
+    assert ws.mode == "local"
+    # Cost = 1000 * 3e-6 + 2000 * 15e-6 = 0.003 + 0.03 = 0.033
+    assert ws.local_saved == pytest.approx(0.033)

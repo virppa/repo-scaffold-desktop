@@ -39,6 +39,7 @@ def _make_manifest(
         parallel_safe=True,
         risk_level="low",
         implementation_mode="local",
+        routing="local",
         review_mode="auto",
         base_branch=base_branch,
         worker_branch=f"wor-{ticket_id.lower().replace('-', '')}-branch",

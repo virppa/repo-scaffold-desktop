@@ -25,9 +25,10 @@ if TYPE_CHECKING:
     from app.core.metrics import MetricsStore
     from app.core.watcher.watcher_types import ActiveWorker, LinearClientProtocol
 
-# Estimated cost per output token for local workers (rough vLLM hardware cost).
-# Used to produce a live cost estimate from output_token count during running.
-_LOCAL_COST_PER_TOKEN = 15e-6  # $15 per million output tokens
+# Estimated cost per input/output token for local workers (sonnet-4-6 pricing).
+# Used to produce a live cost estimate from the JSONL token counts during running.
+_LOCAL_COST_PER_INPUT_TOKEN = 3e-6  # $3 per million input tokens
+_LOCAL_COST_PER_OUTPUT_TOKEN = 15e-6  # $15 per million output tokens
 
 
 logger = logging.getLogger(__name__)
@@ -150,15 +151,17 @@ def _build_local_worker_log_path(worker: "ActiveWorker") -> Path:
         worker.worktree_path
         / _CLAUDE_DIR
         / "logs"
-        / f"{worker.ticket_id.replace('-', '_')}.jsonl"
+        / f"{worker.ticket_id.lower().replace('-', '_')}.jsonl"
     )
 
 
-def _live_cost_estimate(output_tokens: int | None) -> float:
-    """Estimate dollar cost from output token count."""
-    if output_tokens is None or output_tokens == 0:
+def _live_cost_estimate(input_tokens: int | None, output_tokens: int | None) -> float:
+    """Estimate dollar cost from input + output token counts."""
+    if input_tokens is None and output_tokens is None:
         return 0.0
-    return output_tokens * _LOCAL_COST_PER_TOKEN
+    in_cost = (input_tokens or 0) * _LOCAL_COST_PER_INPUT_TOKEN
+    out_cost = (output_tokens or 0) * _LOCAL_COST_PER_OUTPUT_TOKEN
+    return in_cost + out_cost
 
 
 def _count_queue_items(
@@ -218,8 +221,8 @@ def build_tui_state(
     for w in local_active:
         elapsed = time.monotonic() - w.start_time
         log_path = _build_local_worker_log_path(w)
-        _, out_tok, _, _ = _parse_worker_usage(log_path)
-        cost = _live_cost_estimate(out_tok)
+        in_tok, out_tok, _, _ = _parse_worker_usage(log_path)
+        cost = _live_cost_estimate(in_tok, out_tok)
         last_act = last_tool_call(log_path)
         workers.append(
             WorkerState(

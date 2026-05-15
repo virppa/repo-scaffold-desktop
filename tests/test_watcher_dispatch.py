@@ -695,3 +695,55 @@ def test_start_ticket_unaffected_when_no_epic_workers_active(
 
     assert len(local_active) == 1
     linear.post_comment.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# WOR-290 — cloud_only refusal under --worker-mode local
+# ---------------------------------------------------------------------------
+
+
+def test_start_ticket_refuses_cloud_only_when_local_mode(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Manifest with routing=cloud_only and daemon at --worker-mode local
+    is refused — no worktree created, Linear comment posted, ticket
+    stays in ReadyForLocal."""
+    manifest = make_manifest(
+        routing="cloud_only",
+        implementation_mode="local",
+    )
+    linear = MagicMock()
+    linear.get_open_blockers.return_value = []
+    services = _services(mode="local")  # --worker-mode local
+    local_active: list = []
+    cloud_active: list = []
+
+    with (
+        patch("app.core.watcher.dispatch.create_worktree") as mock_create,
+        patch("app.core.watcher.dispatch.safe_set_state") as mock_set,
+        caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
+    ):
+        start_ticket(
+            manifest=manifest,
+            linear=linear,
+            services=services,
+            worker_verbose=False,
+            _local_active=local_active,
+            _cloud_active=cloud_active,
+            max_cloud_workers=3,
+            _repo_root=tmp_path,
+            _processed_tickets=[],
+            linear_id="fake-linear-id",
+            ticket_id="WOR-290",
+            _escalation_policy=MagicMock(),
+            _dedup_state={},
+        )
+
+    mock_create.assert_not_called()
+    mock_set.assert_not_called()
+    assert local_active == []
+    assert cloud_active == []
+    assert any("cloud_only" in r.message for r in caplog.records)
+    linear.post_comment.assert_called_once()
+    body = linear.post_comment.call_args[0][1]
+    assert "local-only mode" in body
