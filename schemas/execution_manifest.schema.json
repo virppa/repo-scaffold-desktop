@@ -136,6 +136,7 @@
       "type": "string"
     },
     "routing": {
+      "default": "local",
       "enum": [
         "local",
         "cloud_preferred",
@@ -412,7 +413,6 @@
     "parallel_safe",
     "risk_level",
     "implementation_mode",
-    "routing",
     "review_mode",
     "base_branch",
     "worker_branch",
