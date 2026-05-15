@@ -126,6 +126,53 @@ def _validate_allowed_paths(
     return violations
 
 
+def _validate_checks_passed(
+    manifest: ExecutionManifest,
+    repo_root: Path,
+) -> list[str]:
+    """Cross-check the worker's self-reported checks against required_checks.
+
+    Workers sometimes write ``status: success`` to result.json with a
+    ``checks_passed`` list populated from *pre-commit hook names*
+    (``ruff``, ``ruff-format``, ``bandit`` …) instead of the manifest's
+    ``required_checks`` command strings (``mypy app/``, ``pytest`` …) —
+    see WOR-456 / WOR-66. The worker ran pre-commit, saw it pass, and
+    self-reported success without ever invoking the contract checks.
+
+    Returns the list of ``required_checks`` entries the worker did NOT
+    report as passed (exact string match). Empty list = no violation.
+
+    This gate fires *only* when the worker made a **non-empty**
+    ``checks_passed`` claim that fails to cover ``required_checks`` — the
+    exact WOR-456 / WOR-66 bug (worker lists pre-commit hook names instead
+    of the contract checks). It deliberately does NOT fire when:
+
+    - ``required_checks`` is empty (nothing to enforce), or
+    - ``result.json`` is unreadable (the returncode path's job), or
+    - ``checks_passed`` is absent or empty.
+
+    A worker that makes no checks claim at all is a different situation
+    from one that makes a *wrong* claim — the empty case is covered by
+    the returncode logic and the WOR-353 unscoped-pytest soft rule plus
+    the watcher's own ``run_checks`` sweep, not by this contract gate.
+    """
+    if not manifest.required_checks:
+        return []
+    result_path = repo_root / manifest.artifact_paths.result_json
+    try:
+        data = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    raw_passed = data.get("checks_passed") if isinstance(data, dict) else None
+    if isinstance(raw_passed, list):
+        passed = {c for c in raw_passed if isinstance(c, str)}
+    else:
+        passed = set()
+    if not passed:
+        return []
+    return [rc for rc in manifest.required_checks if rc not in passed]
+
+
 def safe_set_state(
     linear: LinearClientProtocol,
     linear_id: str,

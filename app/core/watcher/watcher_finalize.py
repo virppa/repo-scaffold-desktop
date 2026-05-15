@@ -31,6 +31,7 @@ from .watcher_finalize_helpers import (
     _record_failure_state,
     _try_post_comment,
     _validate_allowed_paths,
+    _validate_checks_passed,
     _write_wip_sha_to_last_failure,
     _write_wip_state_to_last_failure,
     safe_set_state,
@@ -455,6 +456,37 @@ def finalize_worker(
         )
         _try_post_comment(linear, worker.linear_id, worker.ticket_id, comment)
         return "failure"
+
+    # WOR-456: cross-check the worker's self-reported checks_passed against
+    # the manifest's required_checks. A worker that writes status=success
+    # against pre-commit hook names (ruff, ruff-format, …) instead of the
+    # manifest's required_checks ("mypy app/", "pytest", …) has not run the
+    # contract checks — the same WOR-67-class "thinks it's done but isn't"
+    # failure mode, in the success-reporting path. Only gate the success
+    # signal; genuine failures are handled by the returncode logic in
+    # _execute_finalization. Runs before the retry loop — a contract
+    # violation is not a transient check failure, so retries won't help.
+    if _read_result_status(repo_root, worker.manifest) == "success":
+        missing_checks = _validate_checks_passed(worker.manifest, repo_root)
+        if missing_checks:
+            comment = (
+                f"checks_passed contract violation for `{worker.ticket_id}`. "
+                f"The worker reported `status: success` but its "
+                f"`result.json.checks_passed` does not include these "
+                f"required_checks:\n\n```\n" + "\n".join(missing_checks) + "\n```\n\n"
+                f"Manifest required_checks: `{worker.manifest.required_checks}`. "
+                f"Likely cause: the worker listed pre-commit hook names "
+                f"instead of the manifest's required_checks (WOR-456). "
+                f"PR creation aborted."
+            )
+            _record_failure_state(
+                worker,
+                linear,
+                f"checks_passed contract violation — "
+                f"{len(missing_checks)} required check(s) not reported",
+            )
+            _try_post_comment(linear, worker.linear_id, worker.ticket_id, comment)
+            return "failure"
 
     # WOR-312: in-dispatch retry loop. Helper avoids the slower Linear
     # Blocked -> ReadyForLocal redispatch when checks transiently fail.
