@@ -151,7 +151,7 @@ def _build_local_worker_log_path(worker: "ActiveWorker") -> Path:
         worker.worktree_path
         / _CLAUDE_DIR
         / "logs"
-        / f"{worker.ticket_id.replace('-', '_')}.jsonl"
+        / f"{worker.ticket_id.lower().replace('-', '_')}.jsonl"
     )
 
 
