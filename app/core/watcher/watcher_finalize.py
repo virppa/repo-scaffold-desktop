@@ -11,6 +11,7 @@ import logging
 import os
 import subprocess  # nosec B404
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -671,6 +672,16 @@ def finalize_worker(
             input_tokens_first=behavior.input_tokens_first,
             input_tokens_last=behavior.input_tokens_last,
             redundant_reads_count=behavior.redundant_reads_count,
+            billing_bucket=(
+                "local"
+                if eff == "local"
+                else (
+                    "agent_sdk_credit"
+                    if datetime.now(timezone.utc)
+                    >= datetime(2026, 6, 15, tzinfo=timezone.utc)
+                    else "subscription"
+                )
+            ),
         )
     )
 

@@ -248,6 +248,13 @@ class TicketMetrics(BaseModel):
             "or for cap-exceeded violations that slipped through."
         ),
     )
+    billing_bucket: str | None = Field(
+        default=None,
+        description=(
+            "Billing bucket for 2026-06-15 policy split: 'local', 'subscription', "
+            "'agent_sdk_credit', or 'unknown' (legacy rows without a value)."
+        ),
+    )
 
 
 class EpicSummary(BaseModel):

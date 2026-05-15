@@ -12,7 +12,7 @@ import platform
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Generator, Literal
+from typing import Generator, Literal, overload
 
 from app.core.metrics_models import (
     CheckRunEntry,
@@ -122,14 +122,82 @@ SELECT
     COALESCE(SUM(CASE WHEN local_used = 1 THEN 1 ELSE 0 END), 0)
         AS local_ticket_count
 FROM ticket_metrics
+WHERE billing_bucket IS NULL
+   OR (billing_bucket = 'local' OR billing_bucket = 'subscription'
+       OR billing_bucket = 'agent_sdk_credit')
 """
 _COST_ROLLUP_SQL_TODAY = (
-    _COST_ROLLUP_SQL_BASE + "WHERE recorded_at >= date('now', 'start of day')"
+    _COST_ROLLUP_SQL_BASE + "AND recorded_at >= date('now', 'start of day')"
 )
 _COST_ROLLUP_SQL_WEEK = (
-    _COST_ROLLUP_SQL_BASE + "WHERE recorded_at >= date('now', '-7 days')"
+    _COST_ROLLUP_SQL_BASE + "AND recorded_at >= date('now', '-7 days')"
 )
 _COST_ROLLUP_SQL_ALL = _COST_ROLLUP_SQL_BASE
+
+
+# Grouped queries for by_bucket=True: GROUP BY billing_bucket.
+_COST_ROLLUP_SQL_ALL_GROUPED = (
+    "SELECT billing_bucket,"
+    "        COALESCE(SUM(CASE WHEN cloud_used = 1"
+    "                THEN cloud_cost_estimate ELSE 0 END), 0)"
+    "            AS cloud_spent,"
+    "        COALESCE(SUM(CASE WHEN cloud_used = 1 THEN 1 ELSE 0 END), 0)"
+    "            AS cloud_ticket_count,"
+    "        COALESCE(SUM(CASE WHEN local_used = 1"
+    "                THEN local_input_tokens * 3.0 / 1e6"
+    "                     + local_output_tokens * 15.0 / 1e6"
+    "                ELSE 0 END), 0)"
+    "            AS local_saved,"
+    "        COALESCE(SUM(CASE WHEN local_used = 1 THEN 1 ELSE 0 END), 0)"
+    "            AS local_ticket_count"
+    "    FROM ticket_metrics"
+    "    WHERE billing_bucket IS NOT NULL"
+    "      AND (billing_bucket = 'local' OR billing_bucket = 'subscription'"
+    "           OR billing_bucket = 'agent_sdk_credit')"
+    "    GROUP BY billing_bucket"
+)
+_COST_ROLLUP_SQL_TODAY_GROUPED = (
+    "SELECT billing_bucket,"
+    "        COALESCE(SUM(CASE WHEN cloud_used = 1"
+    "                THEN cloud_cost_estimate ELSE 0 END), 0)"
+    "            AS cloud_spent,"
+    "        COALESCE(SUM(CASE WHEN cloud_used = 1 THEN 1 ELSE 0 END), 0)"
+    "            AS cloud_ticket_count,"
+    "        COALESCE(SUM(CASE WHEN local_used = 1"
+    "                THEN local_input_tokens * 3.0 / 1e6"
+    "                     + local_output_tokens * 15.0 / 1e6"
+    "                ELSE 0 END), 0)"
+    "            AS local_saved,"
+    "        COALESCE(SUM(CASE WHEN local_used = 1 THEN 1 ELSE 0 END), 0)"
+    "            AS local_ticket_count"
+    "    FROM ticket_metrics"
+    "    WHERE billing_bucket IS NOT NULL"
+    "      AND (billing_bucket = 'local' OR billing_bucket = 'subscription'"
+    "           OR billing_bucket = 'agent_sdk_credit')"
+    "    AND recorded_at >= date('now', 'start of day')"
+    "    GROUP BY billing_bucket"
+)
+_COST_ROLLUP_SQL_WEEK_GROUPED = (
+    "SELECT billing_bucket,"
+    "        COALESCE(SUM(CASE WHEN cloud_used = 1"
+    "                THEN cloud_cost_estimate ELSE 0 END), 0)"
+    "            AS cloud_spent,"
+    "        COALESCE(SUM(CASE WHEN cloud_used = 1 THEN 1 ELSE 0 END), 0)"
+    "            AS cloud_ticket_count,"
+    "        COALESCE(SUM(CASE WHEN local_used = 1"
+    "                THEN local_input_tokens * 3.0 / 1e6"
+    "                     + local_output_tokens * 15.0 / 1e6"
+    "                ELSE 0 END), 0)"
+    "            AS local_saved,"
+    "        COALESCE(SUM(CASE WHEN local_used = 1 THEN 1 ELSE 0 END), 0)"
+    "            AS local_ticket_count"
+    "    FROM ticket_metrics"
+    "    WHERE billing_bucket IS NOT NULL"
+    "      AND (billing_bucket = 'local' OR billing_bucket = 'subscription'"
+    "           OR billing_bucket = 'agent_sdk_credit')"
+    "    AND recorded_at >= date('now', '-7 days')"
+    "    GROUP BY billing_bucket"
+)
 
 
 class MetricsStore:
@@ -309,6 +377,10 @@ class MetricsStore:
             "redundant_reads_count",
             "ALTER TABLE ticket_metrics ADD COLUMN redundant_reads_count INTEGER",
         ),
+        (
+            "billing_bucket",
+            "ALTER TABLE ticket_metrics ADD COLUMN billing_bucket TEXT",
+        ),
     ]
 
     def _migrate(self, conn: sqlite3.Connection) -> None:
@@ -389,7 +461,8 @@ class MetricsStore:
                     turn_count, tool_calls_total, tool_calls_breakdown,
                     thinking_blocks, thinking_chars_total,
                     input_tokens_max, input_tokens_first, input_tokens_last,
-                    redundant_reads_count
+                    redundant_reads_count,
+                    billing_bucket
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
                     :cloud_used, :cloud_model, :cloud_tokens, :cloud_cost_estimate,
@@ -409,7 +482,8 @@ class MetricsStore:
                     :turn_count, :tool_calls_total, :tool_calls_breakdown,
                     :thinking_blocks, :thinking_chars_total,
                     :input_tokens_max, :input_tokens_first, :input_tokens_last,
-                    :redundant_reads_count
+                    :redundant_reads_count,
+                    :billing_bucket
                 )
                 """,
                 {
@@ -508,7 +582,28 @@ class MetricsStore:
             sonar_findings_total=row["sonar_findings_total"],
         )
 
-    def get_cost_rollup(self, period: Literal["today", "week", "all"]) -> CostRollup:
+    @overload
+    def get_cost_rollup(
+        self,
+        period: Literal["today", "week", "all"],
+        *,
+        by_bucket: Literal[False] = False,
+    ) -> CostRollup: ...
+
+    @overload
+    def get_cost_rollup(
+        self,
+        period: Literal["today", "week", "all"],
+        *,
+        by_bucket: Literal[True],
+    ) -> dict[str, CostRollup]: ...
+
+    def get_cost_rollup(
+        self,
+        period: Literal["today", "week", "all"],
+        *,
+        by_bucket: bool = False,
+    ) -> CostRollup | dict[str, CostRollup]:
         """Return aggregated cost economics for *period*.
 
         *today*   = rows where ``recorded_at >= date('now', 'start of day')``
@@ -518,16 +613,33 @@ class MetricsStore:
         cloud_spent  = SUM(cloud_cost_estimate) where cloud_used=1
         local_saved  = SUM(local_input_tokens * input_rate + local_output_tokens
                          * output_rate) where local_used=1; sonnet-4-6 pricing
+
+        When *by_bucket* is True, returns a dict mapping bucket name to
+        ``CostRollup`` (only ``local``, ``subscription``, ``agent_sdk_credit``
+        rows are included; legacy NULL rows are excluded).
         """
-        # Pre-built SQL strings keyed by period — no f-string interpolation,
-        # no user input ever touches these queries (period is a Literal type
-        # constrained to the dict keys at the call site).
         queries = {
             "today": _COST_ROLLUP_SQL_TODAY,
             "week": _COST_ROLLUP_SQL_WEEK,
             "all": _COST_ROLLUP_SQL_ALL,
         }
+        grouped_queries = {
+            "today": _COST_ROLLUP_SQL_TODAY_GROUPED,
+            "week": _COST_ROLLUP_SQL_WEEK_GROUPED,
+            "all": _COST_ROLLUP_SQL_ALL_GROUPED,
+        }
         with self._connect() as conn:
+            if by_bucket:
+                rows = conn.execute(grouped_queries[period]).fetchall()
+                return {
+                    row["billing_bucket"]: CostRollup(
+                        cloud_spent=row["cloud_spent"],
+                        local_saved=row["local_saved"],
+                        cloud_ticket_count=row["cloud_ticket_count"],
+                        local_ticket_count=row["local_ticket_count"],
+                    )
+                    for row in rows
+                }
             row = conn.execute(queries[period]).fetchone()
         return CostRollup(
             cloud_spent=row["cloud_spent"],
