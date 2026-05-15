@@ -216,6 +216,37 @@ If no siblings are In Progress, skip this block silently.
 - Note the milestone this ticket belongs to and how it fits the current milestone's goal
 - Flag any active blockers from Linear — if this ticket is blocked by an open issue, warn before proceeding
 
+### 2. Split-on-multi-feature check (WOR-443)
+
+Before the architect plans the implementation, inspect the acceptance criteria from step 1.
+
+**Split criteria — all three must hold to recommend a split:**
+
+1. The AC enumerates **3 or more** bullets that each describe a *separately-scoped feature* (not 3+ bullets that together describe edge cases of one feature)
+2. The features touch **distinct files or surfaces** (not just different methods of the same class)
+3. Each feature could be **independently tested and shipped**
+
+If all three hold, print this and wait for the operator's answer before continuing to step 2.5:
+
+```
+Heads-up: this ticket enumerates <N> separable improvements (<X>, <Y>, <Z>, ...).
+Consider splitting before /start-ticket — each could be its own ticket:
+  - smaller per-session context (reduces compaction risk)
+  - <N>x parallel-safe by file
+  - independent rollback if one feature regresses
+
+Continue with single ticket? [y/N]
+```
+
+Default to **N** (do not proceed) — the operator must explicitly answer `y` to continue. The split-or-not decision is the operator's, but the recommendation must be surfaced, never silently skipped.
+
+- Operator answers **N** (or presses enter): stop here. Recommend they close-and-re-file the ticket as `<N>` sub-tickets (or split it in Linear), then re-run `/start-ticket` on the smaller pieces. Do not write a manifest.
+- Operator answers **y**: continue with the single ticket through step 2.5 onward, unchanged.
+
+If any of the three criteria do **not** hold (the AC is one cohesive feature, or the bullets are edge cases / sub-steps of the same change), skip this block silently — do not print the prompt.
+
+**Why (WOR-306 retro, 2026-05-11):** a ticket whose AC enumerated 4 separable TUI improvements ran 77 min wall (5x the smallest bundle peer), consumed 25.3M tokens, hit `input_tokens_max` → mid-session compaction (5.3 min lost), and locked `watcher.py` for the duration — gating two sibling tickets ~60 min. Split into 4 tickets it would have been ~15-20 min each and 4x parallel-safe by file. This check is the systematic fix; WOR-306 was the canary.
+
 ### 2.5. Routing assessment
 
 Before computing implementation_mode, determine the routing for this ticket.
