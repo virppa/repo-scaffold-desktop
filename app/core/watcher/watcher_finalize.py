@@ -30,6 +30,7 @@ from .watcher_finalize_helpers import (
     _artifact_dir_for,
     _classify_stage,
     _execute_finalization,
+    _main_artifact_dir_for,
     _read_result_status,
     _record_failure_artifact,
     _record_failure_state,
@@ -470,9 +471,12 @@ def finalize_worker(
             f"allowed_paths violation — {len(violations)} file(s) outside scope",
         )
         _try_post_comment(linear, worker.linear_id, worker.ticket_id, comment)
-        # WOR-457: validation-gate failures get a diagnostic artifact too.
+        # WOR-457 + WOR-501: validation-gate failures get a diagnostic
+        # artifact, written to the operator-visible MAIN-REPO dir — this
+        # gate returns before the worktree-artifact-preservation step, so
+        # a worktree-located last_failure.json would be lost on cleanup.
         _record_failure_artifact(
-            _artifact_dir_for(worker),
+            _main_artifact_dir_for(repo_root, worker),
             "validate_allowed_paths",
             stderr="\n".join(violations),
         )
@@ -487,7 +491,10 @@ def finalize_worker(
     # signal; genuine failures are handled by the returncode logic in
     # _execute_finalization. Runs before the retry loop — a contract
     # violation is not a transient check failure, so retries won't help.
-    if _read_result_status(repo_root, worker.manifest) == "success":
+    if (
+        _read_result_status(repo_root, worker.manifest, worker.worktree_path)
+        == "success"
+    ):
         missing_checks = _validate_checks_passed(worker.manifest, repo_root)
         if missing_checks:
             comment = (
@@ -507,9 +514,11 @@ def finalize_worker(
                 f"{len(missing_checks)} required check(s) not reported",
             )
             _try_post_comment(linear, worker.linear_id, worker.ticket_id, comment)
-            # WOR-457: validation-gate failures get a diagnostic artifact.
+            # WOR-457 + WOR-501: diagnostic artifact to the operator-visible
+            # MAIN-REPO dir — this gate also returns before artifact
+            # preservation, so a worktree-located file would be lost.
             _record_failure_artifact(
-                _artifact_dir_for(worker),
+                _main_artifact_dir_for(repo_root, worker),
                 "validate_checks_passed",
                 stderr="missing required_checks: " + ", ".join(missing_checks),
             )
