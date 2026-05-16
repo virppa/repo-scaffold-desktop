@@ -214,12 +214,74 @@ def _make_sonar_resp_mock(payload: bytes) -> object:
     return mock_resp
 
 
-def test_fetch_sonar_findings_returns_none_without_token(
+def test_fetch_sonar_findings_returns_none_and_warns_when_no_token(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """Neither SONAR_TOKEN nor SONARCLOUD_TOKEN set → None + single WARNING."""
     monkeypatch.delenv("SONAR_TOKEN", raising=False)
+    monkeypatch.delenv("SONARCLOUD_TOKEN", raising=False)
     monkeypatch.delenv("SONAR_PROJECT_KEY", raising=False)
     assert fetch_sonar_findings("wor-10-some-branch") is None
+    assert any(
+        "Neither SONAR_TOKEN nor SONARCLOUD_TOKEN" in msg for msg in caplog.messages
+    )
+
+
+def test_fetch_sonar_findings_honours_sonarcloud_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only SONARCLOUD_TOKEN set → token used, findings fetched."""
+    import json
+
+    monkeypatch.delenv("SONAR_TOKEN", raising=False)
+    monkeypatch.setenv("SONARCLOUD_TOKEN", "cloud-token")
+    monkeypatch.setenv("SONAR_PROJECT_KEY", "my-org_my-project")
+    api_payload = json.dumps(
+        {
+            "issues": [{"key": "A", "severity": "CRITICAL"}],
+            "total": 1,
+        }
+    ).encode()
+
+    mock_resp = _make_sonar_resp_mock(api_payload)
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        findings = fetch_sonar_findings("wor-10-some-branch")
+
+    assert findings == ["CRITICAL"]
+
+
+def test_fetch_sonar_findings_prefers_sonar_token_over_sonarcloud_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When both env vars are set, SONAR_TOKEN takes precedence."""
+    import base64
+
+    monkeypatch.setenv("SONAR_TOKEN", "sonar-token")
+    monkeypatch.setenv("SONARCLOUD_TOKEN", "cloud-token")
+    monkeypatch.setenv("SONAR_PROJECT_KEY", "my-org_my-project")
+
+    captured_headers: list[dict[str, str]] = []
+
+    def capture_urlopen(url_or_req, **_kwargs: object) -> object:
+        captured_headers.append(
+            dict(url_or_req.headers) if hasattr(url_or_req, "headers") else {}
+        )
+        import json
+
+        payload = json.dumps({"issues": [], "total": 0}).encode()
+        return _make_sonar_resp_mock(payload)
+
+    with patch("urllib.request.urlopen", side_effect=capture_urlopen):
+        fetch_sonar_findings("wor-10-some-branch")
+
+    # Decode the Basic auth header to verify which token was used
+    assert len(captured_headers) == 1
+    auth_header = captured_headers[0].get("Authorization", "")
+    assert auth_header.startswith("Basic ")
+    decoded = base64.b64decode(auth_header.removeprefix("Basic ")).decode()
+    assert decoded == "sonar-token:"
+    assert "cloud-token" not in decoded
 
 
 def test_fetch_sonar_findings_returns_none_without_project_key(

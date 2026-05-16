@@ -377,6 +377,24 @@ def _record_failure_state(
     return escalated
 
 
+def _read_human_trigger(result_path: Path) -> str | None:
+    """Return the ``human_trigger`` field from result.json, or None.
+
+    Workers set this field when the scope of their work matches one of the
+    ``human_escalate`` conditions in escalation_policy.toml (e.g.
+    ``architecture_change``, ``schema_migration``).  The watcher consults
+    this at the finalize decision point (WOR-518).
+    """
+    try:
+        raw = json.loads(result_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    value = raw.get("human_trigger") if isinstance(raw, dict) else None
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def _execute_finalization(
     worker: ActiveWorker,
     returncode: int,
@@ -454,6 +472,31 @@ def _execute_finalization(
     preserve_worker_artifacts(repo_root, worker)
     flags = _read_result_flags(repo_root / manifest.artifact_paths.result_json)
     action = escalation_policy.classify_result(**flags)
+
+    # WOR-518: wire [human_escalate] tier — when classify_result returns
+    # "fix_locally" but the result artifact carries a human-trigger name,
+    # pause for human review before the PR path.  A trigger value of
+    # "architecture_change", "schema_migration", "cross_module_refactor", or
+    # "auth_payments_touched" is recognised by
+    # EscalationPolicy.classify_human_trigger.
+    if action == "fix_locally":
+        trigger = _read_human_trigger(repo_root / manifest.artifact_paths.result_json)
+        if trigger is not None:
+            human_action = escalation_policy.classify_human_trigger(trigger)
+            if human_action == "human":
+                logger.info(
+                    "Human review required for %s per [human_escalate] trigger=%s",
+                    ticket_id,
+                    trigger,
+                )
+                _try_post_comment(
+                    linear,
+                    worker.linear_id,
+                    ticket_id,
+                    f"Human review required for `{ticket_id}` before "
+                    f"proceeding. Reason: `{trigger}`.",
+                )
+                return "aborted", False, True, None, [], None
 
     outcome, escalated, sonar_findings, pr_url = _handle_policy_outcome(
         action,

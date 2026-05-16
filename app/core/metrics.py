@@ -21,6 +21,7 @@ from app.core.metrics_models import (
     EpicSummary,
     ImplementationMode,
     Outcome,
+    RoutingDistribution,
     TicketMetrics,
     TicketRunLog,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "ImplementationMode",
     "MetricsStore",
     "Outcome",
+    "RoutingDistribution",
     "TicketMetrics",
     "TicketRunLog",
     "compute_tags",

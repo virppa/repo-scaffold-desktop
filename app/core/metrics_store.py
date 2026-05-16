@@ -19,6 +19,7 @@ from app.core.metrics_models import (
     CheckStats,
     CostRollup,
     EpicSummary,
+    RoutingDistribution,
     TicketMetrics,
     TicketRunLog,
 )
@@ -177,6 +178,46 @@ _COST_ROLLUP_SQL_TODAY_GROUPED = (
     "    AND recorded_at >= date('now', 'start of day')"
     "    GROUP BY billing_bucket"
 )
+# Routing distribution — single aggregation over ticket_metrics.
+# billing_bucket drives the "preferred" classification; implementation_mode
+# drives what actually ran.  NULL billing_bucket → cloud_only.
+
+_ROUTING_DISTRIBUTION_SQL = """
+SELECT
+    -- Preferred counts by billing_bucket
+    COALESCE(SUM(CASE WHEN billing_bucket = 'local'        THEN 1 ELSE 0 END), 0)
+        AS local_preferred_count,
+    COALESCE(SUM(CASE WHEN billing_bucket = 'subscription' THEN 1 ELSE 0 END), 0)
+        AS cloud_preferred_count,
+    COALESCE(SUM(CASE WHEN billing_bucket IS NULL           THEN 1 ELSE 0 END), 0)
+        AS cloud_only_count,
+    -- cloud_preferred (subscription) actual run breakdown
+    COALESCE(SUM(CASE WHEN billing_bucket = 'subscription'
+               AND implementation_mode = 'local'    THEN 1 ELSE 0 END), 0)
+        AS cloud_preferred_local_ran,
+    COALESCE(SUM(CASE WHEN billing_bucket = 'subscription'
+               AND implementation_mode = 'cloud'    THEN 1 ELSE 0 END), 0)
+        AS cloud_preferred_cloud_ran,
+    -- local_preferred (local bucket) actual run breakdown
+    COALESCE(SUM(CASE WHEN billing_bucket = 'local'
+               AND implementation_mode = 'local'    THEN 1 ELSE 0 END), 0)
+        AS local_preferred_local_ran,
+    COALESCE(SUM(CASE WHEN billing_bucket = 'local'
+               AND implementation_mode = 'cloud'    THEN 1 ELSE 0 END), 0)
+        AS local_preferred_cloud_ran,
+    -- Savings: local bucket, local_used=1
+    COALESCE(SUM(CASE WHEN billing_bucket = 'local' AND local_used = 1
+             THEN local_input_tokens * 3.0 / 1e6
+                + local_output_tokens * 15.0 / 1e6
+             ELSE 0 END), 0)
+        AS total_local_saved,
+    -- Cloud cost: local bucket, cloud_used=1
+    COALESCE(SUM(CASE WHEN billing_bucket = 'local' AND cloud_used = 1
+             THEN cloud_cost_estimate ELSE 0 END), 0)
+        AS total_cloud_cost
+FROM ticket_metrics
+"""
+
 _COST_ROLLUP_SQL_WEEK_GROUPED = (
     "SELECT billing_bucket,"
     "        COALESCE(SUM(CASE WHEN cloud_used = 1"
@@ -658,6 +699,31 @@ class MetricsStore:
             local_saved=row["local_saved"],
             cloud_ticket_count=row["cloud_ticket_count"],
             local_ticket_count=row["local_ticket_count"],
+        )
+
+    def get_routing_distribution(self) -> RoutingDistribution:
+        """Return the routing distribution across the entire metrics table.
+
+        Computed on read — a SQL aggregation with no persisted rollup table.
+        ``billing_bucket`` drives the "preferred" classification;
+        ``implementation_mode`` drives what actually ran.  Rows with
+        ``billing_bucket IS NULL`` are classified as cloud_only (legacy).
+        """
+        with self._connect() as conn:
+            row = conn.execute(_ROUTING_DISTRIBUTION_SQL).fetchone()
+        total_local_saved = row["total_local_saved"] or 0.0
+        total_cloud_cost = row["total_cloud_cost"] or 0.0
+        return RoutingDistribution(
+            local_preferred_count=row["local_preferred_count"],
+            cloud_preferred_count=row["cloud_preferred_count"],
+            cloud_only_count=row["cloud_only_count"],
+            cloud_preferred_local_ran=row["cloud_preferred_local_ran"],
+            cloud_preferred_cloud_ran=row["cloud_preferred_cloud_ran"],
+            local_preferred_local_ran=row["local_preferred_local_ran"],
+            local_preferred_cloud_ran=row["local_preferred_cloud_ran"],
+            total_local_saved=total_local_saved,
+            total_cloud_cost=total_cloud_cost,
+            total_savings=total_local_saved - total_cloud_cost,
         )
 
     def record_run(self, entry: TicketRunLog) -> None:

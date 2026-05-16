@@ -1309,3 +1309,331 @@ class TestCostRollupByBucket:
         store = MetricsStore(db_path=tmp_path / "app.db")
         result = store.get_cost_rollup("all", by_bucket=True)
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# WOR-293: Routing distribution
+# ---------------------------------------------------------------------------
+
+
+class TestRoutingDistribution:
+    """get_routing_distribution — SQL aggregation on read."""
+
+    def test_empty_table_returns_zeros(self, tmp_path):
+        """No rows → all counts and savings are zero."""
+        store = _store(tmp_path)
+        rd = store.get_routing_distribution()
+        assert rd.local_preferred_count == 0
+        assert rd.cloud_preferred_count == 0
+        assert rd.cloud_only_count == 0
+        assert rd.total_local_saved == 0.0
+        assert rd.total_savings == 0.0
+
+    def test_local_preferred_local_ran(self, tmp_path):
+        """billing_bucket='local' + implementation_mode='local'."""
+        store = _store(tmp_path)
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                local_used=True,
+                local_input_tokens=100_000,
+                local_output_tokens=5_000,
+                local_wall_time=60.0,
+                billing_bucket="local",
+                implementation_mode="local",
+            )
+        )
+        rd = store.get_routing_distribution()
+        assert rd.local_preferred_count == 1
+        assert rd.local_preferred_local_ran == 1
+        assert rd.cloud_preferred_count == 0
+        assert rd.cloud_preferred_local_ran == 0
+
+    def test_local_preferred_cloud_ran(self, tmp_path):
+        """billing_bucket='local' + implementation_mode='cloud'."""
+        store = _store(tmp_path)
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                cloud_used=True,
+                cloud_cost_estimate=0.15,
+                billing_bucket="local",
+                implementation_mode="cloud",
+            )
+        )
+        rd = store.get_routing_distribution()
+        assert rd.local_preferred_count == 1
+        assert rd.local_preferred_cloud_ran == 1
+        assert rd.local_preferred_local_ran == 0
+
+    def test_cloud_preferred_local_ran(self, tmp_path):
+        """billing_bucket='subscription' + implementation_mode='local'."""
+        store = _store(tmp_path)
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                local_used=True,
+                local_input_tokens=100_000,
+                local_output_tokens=5_000,
+                local_wall_time=60.0,
+                billing_bucket="subscription",
+                implementation_mode="local",
+            )
+        )
+        rd = store.get_routing_distribution()
+        assert rd.cloud_preferred_count == 1
+        assert rd.cloud_preferred_local_ran == 1
+
+    def test_cloud_preferred_cloud_ran(self, tmp_path):
+        """billing_bucket='subscription' + implementation_mode='cloud'."""
+        store = _store(tmp_path)
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                cloud_used=True,
+                cloud_cost_estimate=0.15,
+                billing_bucket="subscription",
+                implementation_mode="cloud",
+            )
+        )
+        rd = store.get_routing_distribution()
+        assert rd.cloud_preferred_count == 1
+        assert rd.cloud_preferred_cloud_ran == 1
+
+    def test_cloud_only_null_bucket(self, tmp_path):
+        """Rows with billing_bucket=NULL are classified as cloud_only."""
+        store = _store(tmp_path)
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                cloud_used=True,
+                cloud_cost_estimate=0.10,
+                billing_bucket=None,
+                implementation_mode="cloud",
+            )
+        )
+        rd = store.get_routing_distribution()
+        assert rd.cloud_only_count == 1
+        # NULL bucket rows are NOT counted in any other category
+        assert rd.local_preferred_count == 0
+        assert rd.cloud_preferred_count == 0
+
+    def test_total_savings_computed_correctly(self, tmp_path):
+        """total_savings = total_local_saved - total_cloud_cost for local_preferred."""
+        store = _store(tmp_path)
+        # Local-preferred ticket that ran locally
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                local_used=True,
+                local_input_tokens=100_000,
+                local_output_tokens=5_000,
+                local_wall_time=60.0,
+                billing_bucket="local",
+                implementation_mode="local",
+            )
+        )
+        # Local-preferred ticket that ran on cloud (costs $0.15)
+        store.record(
+            _ticket(
+                ticket_id="WOR-2",
+                cloud_used=True,
+                cloud_cost_estimate=0.15,
+                billing_bucket="local",
+                implementation_mode="cloud",
+            )
+        )
+        # subscription bucket doesn't contribute to local_preferred savings
+        store.record(
+            _ticket(
+                ticket_id="WOR-3",
+                local_used=True,
+                local_input_tokens=200_000,
+                local_output_tokens=10_000,
+                local_wall_time=120.0,
+                billing_bucket="subscription",
+                implementation_mode="local",
+            )
+        )
+        rd = store.get_routing_distribution()
+        # Total local saved = local_saved for billing_bucket='local' only
+        # WOR-1: 100000 * 3e-6 + 5000 * 15e-6 = 0.3 + 0.075 = 0.375
+        expected_local_saved = 0.375
+        assert rd.total_local_saved == pytest.approx(expected_local_saved)
+        assert rd.total_cloud_cost == pytest.approx(0.15)
+        assert rd.total_savings == pytest.approx(expected_local_saved - 0.15)
+
+    def test_null_bucket_ignored_in_local_preferred(self, tmp_path):
+        """NULL billing_bucket rows do not appear in local_preferred."""
+        store = _store(tmp_path)
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                local_used=True,
+                local_input_tokens=100_000,
+                billing_bucket=None,
+                implementation_mode="local",
+            )
+        )
+        rd = store.get_routing_distribution()
+        assert rd.local_preferred_count == 0
+        assert rd.cloud_only_count == 1
+        # NULL rows don't contribute to savings
+        assert rd.total_local_saved == 0.0
+
+    def test_multiple_rows_aggregate(self, tmp_path):
+        """Multiple rows are aggregated correctly."""
+        store = _store(tmp_path)
+        for i in range(3):
+            store.record(
+                _ticket(
+                    ticket_id=f"WOR-{i}",
+                    local_used=True,
+                    local_input_tokens=100_000,
+                    local_output_tokens=5_000,
+                    local_wall_time=60.0,
+                    billing_bucket="local",
+                    implementation_mode="local",
+                )
+            )
+        rd = store.get_routing_distribution()
+        assert rd.local_preferred_count == 3
+        assert rd.local_preferred_local_ran == 3
+        assert rd.total_local_saved == pytest.approx(0.375 * 3)
+
+    def test_savings_positive_when_local_cheaper(self, tmp_path):
+        """total_savings > 0 when local_preferred tickets ran locally."""
+        store = _store(tmp_path)
+        # Large local run (lots of savings vs cloud)
+        store.record(
+            _ticket(
+                ticket_id="WOR-1",
+                local_used=True,
+                local_input_tokens=500_000,
+                local_output_tokens=50_000,
+                local_wall_time=300.0,
+                billing_bucket="local",
+                implementation_mode="local",
+            )
+        )
+        # Tiny cloud run (low cost on cloud)
+        store.record(
+            _ticket(
+                ticket_id="WOR-2",
+                cloud_used=True,
+                cloud_cost_estimate=0.02,
+                billing_bucket="local",
+                implementation_mode="cloud",
+            )
+        )
+        rd = store.get_routing_distribution()
+        # local_saved = 500000*3e-6 + 50000*15e-6 = 1.5 + 0.75 = 2.25
+        # cloud_cost = 0.02
+        # savings = 2.25 - 0.02 = 2.23
+        assert rd.total_savings == pytest.approx(2.23)
+        assert rd.total_savings > 0
+
+
+class TestRoutingDistributionRender:
+    """TUI snapshot tests for the routing distribution panel."""
+
+    def test_routing_table_no_data(self) -> None:
+        """Empty routing distribution shows 'No data yet'."""
+        from rich.console import Console
+
+        from app.core.metrics import RoutingDistribution
+        from app.core.watcher.watcher_tui import TUIState, WatcherDisplay
+
+        state = TUIState(routing_distribution=RoutingDistribution())
+        display = WatcherDisplay()
+        table = display._routing_table(state)
+        console = Console(record=True, width=120, force_terminal=True)
+        console.print(table)
+        text = console.export_text()
+        assert "No data yet" in text
+        assert "Routing" in text
+
+    def test_routing_table_with_data(self) -> None:
+        """Panel renders counts and savings when data is present."""
+        from rich.console import Console
+
+        from app.core.metrics import RoutingDistribution
+        from app.core.watcher.watcher_tui import TUIState, WatcherDisplay
+
+        state = TUIState(
+            routing_distribution=RoutingDistribution(
+                local_preferred_count=5,
+                cloud_preferred_count=2,
+                cloud_only_count=1,
+                cloud_preferred_local_ran=1,
+                cloud_preferred_cloud_ran=1,
+                local_preferred_local_ran=4,
+                local_preferred_cloud_ran=1,
+                total_local_saved=12.5,
+                total_cloud_cost=3.0,
+                total_savings=9.5,
+            )
+        )
+        display = WatcherDisplay()
+        table = display._routing_table(state)
+        console = Console(record=True, width=120, force_terminal=True)
+        console.print(table)
+        text = console.export_text()
+        assert "Routing" in text
+        assert "Local Pref" in text
+        assert "Cloud Pref" in text
+        assert "Cloud Only" in text
+        assert "Total Savings" in text
+        assert "12.50" in text  # total_local_saved formatted
+
+    def test_layout_includes_routing_panel(self) -> None:
+        """Top row of layout contains routing table alongside cost and rollup."""
+        from app.core.metrics import RoutingDistribution
+        from app.core.watcher.watcher_tui import TUIState, WatcherDisplay
+
+        state = TUIState(
+            routing_distribution=RoutingDistribution(
+                local_preferred_count=3,
+            )
+        )
+        display = WatcherDisplay()
+        layout = display._build_layout(state)
+        assert layout["top"] is not None
+        # Top should be a split_row with 3 children: cost, routing, rollup
+        assert len(layout["top"].children) == 3
+
+    def test_render_line_includes_routing(self) -> None:
+        """_render_line emits routing distribution summary line."""
+        from unittest.mock import patch
+
+        from app.core.metrics import RoutingDistribution
+        from app.core.watcher.watcher_tui import TUIState, WatcherDisplay
+
+        state = TUIState(
+            routing_distribution=RoutingDistribution(
+                local_preferred_count=5,
+                cloud_preferred_count=2,
+            )
+        )
+        display = WatcherDisplay()
+        with patch("app.core.watcher.watcher_tui.logger") as mock_logger:
+            display._render_line(state)
+        calls = [call[0][1] for call in mock_logger.info.call_args_list]
+        routing_lines = [c for c in calls if "[ROUTING]" in c]
+        assert len(routing_lines) == 1
+        assert "local_pref=5" in routing_lines[0]
+        assert "cloud_pref=2" in routing_lines[0]
+        assert "savings=" in routing_lines[0]
+
+
+# ---------------------------------------------------------------------------
+# Import RoutingDistribution at module level (facade export test)
+# ---------------------------------------------------------------------------
+
+
+def test_routing_distribution_importable_from_facade():
+    """RoutingDistribution is re-exported from app.core.metrics."""
+    from app.core.metrics import RoutingDistribution
+
+    rd = RoutingDistribution()
+    assert rd.local_preferred_count == 0

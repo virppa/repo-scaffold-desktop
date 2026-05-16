@@ -182,6 +182,7 @@ class Watcher:
         # Daemon-control gestures (WOR-352). CLI operators write sentinel files
         # under .claude/ to pause, force-stop, or kill specific workers.
         self._paused: bool = False
+        self._paused_at: float | None = None  # monotonic timestamp when paused
         self._forcestopping: bool = False
         self._killing: list[str] = []  # ticket IDs being processed by kill
         # WOR-502: KV-budget admission gate. None = unlimited (off).
@@ -251,6 +252,24 @@ class Watcher:
             return
         self._paused = False
         logger.info("Pause cleared — dispatcher resumed.")
+
+    def _check_pause_resumption(self) -> None:
+        """Check if the pause sentinel has been removed and resume dispatch."""
+        if not self._paused:
+            return
+        sentinel = pause_sentinel_path(self._repo_root)
+        if not sentinel.exists():
+            self._paused = False
+            self._paused_at = None
+            logger.info("Pause sentinel removed — dispatcher resumed.")
+
+    def _pause_heartbeat(self) -> None:
+        """Emit periodic heartbeat while paused so the daemon is distinguishable
+        from hung in the log."""
+        if not self._paused or self._paused_at is None:
+            return
+        elapsed = int(time.monotonic() - self._paused_at)
+        logger.info("Watcher daemon paused — still running (%ds)", elapsed)
 
     def _check_forcestop_sentinel(self) -> None:
         """If the force-stop sentinel exists, commit WIP and terminate all workers."""
@@ -322,6 +341,8 @@ class Watcher:
         """
         self._check_softstop_sentinel()
         self._check_pause_sentinel()
+        self._check_pause_resumption()
+        self._pause_heartbeat()
         self._check_forcestop_sentinel()
         self._check_kill_sentinel()
         terminate_overrun_workers(self._local_active, self._cloud_active, self._linear)
@@ -642,7 +663,25 @@ class Watcher:
                     break
                 time.sleep(DISPATCH_DELAY_SECONDS)
             except Exception as exc:
+                # Hard failure during ticket start (e.g. worktree-add exit-128).
+                # Transition to Blocked to prevent infinite re-dispatch.
                 logger.exception("Failed to start %s: %s", ticket_id, exc)
+                try:
+                    state_name = self._linear.get_current_state_name(ticket_id)
+                    if state_name == "ReadyForLocal":
+                        logger.warning(
+                            "Dispatch failed for %s — "
+                            "transitioning to Blocked to prevent "
+                            "infinite re-dispatch",
+                            ticket_id,
+                        )
+                        safe_set_state(self._linear, ticket_id, "Blocked", ticket_id)
+                except Exception as transition_exc:
+                    logger.warning(
+                        "Failed to transition %s to Blocked: %s",
+                        ticket_id,
+                        transition_exc,
+                    )
 
     def _start_ticket(
         self, ticket_id: str, linear_id: str, *, candidate: dict[str, Any] | None = None
