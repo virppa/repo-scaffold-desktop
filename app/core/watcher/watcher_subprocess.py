@@ -190,6 +190,60 @@ def _run_single_check(
     return check_cmd, result, duration
 
 
+def _collect_check_outcomes(
+    checks: list[str],
+    results: dict[str, tuple[subprocess.CompletedProcess[str], float]],
+    artifact_dir: Path,
+    failure_artifact: Path,
+    *,
+    metrics: MetricsStore | None,
+    ticket_id: str,
+    project_id: str,
+) -> list[dict[str, int | str]]:
+    """Process check results in manifest order (WOR-510, S3776 CC reduction).
+
+    Extracted verbatim from :func:`run_checks` to keep its cognitive
+    complexity ≤15. Deterministic regardless of thread completion order:
+    records each check to check_run_log (when *metrics* given), collects
+    failures, and writes ``last_failure.json`` for the FIRST manifest-order
+    failure only. Behaviour identical to the former inline loop.
+    """
+    failed_checks: list[dict[str, int | str]] = []
+    first_failure_written = False
+    for check_cmd in checks:
+        result, duration = results[check_cmd]
+        if metrics is not None and ticket_id:
+            metrics.record_check_run(
+                CheckRunEntry(
+                    ticket_id=ticket_id,
+                    project_id=project_id,
+                    check_cmd=check_cmd,
+                    outcome="passed" if result.returncode == 0 else "failed",
+                    duration_s=round(duration, 3),
+                )
+            )
+        if result.returncode != 0:
+            logger.error(
+                "Check failed: %s\n%s", check_cmd, result.stdout + result.stderr
+            )
+            failed_checks.append({"check": check_cmd, "exit_code": result.returncode})
+            if not first_failure_written:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                failure_artifact.write_text(
+                    json.dumps(
+                        {
+                            "failed_at": datetime.now(timezone.utc).isoformat(),
+                            "check": check_cmd,
+                            "stdout": result.stdout[:4000],
+                            "stderr": result.stderr,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                first_failure_written = True
+    return failed_checks
+
+
 def run_checks(
     manifest: ExecutionManifest,
     worktree_path: Path,
@@ -254,39 +308,16 @@ def run_checks(
 
     # Process in manifest order so output / metrics / last_failure.json
     # write order is deterministic regardless of thread completion order.
-    failed_checks: list[dict[str, int | str]] = []
-    first_failure_written = False
-    for check_cmd in checks:
-        result, duration = results[check_cmd]
-        if metrics is not None and ticket_id:
-            metrics.record_check_run(
-                CheckRunEntry(
-                    ticket_id=ticket_id,
-                    project_id=project_id,
-                    check_cmd=check_cmd,
-                    outcome="passed" if result.returncode == 0 else "failed",
-                    duration_s=round(duration, 3),
-                )
-            )
-        if result.returncode != 0:
-            logger.error(
-                "Check failed: %s\n%s", check_cmd, result.stdout + result.stderr
-            )
-            failed_checks.append({"check": check_cmd, "exit_code": result.returncode})
-            if not first_failure_written:
-                artifact_dir.mkdir(parents=True, exist_ok=True)
-                failure_artifact.write_text(
-                    json.dumps(
-                        {
-                            "failed_at": datetime.now(timezone.utc).isoformat(),
-                            "check": check_cmd,
-                            "stdout": result.stdout[:4000],
-                            "stderr": result.stderr,
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                first_failure_written = True
+    # WOR-510: loop extracted to _collect_check_outcomes (S3776 CC ≤15).
+    failed_checks = _collect_check_outcomes(
+        checks,
+        results,
+        artifact_dir,
+        failure_artifact,
+        metrics=metrics,
+        ticket_id=ticket_id,
+        project_id=project_id,
+    )
 
     if not failed_checks and failure_artifact.exists():
         failure_artifact.unlink()
