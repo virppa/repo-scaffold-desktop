@@ -67,6 +67,8 @@ litellm-local.yaml
 
 # Claude Code hook state (per-session, machine-generated)
 .claude/.read_counts.json
+.claude/.thrash_state.json
+.claude/.parallel_nudge_state.json
 
 # Claude Code quality-check budget counter (per-session, machine-generated)
 .claude/.quality_check_count
