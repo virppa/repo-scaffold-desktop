@@ -366,6 +366,19 @@ is already at its documented audit path. (Earlier skill text instructed a
 the model attempted to `cp` a file onto itself before realizing the
 redundancy. WOR-322 paid ~12 minutes of wall time to this. WOR-356.)
 
+**Do NOT `git add` / commit `.claude/artifacts/**` into the branch.**
+`result.json` and `last_failure.json` live under `.claude/artifacts/`, which is
+gitignored on purpose. Never `git add -f` (force) them or otherwise commit them
+into the worker branch. The watcher reads `result.json` from the **main-repo**
+artifact path, not from a branch commit — a committed-into-branch result.json is
+invisible to `finalize_worker` (the run is then treated as "no result" → Blocked
+even when the work is perfect), and the committed file also bloats the diff,
+which can itself trip the allowed_paths gate. Write the result artifact in place
+(step 5) and leave it **uncommitted**; the watcher preserves it. (WOR-501: a
+sound max-effort implementation was lost exactly this way — finalize is now also
+tolerant of a worktree-located result.json as a backstop, but workers must still
+never commit it.)
+
 ### 6. Linear updates (comments only — state is owned by the watcher)
 
 **On success:** do nothing in Linear. The watcher reads the result artifact and handles PR creation and state transitions. Do not call `/finalize-ticket`.

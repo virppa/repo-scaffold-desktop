@@ -229,7 +229,11 @@ def safe_set_state_and_comment(
     f2.result()
 
 
-def _read_result_status(repo_root: Path, manifest: ExecutionManifest) -> str | None:
+def _read_result_status(
+    repo_root: Path,
+    manifest: ExecutionManifest,
+    worktree_path: Path | None = None,
+) -> str | None:
     """Return the worker's self-reported status from result.json, or None.
 
     Workers write a ``status`` field of ``"success"`` or ``"failure"`` (or
@@ -238,20 +242,33 @@ def _read_result_status(repo_root: Path, manifest: ExecutionManifest) -> str | N
     subprocess exit code (which can be non-zero even after a successful run
     due to Claude Code CLI teardown quirks — see WOR-286).
 
-    Returns None when the file is missing or unreadable; callers should treat
-    that as "no in-band signal" rather than success.
+    WOR-501: a worker that ``git add -f``'d result.json into its branch
+    leaves it only at ``worktree_path/<result_json>`` — the normally
+    gitignored main-repo path stays empty, so the watcher would read
+    nothing and wrongly route a sound run to failure. When *worktree_path*
+    is given and the main-repo copy yields no status, fall back to the
+    worktree copy before declaring "no in-band signal". The main-repo
+    path keeps precedence (it is the canonical location).
+
+    Returns None when no readable result.json with a string ``status`` is
+    found in either location.
     """
-    result_path = repo_root / manifest.artifact_paths.result_json
-    try:
-        raw = result_path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return None
-    status = data.get("status") if isinstance(data, dict) else None
-    return status if isinstance(status, str) else None
+    for base in (repo_root, worktree_path):
+        if base is None:
+            continue
+        result_path = base / manifest.artifact_paths.result_json
+        try:
+            raw = result_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            continue
+        status = data.get("status") if isinstance(data, dict) else None
+        if isinstance(status, str):
+            return status
+    return None
 
 
 def _record_failure_state(
@@ -308,7 +325,7 @@ def _execute_finalization(
     # during teardown after a fully successful run — that should not destroy
     # the work. Only treat non-zero exit as failure when result.json is
     # missing or also reports failure.
-    result_status = _read_result_status(repo_root, manifest)
+    result_status = _read_result_status(repo_root, manifest, worker.worktree_path)
     if returncode != 0 and result_status != "success":
         logger.error(
             "Worker %s exited non-zero (%d); result.json status=%s — "
@@ -502,6 +519,20 @@ _FINALIZE_STAGES = (
 def _artifact_dir_for(worker: ActiveWorker) -> Path:
     """The worktree artifact dir holding result.json / last_failure.json."""
     return (worker.worktree_path / worker.manifest.artifact_paths.result_json).parent
+
+
+def _main_artifact_dir_for(repo_root: Path, worker: ActiveWorker) -> Path:
+    """Operator-visible (main-repo) artifact dir — survives worktree cleanup.
+
+    WOR-501: the two pre-retry validation gates (validate_allowed_paths,
+    validate_checks_passed) ``return "failure"`` *before* the
+    artifact-preservation step that copies the worktree dir out, so a
+    last_failure.json written via :func:`_artifact_dir_for` (worktree)
+    is invisible to the operator and lost on cleanup. Those gates must
+    write here — the same main-repo path :func:`_read_result_status`
+    and the operator look in.
+    """
+    return (repo_root / worker.manifest.artifact_paths.result_json).parent
 
 
 def _classify_stage(exc: BaseException) -> str:

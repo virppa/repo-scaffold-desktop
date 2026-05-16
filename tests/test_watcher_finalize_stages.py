@@ -17,6 +17,7 @@ from app.core.manifest import ArtifactPaths
 from app.core.watcher.watcher_finalize import finalize_worker
 from app.core.watcher.watcher_finalize_helpers import (
     _classify_stage,
+    _read_result_status,
     _record_failure_artifact,
 )
 from app.core.watcher.watcher_types import ActiveWorker
@@ -198,6 +199,150 @@ def test_finalize_checks_passed_violation_writes_stage(tmp_path: Path) -> None:
     )
     assert data["stage"] == "validate_checks_passed"
     assert "missing required_checks" in data["stderr"]
+
+
+# ---------------------------------------------------------------------------
+# WOR-501 Defect 1: early-return gates write last_failure.json to the
+# operator-visible MAIN-REPO dir, not the worktree (which is cleaned).
+# These tests use DISTINCT repo_root and worktree dirs — the pre-WOR-501
+# tests above coincidentally used the same tmp_path for both, so they
+# never exercised the worktree-vs-main-repo distinction.
+# ---------------------------------------------------------------------------
+
+
+def _worker_with_worktree(worktree: Path) -> ActiveWorker:
+    manifest = make_manifest(
+        ticket_id="WOR-457",
+        worker_branch="wor-457-test",
+        required_checks=["ruff check .", "mypy app/", "pytest", "lint-imports"],
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-457"),
+    )
+    return ActiveWorker(
+        ticket_id="WOR-457",
+        linear_id="fake-linear-id",
+        manifest=manifest,
+        worktree_path=worktree,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+
+def test_allowed_paths_block_writes_to_operator_visible_dir(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    worktree = tmp_path / "wt"
+    repo_root.mkdir()
+    worktree.mkdir()
+    worker = _worker_with_worktree(worktree)
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize._validate_allowed_paths",
+            return_value=["ALLOWED app/ui/widget.py"],
+        ),
+        patch("app.core.watcher.watcher_finalize.compute_tags", return_value=[]),
+    ):
+        outcome = finalize_worker(
+            worker,
+            returncode=0,
+            wall_time=1.0,
+            linear=MagicMock(),
+            metrics=MagicMock(),
+            escalation_policy=EscalationPolicy.from_toml(),
+            repo_root=repo_root,
+            mode="default",
+            project_id="proj",
+        )
+    assert outcome == "failure"
+    main_lf = repo_root / ".claude" / "artifacts" / "wor_457" / "last_failure.json"
+    wt_lf = worktree / ".claude" / "artifacts" / "wor_457" / "last_failure.json"
+    assert main_lf.exists(), "last_failure.json must be operator-visible (main-repo)"
+    assert not wt_lf.exists(), "must not be written only to the (cleaned) worktree"
+    data = json.loads(main_lf.read_text(encoding="utf-8"))
+    assert data["stage"] == "validate_allowed_paths"
+    assert "app/ui/widget.py" in data["stderr"]
+
+
+def test_checks_passed_block_writes_to_operator_visible_dir(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    art = repo_root / ".claude" / "artifacts" / "wor_457"
+    art.mkdir(parents=True)
+    (art / "result.json").write_text(
+        json.dumps({"status": "success", "checks_passed": ["ruff"]}),
+        encoding="utf-8",
+    )
+    worker = _worker_with_worktree(worktree)
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize._validate_allowed_paths",
+            return_value=[],
+        ),
+        patch("app.core.watcher.watcher_finalize.compute_tags", return_value=[]),
+    ):
+        outcome = finalize_worker(
+            worker,
+            returncode=0,
+            wall_time=1.0,
+            linear=MagicMock(),
+            metrics=MagicMock(),
+            escalation_policy=EscalationPolicy.from_toml(),
+            repo_root=repo_root,
+            mode="default",
+            project_id="proj",
+        )
+    assert outcome == "failure"
+    main_lf = art / "last_failure.json"
+    wt_lf = worktree / ".claude" / "artifacts" / "wor_457" / "last_failure.json"
+    assert main_lf.exists()
+    assert not wt_lf.exists()
+    data = json.loads(main_lf.read_text(encoding="utf-8"))
+    assert data["stage"] == "validate_checks_passed"
+
+
+# ---------------------------------------------------------------------------
+# WOR-501 Defect 2: _read_result_status worktree fallback (a worker that
+# git-add-f'd result.json into its branch leaves it only in the worktree).
+# ---------------------------------------------------------------------------
+
+
+def _result_manifest():
+    return make_manifest(
+        ticket_id="WOR-457",
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-457"),
+    )
+
+
+def test_read_result_status_main_repo_takes_precedence(tmp_path: Path) -> None:
+    manifest = _result_manifest()
+    repo_root = tmp_path / "repo"
+    worktree = tmp_path / "wt"
+    for base, status in ((repo_root, "success"), (worktree, "failure")):
+        p = base / manifest.artifact_paths.result_json
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"status": status}), encoding="utf-8")
+    assert _read_result_status(repo_root, manifest, worktree) == "success"
+
+
+def test_read_result_status_falls_back_to_worktree(tmp_path: Path) -> None:
+    manifest = _result_manifest()
+    repo_root = tmp_path / "repo"
+    worktree = tmp_path / "wt"
+    p = worktree / manifest.artifact_paths.result_json
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"status": "success"}), encoding="utf-8")
+    assert _read_result_status(repo_root, manifest, worktree) == "success"
+
+
+def test_read_result_status_none_when_both_missing(tmp_path: Path) -> None:
+    manifest = _result_manifest()
+    assert _read_result_status(tmp_path / "repo", manifest, tmp_path / "wt") is None
+
+
+def test_read_result_status_backward_compatible_without_worktree(
+    tmp_path: Path,
+) -> None:
+    """No worktree_path arg → identical to the pre-WOR-501 behaviour."""
+    manifest = _result_manifest()
+    assert _read_result_status(tmp_path, manifest) is None
 
 
 # ---------------------------------------------------------------------------
