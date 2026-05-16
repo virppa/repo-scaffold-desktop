@@ -18,7 +18,7 @@ from app.core.watcher.watcher_helpers import (
     WorkerTelemetry,
 )
 from app.core.watcher.watcher_types import ActiveWorker
-from tests.conftest import make_manifest
+from tests.conftest import make_isolated_repo_root, make_manifest
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -49,7 +49,7 @@ def _call_finalize(
             linear=linear or MagicMock(),
             metrics=metrics or MagicMock(),
             escalation_policy=EscalationPolicy.from_toml(),
-            repo_root=repo_root or Path("."),
+            repo_root=repo_root or make_isolated_repo_root(),
             mode=mode,
             project_id=_DEFAULT_PROJECT,
         )

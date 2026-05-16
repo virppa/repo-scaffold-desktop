@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -327,3 +328,29 @@ def make_command_keyed_run(
         return result
 
     return _run
+
+
+# ---------------------------------------------------------------------------
+# WOR-511: isolated finalize repo_root
+# ---------------------------------------------------------------------------
+
+
+def make_isolated_repo_root() -> Path:
+    """A unique throwaway dir for a `_call_finalize(...)` default `repo_root`.
+
+    WOR-511: the three finalize test harnesses defaulted `repo_root` to
+    ``Path(".")`` — the real shared repo cwd. `finalize_worker` then
+    resolved ``repo_root / artifact_paths.result_json`` and the WOR-457
+    `last_failure.json` writer to ``./.claude/artifacts/<slug>/`` (slug is
+    the conftest `make_manifest` default `wor_10` for every ticket), so
+    concurrent finalize tests on different `pytest -n8` xdist workers
+    clobbered the one real path (`PermissionError [WinError 32]` on
+    Windows; silent corruption on Linux). A fresh per-call dir makes every
+    default-`repo_root` finalize run collision-proof regardless of xdist
+    schedule or the shared slug. Same cross-worker shared-FS bleed class as
+    the watcher pid file / read-cap state file (WOR-506).
+
+    Tests that assert on artifact contents pass an explicit `repo_root`
+    (usually their own `tmp_path`); this only replaces the unsafe default.
+    """
+    return Path(tempfile.mkdtemp(prefix="wor511_finalize_repo_"))

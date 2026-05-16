@@ -377,12 +377,18 @@ shared filesystem does. Two rules keep new tests deterministic under `-n 8`:
    group-serialise it. The fix pattern: give the production code a
    call-time indirection (a resolver function like `pid_file_path()`, or an
    env override like `READ_CAP_STATE_PATH`), then add an `autouse=True`
-   conftest fixture that points it at `tmp_path`. Two reference fixtures to
+   conftest fixture that points it at `tmp_path`. Reference patterns to
    copy: `_isolate_watcher_pid_file` (resolver) and `_isolate_read_cap_state`
-   (env override). xdist *grouping* (`@pytest.mark.xdist_group` /
-   `--dist loadgroup`) was evaluated and rejected — it globally reschedules
-   collection, exposing further latent bleeds while losing parallelism;
-   per-resource isolation is the only mechanism that scales.
+   (env override) for production paths; `make_isolated_repo_root()` (WOR-511)
+   for a test-harness default that would otherwise resolve a `repo_root` /
+   artifact path against the shared cwd (`Path(".")`). xdist *grouping*
+   (`@pytest.mark.xdist_group` / `--dist loadgroup`) was evaluated and
+   rejected — it globally reschedules collection, exposing further latent
+   bleeds while losing parallelism; per-resource isolation is the only
+   mechanism that scales. The suite is now deterministic under *both*
+   `--dist load` (CI) and `--dist loadgroup` — verify new stateful tests
+   with `make flake-hunt` (optionally `--dist loadgroup` for the aggressive
+   scheduler).
 
 3. **Mock concurrent SUTs by command identity, never call order.**
    `run_checks` runs the 4 checks in parallel (WOR-413); `finalize_worker`
