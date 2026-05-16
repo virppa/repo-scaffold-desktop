@@ -392,6 +392,7 @@ def test_poll_iteration_pause_gates_dispatch(tmp_path: Path) -> None:
     with (
         patch.object(w, "_check_softstop_sentinel"),
         patch.object(w, "_check_pause_sentinel"),
+        patch.object(w, "_check_pause_resumption"),
         patch.object(w, "_check_forcestop_sentinel"),
         patch.object(w, "_check_kill_sentinel"),
         patch.object(w, "_reap_pool"),
