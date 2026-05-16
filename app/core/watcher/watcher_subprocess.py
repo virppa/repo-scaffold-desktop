@@ -602,12 +602,23 @@ def fetch_sonar_findings(branch: str) -> list[str] | None:
     """Return per-severity finding list from SonarCloud for *branch*, or None.
 
     Returns a list of severity strings (e.g. ['BLOCKER', 'CRITICAL']) or None
-    when SONAR_TOKEN / SONAR_PROJECT_KEY are absent or the API call fails. An
-    empty list means the branch was scanned and has no open issues.
+    when neither SONAR_TOKEN nor SONARCLOUD_TOKEN is set, or SONAR_PROJECT_KEY
+    is absent, or the API call fails. An empty list means the branch was scanned
+    and has no open issues.
+
+    Token resolution: SONAR_TOKEN (first) or SONARCLOUD_TOKEN (fallback).
+    When neither env var is set, logs a single WARNING instead of silently
+    returning None (WOR-515).
     """
-    token = os.environ.get("SONAR_TOKEN")
+    token = os.environ.get("SONAR_TOKEN") or os.environ.get("SONARCLOUD_TOKEN")
     project_key = os.environ.get("SONAR_PROJECT_KEY")
-    if not token or not project_key:
+    if not token:
+        logger.warning(
+            "Neither SONAR_TOKEN nor SONARCLOUD_TOKEN is set — "
+            "Sonar findings will not be fetched"
+        )
+        return None
+    if not project_key:
         return None
 
     ctx = ssl.create_default_context()
