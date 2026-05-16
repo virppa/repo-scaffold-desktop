@@ -25,6 +25,87 @@ from .watcher_types import (
 logger = logging.getLogger(__name__)
 
 
+def _is_registered_but_missing(repo_root: Path, worktree_path: Path) -> bool:
+    """Return True when *worktree_path* is registered but the directory is gone.
+
+    Uses ``git worktree list --porcelain`` and looks for a ``status prunable``
+    line associated with the target path (git marks an entry prunable when the
+    expected directory no longer exists on disk).
+    """
+    try:
+        result = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "worktree",
+                "list",
+                "--porcelain",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+
+        current_path: str | None = None
+        for line in result.stdout.splitlines():
+            if line.startswith("worktree "):
+                current_path = line.removeprefix("worktree ")
+            elif line == "status prunable" and current_path is not None:
+                return current_path == str(worktree_path)
+        return False
+    except OSError:
+        return False
+
+
+def _try_clear_stale_worktree_registration(
+    repo_root: Path, worktree_path: Path
+) -> None:
+    """Prune a stale registration for *worktree_path* if it is missing.
+
+    Bounded: at most one prune attempt. If ``git worktree add`` still fails
+    after this recovery, the exception propagates and the ticket Blocks —
+    avoiding an infinite dispatch loop (WOR-520).
+    """
+    if not _is_registered_but_missing(repo_root, worktree_path):
+        return
+
+    logger.warning(
+        "Worktree path %s is registered but missing — pruning stale registration",
+        worktree_path,
+    )
+    try:
+        result = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "worktree",
+                "prune",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "git worktree prune failed for %s — %s; add will be attempted anyway",
+                worktree_path,
+                (result.stderr or result.stdout or "").strip(),
+            )
+        else:
+            logger.info("Pruned stale worktree registration for %s", worktree_path)
+    except OSError as exc:
+        logger.warning(
+            "git worktree prune errored for %s (OSError: %s); "
+            "add will be attempted anyway",
+            worktree_path,
+            exc,
+        )
+
+
 class WipPreservationResult(NamedTuple):
     """Outcome of attempting to preserve worker work-in-progress (WOR-288).
 
@@ -50,11 +131,17 @@ class WipPreservationResult(NamedTuple):
 
 
 def create_worktree(repo_root: Path, manifest: ExecutionManifest) -> Path:
-    """Add a git worktree for *manifest* and rebase it onto its base branch."""
+    """Add a git worktree for *manifest* and rebase it onto its base branch.
+
+    When the target path is registered-but-missing (exit-128), clear the stale
+    registration via ``git worktree prune`` and retry ONCE — bounding recovery
+    so the daemon never infinite-loops on one un-addable worktree (WOR-520).
+    """
     worktree_name = manifest.worktree_name or manifest.worker_branch
     if ".." in Path(worktree_name).parts:
         raise ValueError(f"Invalid worktree name: {worktree_name!r}")
     worktree_path = repo_root.parent / _WORKTREE_BASE / worktree_name
+    _try_clear_stale_worktree_registration(repo_root, worktree_path)
     subprocess.run(  # nosec B603 B607
         [
             "git",
