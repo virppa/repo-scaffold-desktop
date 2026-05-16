@@ -112,9 +112,22 @@ def _validate_allowed_paths(
 ) -> list[str]:
     """Validate the worker diff against allowed_paths and forbidden_paths.
 
-    Runs ``git diff --name-only <base_branch>...HEAD`` inside the worktree,
+    Enumerates the files touched by THIS worker's own commits
+    (``git log <base_branch>..HEAD --name-only``) inside the worktree,
     then matches each changed file against the manifest's ``allowed_paths``
     and ``forbidden_paths`` globs using ``fnmatch``.
+
+    WOR-521: the old ``git diff <base>...HEAD`` (three-dot ≡
+    merge-base..HEAD) cross-contaminated concurrent / sequential tickets
+    on a shared base — when ``<base>`` advanced after the worker branched
+    (a sibling or an earlier ticket merged into the shared base/main), the
+    stale merge-base made the diff include the base's new commits' files,
+    spuriously failing this ticket's allowed_paths. ``git log
+    <base>..HEAD`` selects only commits reachable from HEAD but NOT from
+    the current ``<base>`` tip (anything already merged into base is
+    excluded) and lists exactly the files those commits changed — immune
+    to base advancement and free of the ``git diff`` inversion artifact
+    for un-rebased branches.
 
     Returns a list of violation strings.  Empty list means the diff is clean
     and the PR path is safe to continue.  Each violation is tagged with
@@ -122,24 +135,67 @@ def _validate_allowed_paths(
     """
     violations: list[str] = []
 
-    # Get the list of changed files since the merge-base.
+    # WOR-521: list only the files THIS worker's own commits touched,
+    # compared against the CURRENT base tip. Root cause of the
+    # contamination: `git diff <base>...HEAD` (three-dot ≡ merge-base)
+    # against a *stale local* <base> ref — when the base advanced after
+    # the worker branched (a sibling / earlier-merged ticket), the diff
+    # picked up the base's new files. Fix: best-effort fetch the base,
+    # prefer the fresh `origin/<base>` tip, and use `git log <tip>..HEAD`
+    # (commits reachable from HEAD but not the tip → only the worker's own
+    # commits; no `git diff` inversion artifact for un-rebased branches).
+    base = manifest.base_branch
     try:
-        diff_proc = subprocess.run(  # nosec B603 B607
+        subprocess.run(  # nosec B603 B607
+            ["git", "-C", str(worktree_path), "fetch", "origin", base],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        compare = f"origin/{base}"
+        rev = subprocess.run(  # nosec B603 B607
             [
                 "git",
                 "-C",
                 str(worktree_path),
-                "diff",
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                compare,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if rev.returncode != 0:
+            # No origin/<base> (e.g. local-only branch) — fall back to the
+            # local ref. Still `git log`, still scoped to the worker's
+            # commits.
+            compare = base
+        log_proc = subprocess.run(  # nosec B603 B607
+            [
+                "git",
+                "-C",
+                str(worktree_path),
+                "log",
                 "--name-only",
-                f"{manifest.base_branch}...HEAD",
+                "--format=",
+                f"{compare}..HEAD",
             ],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        files = (diff_proc.stdout or "").strip().splitlines()
+        files = sorted(
+            {
+                line.strip()
+                for line in (log_proc.stdout or "").splitlines()
+                if line.strip()
+            }
+        )
     except (OSError, subprocess.TimeoutExpired):
-        # If we can't read the diff, allow it — a git error is not a scope
+        # If we can't read the log, allow it — a git error is not a scope
         # violation. The finalize checks (ruff/mypy/pytest) will still catch
         # most problems.
         return []
