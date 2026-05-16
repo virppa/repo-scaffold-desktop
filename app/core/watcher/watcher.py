@@ -659,22 +659,25 @@ class Watcher:
         """
         manifest = self._load_manifest(ticket_id)
         manifest = self._enrich_with_retry_context(manifest)
-        dispatch.start_ticket(
-            manifest=manifest,
+        ctx = dispatch.DispatchContext(
             linear=self._linear,
             services=self._services,
             worker_verbose=self._worker_verbose,
-            _local_active=self._local_active,
-            _cloud_active=self._cloud_active,
+            local_active=self._local_active,
+            cloud_active=self._cloud_active,
             max_cloud_workers=self._max_cloud_workers,
-            _repo_root=self._repo_root,
-            _processed_tickets=self._processed_tickets,  # type: ignore[arg-type]
-            linear_id=linear_id,
-            ticket_id=ticket_id,
-            _escalation_policy=self._escalation_policy,
-            _dedup_state=self._last_deferral_state,
-            _candidate=candidate,
-            _kv_budget=self._kv_budget,
+            repo_root=self._repo_root,
+            processed_tickets=self._processed_tickets,  # type: ignore[arg-type]
+            escalation_policy=self._escalation_policy,
+            dedup_state=self._last_deferral_state,
+            kv_budget=self._kv_budget,
+        )
+        dispatch.start_ticket(
+            manifest,
+            linear_id,
+            ticket_id,
+            ctx,
+            candidate=candidate,
         )
 
     # ------------------------------------------------------------------

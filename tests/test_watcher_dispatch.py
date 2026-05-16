@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.watcher.dispatch import start_ticket
-from tests.conftest import make_manifest
+from tests.conftest import make_dispatch_context, make_manifest
 
 
 def _services(mode: str = "default", vllm_healthy: bool = True) -> MagicMock:
@@ -64,19 +64,21 @@ def test_start_ticket_local_happy_path_appends_to_local_active(tmp_path: Path) -
         patch("app.core.watcher.dispatch.safe_set_state"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     assert len(local_active) == 1
@@ -107,19 +109,21 @@ def test_start_ticket_cloud_happy_path_appends_to_cloud_active(tmp_path: Path) -
         patch("app.core.watcher.dispatch.safe_set_state"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     assert len(cloud_active) == 1
@@ -145,19 +149,21 @@ def test_start_ticket_defers_when_vllm_not_ready(
         caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     mock_create.assert_not_called()
@@ -183,19 +189,21 @@ def test_start_ticket_defers_when_cloud_pool_full(
         caplog.at_level(logging.INFO, logger="app.core.watcher.dispatch"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     mock_create.assert_not_called()
@@ -226,19 +234,21 @@ def test_start_ticket_refuses_local_manifest_with_empty_allowed_paths(
         caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     mock_create.assert_not_called()
@@ -271,19 +281,21 @@ def test_start_ticket_refuses_manifest_with_empty_required_checks(
         caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     mock_create.assert_not_called()
@@ -328,19 +340,21 @@ def test_start_ticket_refuses_when_epic_too_far_behind_main(
         caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     mock_create.assert_not_called()
@@ -387,19 +401,21 @@ def test_start_ticket_proceeds_when_epic_within_threshold(
         ),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     assert len(local_active) == 1
@@ -438,19 +454,21 @@ def test_start_ticket_does_not_refuse_main_target(
     ):
         # Helper not patched — real helper returns 0 for non-epic branches.
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     assert len(local_active) == 1
@@ -484,35 +502,39 @@ def test_start_ticket_vllm_not_ready_dedup_logs_warning_once(
     with caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"):
         # First call — not yet in dedup state → logs warning.
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state=dedup_state,
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state=dedup_state,
+            ),
         )
         # Second call — same condition already tracked → suppressed.
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state=dedup_state,
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state=dedup_state,
+            ),
         )
 
     vllm_warnings = [r for r in caplog.records if "vLLM not ready" in r.message]
@@ -560,19 +582,21 @@ def test_start_ticket_defers_when_another_epic_branch_already_in_flight(
         caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id-419",
-            ticket_id="WOR-419",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id-419",
+            "WOR-419",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     mock_create.assert_not_called()
@@ -632,19 +656,21 @@ def test_start_ticket_proceeds_for_same_epic_branch(
         patch("app.core.watcher.dispatch.safe_set_state"),
     ):
         start_ticket(
-            manifest=epic_manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id-419",
-            ticket_id="WOR-419",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            epic_manifest,
+            "fake-linear-id-419",
+            "WOR-419",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     assert len(local_active) == 2  # both the existing and new worker
@@ -678,19 +704,21 @@ def test_start_ticket_unaffected_when_no_epic_workers_active(
         patch("app.core.watcher.dispatch.safe_set_state"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     assert len(local_active) == 1
@@ -724,19 +752,21 @@ def test_start_ticket_refuses_cloud_only_when_local_mode(
         caplog.at_level(logging.WARNING, logger="app.core.watcher.dispatch"),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-290",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-290",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     mock_create.assert_not_called()
