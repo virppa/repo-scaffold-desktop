@@ -22,6 +22,7 @@ from app.core.watcher.watcher_types import (
     _WATCHER_PAUSE_SENTINEL_NAME,
     _WORKTREE_BASE,
     LinearClientProtocol,
+    pid_file_path,
 )
 
 if TYPE_CHECKING:
@@ -70,14 +71,15 @@ def make_signal_handler(
 
 def write_pid_file() -> None:
     """Write the watcher PID to ``<repo>/.claude/watcher.pid``."""
-    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    path = pid_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(os.getpid()), encoding="utf-8")
 
 
 def remove_pid_file() -> None:
     """Remove the watcher PID file if it exists."""
     try:
-        _PID_FILE.unlink()
+        pid_file_path().unlink()
     except FileNotFoundError:
         pass
 

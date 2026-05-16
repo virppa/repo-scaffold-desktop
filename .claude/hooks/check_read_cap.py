@@ -38,6 +38,7 @@ Wire in ``.claude/settings.json``::
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -73,8 +74,18 @@ def main() -> int:
     # instead of repo root in some Claude Code invocations), which would
     # produce a nested path like .claude/.claude/.read_counts.json and
     # silently miss the state file, breaking the read cap entirely.
-    hook_dir = Path(__file__).resolve().parent  # <repo>/.claude/hooks
-    state_path = hook_dir.parent / STATE_FILENAME  # <repo>/.claude/.read_counts.json
+    #
+    # WOR-506: READ_CAP_STATE_PATH overrides the location entirely. Unset
+    # in production (behaviour unchanged); the test suite sets it to a
+    # per-test tmp file so concurrent pytest-xdist workers can't clobber
+    # the one shared real state file (the same cross-worker shared-FS
+    # bleed class as the watcher pid file).
+    state_override = os.environ.get("READ_CAP_STATE_PATH")
+    if state_override:
+        state_path = Path(state_override)
+    else:
+        hook_dir = Path(__file__).resolve().parent  # <repo>/.claude/hooks
+        state_path = hook_dir.parent / STATE_FILENAME  # <repo>/.claude/...
 
     # Normalize the file path so different relative spellings of the same
     # file collapse to one key. Claude Code passes absolute paths in

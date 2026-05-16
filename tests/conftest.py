@@ -154,6 +154,55 @@ def _block_vllm_autostart(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_http_client, "HTTPConnection", _GuardedHTTPConnection)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_watcher_pid_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """WOR-506: redirect the watcher PID file to a per-test tmp path.
+
+    ``watcher_types._PID_FILE`` is a repo-root-*relative* path. Under
+    ``pytest -n8`` every xdist worker process shares the repo cwd, so
+    ``is_watcher_running`` / ``write_pid_file`` / ``remove_pid_file``
+    all read/write the ONE real ``.claude/watcher.pid`` — a cross-worker
+    bleed that nondeterministically flaked test_watcher_gestures /
+    test_watcher_sonar_concurrent. Patch the single ``pid_file_path``
+    resolver everywhere it is looked up so no test can ever touch the
+    operator's real pid file, regardless of xdist schedule.
+    """
+    import app.core.watcher.watcher_signals as _wsig
+    import app.core.watcher.watcher_types as _wtypes
+
+    # Dedicated subdir — NOT tmp_path/.claude. Many watcher tests create
+    # ``tmp_path / ".claude"`` themselves with ``mkdir(parents=True)``
+    # (exist_ok=False); pre-creating that shared path here made their own
+    # mkdir raise FileExistsError. The resolver makes the pid location
+    # arbitrary, so an isolated subdir no test touches is correct.
+    pid = tmp_path / "_wor506_watcher_pid_home" / "watcher.pid"
+    pid.parent.mkdir(parents=True, exist_ok=True)
+
+    def _fake_pid_file_path() -> Path:
+        return pid
+
+    monkeypatch.setattr(_wtypes, "pid_file_path", _fake_pid_file_path)
+    monkeypatch.setattr(_wsig, "pid_file_path", _fake_pid_file_path)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_read_cap_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """WOR-506: redirect the Read-cap hook's state file to a per-test tmp
+    path.
+
+    ``.claude/hooks/check_read_cap.py`` deliberately anchors its
+    ``.read_counts.json`` to the hook script's own location (WOR-422 — cwd
+    is unreliable), so it is the ONE real ``<repo>/.claude/.read_counts.json``
+    no ``chdir``/``tmp_path`` fixture can redirect. ``test_hooks_read_cap``
+    spawns the hook as a subprocess (inheriting ``os.environ``); under
+    ``pytest --dist loadgroup`` xdist co-schedules those subprocesses across
+    workers and they clobber the one shared state file — the same
+    cross-worker shared-FS bleed class as the watcher pid file. The hook
+    honours ``READ_CAP_STATE_PATH`` (unset in production); set it per-test.
+    """
+    monkeypatch.setenv("READ_CAP_STATE_PATH", str(tmp_path / ".read_counts.json"))
+
+
 # Session-scoped QApplication fixture (pytest-qt)
 @pytest.fixture(scope="session")
 def qapp():
@@ -220,3 +269,61 @@ def make_active_worker(
         worktree_path=Path(f"/tmp/{ticket_id}"),
         process=MagicMock(spec=subprocess.Popen),
     )
+
+
+# ---------------------------------------------------------------------------
+# WOR-506 L5: identity-keyed mock-runner helper
+# ---------------------------------------------------------------------------
+
+
+def make_command_keyed_run(
+    returncodes: dict[str, int],
+    *,
+    default_returncode: int = 0,
+    record: list[str] | None = None,
+) -> Any:
+    """Build a ``subprocess.run`` / ``run_checks`` ``side_effect`` keyed on
+    COMMAND IDENTITY — never on call order.
+
+    WOR-506: a ``side_effect`` that branches on ``mock.call_count`` (e.g.
+    ``return fail if mock.call_count == 1``) races whenever the SUT issues
+    the calls *concurrently* — ``run_checks`` runs the 4 required checks in
+    parallel (WOR-413); ``finalize_worker`` fetches Sonar in a thread while
+    checks run (WOR-451 / WOR-465). Under concurrency the call that arrives
+    "first" is nondeterministic, so an order-keyed fake flakes (this was the
+    #1042 ``test_run_checks_returns_false_on_check_failure`` race).
+
+    Match on *what the command is* instead. ``returncodes`` maps a substring
+    of the joined command to the exit code to return when that substring is
+    present (first match wins by dict order); anything unmatched returns
+    ``default_returncode``. Pass ``record`` to capture the joined commands
+    in invocation order for post-hoc assertions (order-independent counts
+    are still safe; order-keyed dispatch is the antipattern).
+
+    Example — make only ``ruff`` fail, regardless of which check the
+    concurrent ``run_checks`` happens to launch first::
+
+        run = make_command_keyed_run({"ruff": 1})
+        with patch("…watcher_subprocess.subprocess.run", side_effect=run):
+            ...
+    """
+
+    def _run(cmd: Any, **_kwargs: Any) -> MagicMock:
+        if isinstance(cmd, (list, tuple)):
+            joined = " ".join(str(c) for c in cmd)
+        else:
+            joined = str(cmd)
+        if record is not None:
+            record.append(joined)
+        rc = default_returncode
+        for needle, code in returncodes.items():
+            if needle in joined:
+                rc = code
+                break
+        result = MagicMock()
+        result.returncode = rc
+        result.stdout = ""
+        result.stderr = ""
+        return result
+
+    return _run

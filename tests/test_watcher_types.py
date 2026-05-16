@@ -43,12 +43,28 @@ def test_write_and_remove_pid_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Write and remove the watcher PID file via the module-level functions."""
+    """write_pid_file / remove_pid_file round-trip through pid_file_path().
+
+    WOR-506: the pid path is resolved via a single ``pid_file_path()``
+    function looked up at *call* time — replacing the def-time-bound
+    ``_PID_FILE`` constant that required patching the name in *two* modules
+    and silently bled the operator's real ``.claude/watcher.pid`` across
+    xdist workers. Patch the one resolver (in both modules it is looked up
+    from) — this is the canonical pattern for any test touching the pid
+    file. It applies after conftest's autouse ``_isolate_watcher_pid_file``
+    so this explicit path wins.
+    """
     pid_file = tmp_path / "watcher.pid"
-    # _PID_FILE is defined in watcher_types and imported into watcher_signals at
-    # module load time. We must patch both so write_pid_file uses our temp path.
-    monkeypatch.setattr("app.core.watcher.watcher_types._PID_FILE", pid_file)
-    monkeypatch.setattr("app.core.watcher.watcher_signals._PID_FILE", pid_file)
+
+    def _fake_pid_file_path() -> Path:
+        return pid_file
+
+    monkeypatch.setattr(
+        "app.core.watcher.watcher_types.pid_file_path", _fake_pid_file_path
+    )
+    monkeypatch.setattr(
+        "app.core.watcher.watcher_signals.pid_file_path", _fake_pid_file_path
+    )
 
     write_pid_file()
     assert pid_file.exists()
@@ -56,6 +72,9 @@ def test_write_and_remove_pid_file(
 
     remove_pid_file()
     assert not pid_file.exists()
+
+    # remove is idempotent — FileNotFoundError is swallowed
+    remove_pid_file()
 
 
 # ---------------------------------------------------------------------------

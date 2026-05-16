@@ -122,8 +122,21 @@ class ActiveWorker:
 # ---------------------------------------------------------------------------
 
 
-def is_watcher_running(pid_file: Path = _PID_FILE) -> bool:
+def pid_file_path() -> Path:
+    """The watcher PID-file path — single source of truth.
+
+    WOR-506: a single resolver function (looked up at call time) so the
+    test suite can monkeypatch ONE name to redirect the pid file to a
+    per-test tmp path, instead of a def-time-bound default that every
+    xdist worker resolves to the one real ``.claude/watcher.pid``.
+    """
+    return _PID_FILE
+
+
+def is_watcher_running(pid_file: Path | None = None) -> bool:
     """Return True if a watcher process is currently running."""
+    if pid_file is None:
+        pid_file = pid_file_path()
     if not pid_file.exists():
         return False
     try:
