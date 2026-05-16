@@ -71,6 +71,41 @@ def _get_sonar_executor() -> ThreadPoolExecutor:
     return _sonar_executor
 
 
+def _forbidden_path_violations(files: list[str], patterns: list[str]) -> list[str]:
+    """Files matching any forbidden_paths glob, tagged ``FORBIDDEN``.
+
+    One violation per file (first matching pattern wins). Empty *patterns*
+    → no violations (no restriction). Extracted from
+    :func:`_validate_allowed_paths` (WOR-510, S3776 CC reduction) — pure,
+    no side effects, behaviour identical to the inline loop.
+    """
+    out: list[str] = []
+    if not patterns:
+        return out
+    for fpath in files:
+        for pattern in patterns:
+            if fnmatch.fnmatch(fpath, pattern):
+                out.append(f"FORBIDDEN {fpath}")
+                break  # one match per file is enough
+    return out
+
+
+def _disallowed_path_violations(files: list[str], patterns: list[str]) -> list[str]:
+    """Files matching NO allowed_paths glob, tagged ``ALLOWED``.
+
+    Empty *patterns* → no restriction (anything goes), so no violations.
+    Extracted from :func:`_validate_allowed_paths` (WOR-510, S3776).
+    """
+    out: list[str] = []
+    if not patterns:
+        return out
+    for fpath in files:
+        if any(fnmatch.fnmatch(fpath, pat) for pat in patterns):
+            continue  # file matches an allowed pattern
+        out.append(f"ALLOWED {fpath}")
+    return out
+
+
 def _validate_allowed_paths(
     manifest: ExecutionManifest,
     worktree_path: Path,
@@ -109,21 +144,9 @@ def _validate_allowed_paths(
         # most problems.
         return []
 
-    # Check against forbidden_paths first (they override).
-    if manifest.forbidden_paths:
-        for fpath in files:
-            for pattern in manifest.forbidden_paths:
-                if fnmatch.fnmatch(fpath, pattern):
-                    violations.append(f"FORBIDDEN {fpath}")
-                    break  # one match per file is enough
-
-    # Check against allowed_paths.  Empty list = no restriction (anything goes).
-    if manifest.allowed_paths:
-        for fpath in files:
-            if any(fnmatch.fnmatch(fpath, pat) for pat in manifest.allowed_paths):
-                continue  # file matches an allowed pattern
-            violations.append(f"ALLOWED {fpath}")
-
+    # forbidden_paths override allowed_paths; check them first.
+    violations.extend(_forbidden_path_violations(files, manifest.forbidden_paths))
+    violations.extend(_disallowed_path_violations(files, manifest.allowed_paths))
     return violations
 
 
