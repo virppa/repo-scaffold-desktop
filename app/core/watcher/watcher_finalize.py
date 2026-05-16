@@ -445,21 +445,20 @@ def _billing_bucket(eff: str) -> str:
     return "subscription"
 
 
-def finalize_worker(
+def _run_pre_retry_validation_gates(
     worker: ActiveWorker,
-    *,
-    returncode: int,
-    wall_time: float,
     linear: LinearClientProtocol,
-    metrics: MetricsStore,
-    escalation_policy: EscalationPolicy,
     repo_root: Path,
-    mode: str,
-    project_id: str,
-    tracked_prs: list[TrackedPR] | None = None,
-) -> Outcome:
-    eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
+) -> Outcome | None:
+    """The two pre-retry scope/contract gates (WOR-510, S3776 CC reduction).
 
+    Extracted verbatim from :func:`finalize_worker` to keep its cognitive
+    complexity ≤15. Behaviour identical: returns ``"failure"`` if either
+    gate trips (allowed_paths violation, or a success-claim that fails the
+    required_checks contract), else ``None`` to continue into the retry
+    loop. Both gates run BEFORE the retry loop — violations are scope /
+    contract failures, not transient check failures, so retries won't help.
+    """
     # Validate that the worker only touched allowed_paths / did not touch
     # forbidden_paths.  Run BEFORE the retry loop — violations are a scope
     # failure, not a transient check failure, so retries won't help.
@@ -534,6 +533,32 @@ def finalize_worker(
                 stderr="missing required_checks: " + ", ".join(missing_checks),
             )
             return "failure"
+
+    return None
+
+
+def finalize_worker(
+    worker: ActiveWorker,
+    *,
+    returncode: int,
+    wall_time: float,
+    linear: LinearClientProtocol,
+    metrics: MetricsStore,
+    escalation_policy: EscalationPolicy,
+    repo_root: Path,
+    mode: str,
+    project_id: str,
+    tracked_prs: list[TrackedPR] | None = None,
+) -> Outcome:
+    eff = resolve_effective_mode(mode, worker.manifest.implementation_mode)
+
+    # WOR-510: the two pre-retry scope/contract gates (allowed_paths +
+    # checks_passed) are extracted to keep finalize_worker's cognitive
+    # complexity ≤15 (S3776). Behaviour identical — either gate trips →
+    # return "failure" before the retry loop.
+    gate_outcome = _run_pre_retry_validation_gates(worker, linear, repo_root)
+    if gate_outcome is not None:
+        return gate_outcome
 
     # WOR-312: in-dispatch retry loop. Helper avoids the slower Linear
     # Blocked -> ReadyForLocal redispatch when checks transiently fail.
