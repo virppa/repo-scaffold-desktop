@@ -354,6 +354,45 @@ Test core logic only. Priority: config validation, preset selection, file genera
 
 **Local `pytest` is coverage-free by default (WOR-468).** Coverage instrumentation slows the 1860-test suite by ~20s. CI explicitly opts in via the workflow's `pytest --cov=app --cov-report=term-missing --cov-fail-under=80 --cov-report=xml` invocation (also produces the `coverage.xml` SonarCloud needs). To check coverage locally, pass `--cov=app` yourself: `pytest --cov=app --cov-report=term-missing`. The 80% gate is enforced at CI — local runs skip it for fast iteration.
 
+### Writing parallel-safe tests (WOR-506)
+
+`pytest -n 8` runs each xdist worker as its **own OS process** sharing the
+repo cwd. Module globals do *not* bleed across workers, but anything on the
+shared filesystem does. Two rules keep new tests deterministic under `-n 8`:
+
+1. **Never reach the operator's real watcher state files.** The watcher pid
+   file resolves through `app.core.watcher.watcher_types.pid_file_path()`
+   (a call-time resolver, not a def-time `_PID_FILE` constant — that
+   indirection is the WOR-506 fix). The conftest autouse
+   `_isolate_watcher_pid_file` fixture already redirects it per-test; do
+   **not** patch `_PID_FILE`. A test that needs its own pid path patches the
+   *resolver* in both modules it is looked up from — see
+   `tests/test_watcher_types.py::test_write_and_remove_pid_file` for the
+   canonical pattern.
+
+2. **A new test that touches a shared FS resource** (pid file, read-cap
+   `.read_counts.json`, daemon softstop/forcestop/pause/kill sentinels,
+   `.claude/artifacts/<ticket>/`, or anything at a repo-root-relative or
+   `__file__`-anchored path) must isolate that resource **per-test** — not
+   group-serialise it. The fix pattern: give the production code a
+   call-time indirection (a resolver function like `pid_file_path()`, or an
+   env override like `READ_CAP_STATE_PATH`), then add an `autouse=True`
+   conftest fixture that points it at `tmp_path`. Two reference fixtures to
+   copy: `_isolate_watcher_pid_file` (resolver) and `_isolate_read_cap_state`
+   (env override). xdist *grouping* (`@pytest.mark.xdist_group` /
+   `--dist loadgroup`) was evaluated and rejected — it globally reschedules
+   collection, exposing further latent bleeds while losing parallelism;
+   per-resource isolation is the only mechanism that scales.
+
+3. **Mock concurrent SUTs by command identity, never call order.**
+   `run_checks` runs the 4 checks in parallel (WOR-413); `finalize_worker`
+   fetches Sonar in a thread while checks run (WOR-451/465). A `side_effect`
+   that branches on `mock.call_count` flakes — the "first" call is
+   nondeterministic (this was the #1042 race). Use the
+   `make_command_keyed_run({...})` helper in `tests/conftest.py`, or match
+   on `cmd` contents directly. Post-hoc `call_count == N` *assertions* are
+   fine (order-independent); order-keyed *dispatch* is the antipattern.
+
 ---
 
 ## Worker efficiency

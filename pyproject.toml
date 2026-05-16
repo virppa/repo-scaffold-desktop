@@ -38,6 +38,14 @@ testpaths = ["tests"]
 # pytest is now ~20s faster (no coverage instrumentation overhead). Pass
 # --cov=app explicitly when you want coverage locally:
 #   pytest --cov=app --cov-report=term-missing --cov-fail-under=80
+#
+# WOR-506: --dist loadgroup was evaluated as an xdist-grouping safety net
+# and REJECTED. It globally reschedules collection, which exposes (does not
+# cause) further latent cwd-relative-state bleeds in unrelated tests while
+# also serialising grouped tests onto one worker (losing parallelism). The
+# correct fix is per-resource isolation (autouse fixtures / env-override /
+# call-time resolver — see tests/conftest.py _isolate_* fixtures), which
+# makes the suite deterministic under the default 'load' scheduler CI uses.
 addopts = "-n 8"
 
 [tool.mypy]
