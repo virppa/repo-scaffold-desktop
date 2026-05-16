@@ -434,6 +434,17 @@ def _post_improvement_log(linear: LinearClientProtocol, worker: ActiveWorker) ->
         )
 
 
+def _billing_bucket(eff: str) -> str:
+    """Billing pool for a run (WOR-472): local workers are free; cloud
+    spend moves to the Agent-SDK credit pool on 2026-06-15, subscription
+    before."""
+    if eff == "local":
+        return "local"
+    if datetime.now(timezone.utc) >= datetime(2026, 6, 15, tzinfo=timezone.utc):
+        return "agent_sdk_credit"
+    return "subscription"
+
+
 def finalize_worker(
     worker: ActiveWorker,
     *,
@@ -681,16 +692,7 @@ def finalize_worker(
             input_tokens_first=behavior.input_tokens_first,
             input_tokens_last=behavior.input_tokens_last,
             redundant_reads_count=behavior.redundant_reads_count,
-            billing_bucket=(
-                "local"
-                if eff == "local"
-                else (
-                    "agent_sdk_credit"
-                    if datetime.now(timezone.utc)
-                    >= datetime(2026, 6, 15, tzinfo=timezone.utc)
-                    else "subscription"
-                )
-            ),
+            billing_bucket=_billing_bucket(eff),
         )
     )
 

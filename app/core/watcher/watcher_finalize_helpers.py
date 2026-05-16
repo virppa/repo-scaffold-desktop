@@ -503,6 +503,8 @@ def _sonar_requires_escalation(
 # WOR-457: known finalize stages for the last_failure.json `stage`
 # discriminator. `check` is retained for backward-compat (watcher.py's
 # retry-hint reader does `data.get("check", "unknown")`).
+_LAST_FAILURE_FILENAME = "last_failure.json"
+
 _FINALIZE_STAGES = (
     "run_checks",
     "rebase",
@@ -590,7 +592,7 @@ def _record_failure_artifact(
     Best-effort — never raises; a diagnostics-write failure must not mask
     the original error.
     """
-    failure_file = artifact_dir / "last_failure.json"
+    failure_file = artifact_dir / _LAST_FAILURE_FILENAME
     try:
         artifact_dir.mkdir(parents=True, exist_ok=True)
         data: dict[str, object] = {}
@@ -640,7 +642,7 @@ def _write_wip_state_to_last_failure(
         worker.worktree_path / worker.manifest.artifact_paths.result_json
     ).parent
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    failure_file = artifact_dir / "last_failure.json"
+    failure_file = artifact_dir / _LAST_FAILURE_FILENAME
     try:
         data: dict[str, object] = {}
         if failure_file.exists():
@@ -669,7 +671,7 @@ def _write_wip_sha_to_last_failure(
     artifact_dir = (
         worker.worktree_path / worker.manifest.artifact_paths.result_json
     ).parent
-    failure_file = artifact_dir / "last_failure.json"
+    failure_file = artifact_dir / _LAST_FAILURE_FILENAME
     try:
         data: dict[str, object] = {}
         if failure_file.exists():
