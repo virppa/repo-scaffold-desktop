@@ -411,7 +411,13 @@ def _post_improvement_log(linear: LinearClientProtocol, worker: ActiveWorker) ->
         if not result_path.exists():
             return
         result_data = json.loads(result_path.read_text(encoding="utf-8"))
-        notes = (result_data.get("notes") or "").strip()
+        raw_notes = result_data.get("notes")
+        if isinstance(raw_notes, list):
+            notes = "\n".join(str(x) for x in raw_notes)
+        elif isinstance(raw_notes, str):
+            notes = raw_notes
+        else:
+            notes = ""
         if len(notes) <= NOTES_MIN_CHARS:
             return
         try:
