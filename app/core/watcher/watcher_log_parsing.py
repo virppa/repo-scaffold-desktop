@@ -591,6 +591,32 @@ class _TelemetryAccum:
         self.read_counts: dict[str, int] = {}
 
 
+def _accumulate_assistant_blocks(content: Any, acc: _TelemetryAccum) -> None:
+    """Per-content-block behavior accumulation for one assistant event.
+
+    WOR-512 (S3776): extracted verbatim from :func:`_handle_assistant_event`
+    so that handler stays ≤15 cognitive complexity — WOR-510 PR-b's
+    branch-extraction relocated this nested loop into the handler rather
+    than eliminating it. ``content`` is the raw ``message.content`` list
+    (falsy → no-op). Same accumulator mutations in the same order —
+    behaviour identical.
+    """
+    for blk in content or []:
+        if not isinstance(blk, dict):
+            continue
+        _accumulate_content_block(
+            blk, acc.behavior_accum, acc.tool_breakdown, acc.read_counts
+        )
+        if blk.get("type") == "tool_use":
+            name = blk.get("name")
+            if name == "Task":
+                acc.subagent_spawns += 1
+            elif name == "Bash":
+                token = _is_violation_bash_command(blk)
+                if token and token in _HOOK_VIOLATION_TOKENS:
+                    acc.hook_violations += 1
+
+
 def _handle_assistant_event(obj: dict[str, Any], acc: _TelemetryAccum) -> None:
     """Apply one ``type=="assistant"`` event (WOR-510 — verbatim from the
     former inline branch; usage + behavior + spawns + hook violations)."""
@@ -617,20 +643,7 @@ def _handle_assistant_event(obj: dict[str, Any], acc: _TelemetryAccum) -> None:
     )
 
     # --- behavior content + spawns + hook violations ---
-    for blk in msg.get("content") or []:
-        if not isinstance(blk, dict):
-            continue
-        _accumulate_content_block(
-            blk, acc.behavior_accum, acc.tool_breakdown, acc.read_counts
-        )
-        if blk.get("type") == "tool_use":
-            name = blk.get("name")
-            if name == "Task":
-                acc.subagent_spawns += 1
-            elif name == "Bash":
-                token = _is_violation_bash_command(blk)
-                if token and token in _HOOK_VIOLATION_TOKENS:
-                    acc.hook_violations += 1
+    _accumulate_assistant_blocks(msg.get("content"), acc)
 
 
 def _handle_system_event(obj: dict[str, Any], acc: _TelemetryAccum) -> None:
