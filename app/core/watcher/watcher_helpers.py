@@ -530,9 +530,12 @@ def count_main_ahead_of_epic(epic_branch: str, repo_root: Path) -> int:
 # parsing stay in sync. Each entry: (metric_name, kind) where kind is
 # "counter" (cumulative; produce delta = after-before) or "gauge" (point-in-
 # time; produce just `before` and `after` snapshots, no delta).
+_M_PREFIX_CACHE_HITS = "vllm:prefix_cache_hits_total"
+_M_PREFIX_CACHE_QUERIES = "vllm:prefix_cache_queries_total"
+
 _VLLM_COUNTERS = (
-    "vllm:prefix_cache_hits_total",
-    "vllm:prefix_cache_queries_total",
+    _M_PREFIX_CACHE_HITS,
+    _M_PREFIX_CACHE_QUERIES,
     "vllm:prompt_tokens_total",
     "vllm:generation_tokens_total",
     "vllm:time_to_first_token_seconds_sum",
@@ -546,8 +549,8 @@ _VLLM_COUNTERS = (
 # blank these columns (WOR-439). Add verified spellings here as they are
 # observed against a live /metrics surface.
 _VLLM_COUNTER_ALIASES: dict[str, str] = {
-    "vllm:gpu_prefix_cache_hits_total": "vllm:prefix_cache_hits_total",
-    "vllm:gpu_prefix_cache_queries_total": "vllm:prefix_cache_queries_total",
+    "vllm:gpu_prefix_cache_hits_total": _M_PREFIX_CACHE_HITS,
+    "vllm:gpu_prefix_cache_queries_total": _M_PREFIX_CACHE_QUERIES,
 }
 
 
@@ -665,8 +668,8 @@ def compute_vllm_metrics_delta(
     def _delta(key: str) -> float:
         return float(after.get(key, 0.0)) - float(before.get(key, 0.0))
 
-    hits = _delta("vllm:prefix_cache_hits_total")
-    queries = _delta("vllm:prefix_cache_queries_total")
+    hits = _delta(_M_PREFIX_CACHE_HITS)
+    queries = _delta(_M_PREFIX_CACHE_QUERIES)
     prompt = _delta("vllm:prompt_tokens_total")
     gen = _delta("vllm:generation_tokens_total")
     ttft_sum = _delta("vllm:time_to_first_token_seconds_sum")
@@ -733,7 +736,7 @@ def get_active_parent_ids(workers: list[ActiveWorker]) -> set[str]:
 def picker_sort_key(
     candidate: dict[str, Any],
     active_parent_ids: set[str],
-    candidate_index: int,
+    _candidate_index: int,
 ) -> tuple[int, int, str]:
     """Sort key for candidate tickets at dispatch pick time.
 
