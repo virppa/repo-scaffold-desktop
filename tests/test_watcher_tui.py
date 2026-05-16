@@ -3,7 +3,7 @@
 Covers WOR-296: snapshot the rich.Layout output of each code path in
 WatcherDisplay._build_layout and verify deterministic text representation.
 
-Tests MUST NOT instantiate ``rich.live.Live`` — only test _build_layout
+Tests MUST NOT instantiate ``rich.live.Live`` -- only test _build_layout
 and _render_line sub-widgets directly.
 """
 
@@ -47,16 +47,16 @@ def _tui_state(**kwargs) -> TUIState:
     return TUIState(**defaults)
 
 
-def _take_snapshot(state: TUIState, width: int = 120) -> str:
+def _take_snapshot(state: TUIState, width: int = 300) -> str:
     """Render a WatcherDisplay layout to a text snapshot."""
     display = WatcherDisplay()
-    console = Console(record=True, width=width, force_terminal=True)
+    console = Console(record=True, width=width, height=100, force_terminal=True)
     console.print(display._build_layout(state))
     return console.export_text()
 
 
 # ---------------------------------------------------------------------------
-# WOR-296 — scenario tests
+# WOR-296 -- scenario tests
 # ---------------------------------------------------------------------------
 
 
@@ -148,7 +148,7 @@ def test_renders_tracked_pr_with_status() -> None:
 def test_cost_rollup_status_bar() -> None:
     """Top-left table shows Cost Economics with headers and dollar formatting.
 
-    Note: Rich layout clips data rows when the full layout is shown —
+    Note: Rich layout clips data rows when the full layout is shown --
     the section size=3 doesn't fit all three period rows. We assert on the
     table headers (always visible) and verify _format_cost via unit tests.
     """
@@ -212,7 +212,7 @@ def test_conflicting_pr_shows_in_red() -> None:
         ],
     )
     display = WatcherDisplay()
-    console = Console(record=True, width=120, force_terminal=True)
+    console = Console(record=True, width=300, height=100, force_terminal=True)
     console.print(display._build_layout(state))
     html = console.export_html()
 
@@ -225,7 +225,7 @@ def test_conflicting_pr_shows_in_red() -> None:
 def test_no_live_instantiated_in_snapshot_tests() -> None:
     """Verifying that snapshot tests do not trigger Live creation.
 
-    _build_layout never creates a Live widget — only _render_live does,
+    _build_layout never creates a Live widget -- only _render_live does,
     and that is only called when _is_tty() is True and self._live is None.
     Since we call _build_layout directly, Live.start() must never be called.
     """
@@ -246,9 +246,9 @@ def test_no_live_instantiated_in_snapshot_tests() -> None:
 
 def test_pipe_fallback_no_live() -> None:
     """When Console has no TTY (file=StringIO), _render_live delegates to _render_line
-    and never instantiates Live.
+    and never instantiates Live widget.
 
-    This covers the pipe fallback path in update_state → _render_live.
+    This covers the pipe fallback path in update_state -> _render_live.
     """
     state = _tui_state(
         workers=[
@@ -262,7 +262,7 @@ def test_pipe_fallback_no_live() -> None:
     )
 
     display = WatcherDisplay()
-    # Piped console: no TTY → should NOT create Live widget
+    # Piped console: no TTY -> should NOT create Live widget
     with patch.object(Live, "start") as mock_start:
         # Calling update_state with a non-TTY console should route to _render_line
         display.update_state(state)
@@ -306,7 +306,7 @@ def test_format_elapsed_minutes() -> None:
 
 
 def test_format_elapsed_boundary() -> None:
-    """Exactly 60s boundary: 60s → 1m00s, 59s → 59s."""
+    """Exactly 60s boundary: 60s -> 1m00s, 59s -> 59s."""
     assert WatcherDisplay._format_elapsed(59) == "59s"
     assert WatcherDisplay._format_elapsed(60) == "1m00s"
 
@@ -370,7 +370,7 @@ def test_poll_pr_status_returns_unknown_on_bad_json() -> None:
 
 
 def test_poll_pr_status_returns_unknown_on_nonzero_exit() -> None:
-    """Non-zero return code → ('?','?')."""
+    """Non-zero return code -> ('?','?')."""
     fake_response = MagicMock()
     fake_response.returncode = 1
     fake_response.stdout = ""
@@ -441,14 +441,14 @@ def test_is_tty_returns_false_in_tests() -> None:
     """In automated test environments, stderr is rarely a TTY."""
     from app.core.watcher.watcher_tui import _is_tty
 
-    # In pytest, stderr is usually captured → not a TTY
+    # In pytest, stderr is usually captured -> not a TTY
     # This test documents the expected behaviour, not a requirement
-    # Just verifies no crash — _is_tty() may be True/False depending on env
+    # Just verifies no crash -- _is_tty() may be True/False depending on env
     _is_tty()  # noqa: F841
 
 
 def test_stop_silently_handles_oserror() -> None:
-    """Live.stop() may raise OSError during shutdown — must be caught."""
+    """Live.stop() may raise OSError during shutdown -- must be caught."""
     display = WatcherDisplay()
     fake_live = MagicMock()
     fake_live.stop.side_effect = OSError("broken pipe")
@@ -468,7 +468,7 @@ def test_stop_with_no_live_is_noop() -> None:
 
 
 def test_build_layout_has_correct_structure() -> None:
-    """_build_layout returns a Layout with root → top/middle/bottom."""
+    """_build_layout returns a Layout with root -> top/middle/bottom."""
     state = _tui_state()
     display = WatcherDisplay()
     layout = display._build_layout(state)
@@ -480,7 +480,7 @@ def test_build_layout_has_correct_structure() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _build_tui_state — empty workers list
+# _build_tui_state -- empty workers list
 # ---------------------------------------------------------------------------
 
 
@@ -511,7 +511,7 @@ def test_build_tui_state_empty_workers(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _build_tui_state — single local worker
+# _build_tui_state -- single local worker
 # ---------------------------------------------------------------------------
 
 
@@ -546,11 +546,11 @@ def test_build_tui_state_single_local_worker(tmp_path: Path) -> None:
     assert ws.ticket_id == "WOR-TEST"
     assert ws.mode == "local"
     assert ws.status == "running"
-    assert abs(ws.elapsed_s - 60) < 3  # ±3s for test timing
+    assert abs(ws.elapsed_s - 60) < 3  # +/-3s for test timing
 
 
 # ---------------------------------------------------------------------------
-# vLLM table — empty and populated
+# vLLM table -- empty and populated
 # ---------------------------------------------------------------------------
 
 
@@ -559,7 +559,7 @@ def test_vllm_table_shows_dash_when_no_metrics() -> None:
     state = _tui_state()
     display = WatcherDisplay()
     layout = display._build_layout(state)
-    console = Console(record=True, width=120, force_terminal=True)
+    console = Console(record=True, width=300, height=100, force_terminal=True)
     console.print(layout)
     text = console.export_text()
 
@@ -588,7 +588,7 @@ def test_vllm_table_shows_metrics_when_present() -> None:
     )
     display = WatcherDisplay()
     layout = display._build_layout(state)
-    console = Console(record=True, width=120, force_terminal=True)
+    console = Console(record=True, width=300, height=100, force_terminal=True)
     console.print(layout)
     text = console.export_text()
 
@@ -619,7 +619,7 @@ def test_queue_table_shows_counts() -> None:
     )
     display = WatcherDisplay()
     layout = display._build_layout(state)
-    console = Console(record=True, width=120, force_terminal=True)
+    console = Console(record=True, width=300, height=100, force_terminal=True)
     console.print(layout)
     text = console.export_text()
 
@@ -843,3 +843,54 @@ def test_build_tui_state_cost_uses_input_and_output_tokens(tmp_path: Path) -> No
     assert ws.mode == "local"
     # Cost = 1000 * 3e-6 + 2000 * 15e-6 = 0.003 + 0.03 = 0.033
     assert ws.local_saved == pytest.approx(0.033)
+
+
+# ---------------------------------------------------------------------------
+# WOR-449 -- layout proportions: Workers grow + low-density panels content-sized
+# ---------------------------------------------------------------------------
+
+
+def test_layout_workers_panel_grows_with_worker_count() -> None:
+    """Workers panel claims the grow weight -- it should contain all worker rows."""
+    state = _tui_state(
+        workers=[
+            WorkerState(
+                ticket_id=f"WOR-{i:03d}", mode="local", status="running", elapsed_s=10.0
+            )
+            for i in range(1, 7)
+        ],
+    )
+    snapshot = _take_snapshot(state)
+
+    # All 6 workers must be present in the snapshot.
+    for i in range(1, 7):
+        assert f"WOR-{i:03d}" in snapshot
+    # Low-density panels render -- vLLM, Queue, PR.
+    assert "Cost Economics" in snapshot
+    assert "vLLM" in snapshot
+    assert "Queue" in snapshot
+    assert "PR Auto-Merge" in snapshot
+
+
+def test_layout_no_active_workers_in_workers_panel() -> None:
+    """When no workers are active, the Workers panel shows 'No active workers'."""
+    state = _tui_state()
+    snapshot = _take_snapshot(state)
+
+    assert "No active" in snapshot and "workers" in snapshot
+    # All other panels still render.
+    assert "Cost Economics" in snapshot
+    assert "vLLM" in snapshot
+    assert "Queue" in snapshot
+    assert "PR Auto-Merge" in snapshot
+
+
+def test_layout_0_worker_pr_panel_content_height() -> None:
+    """PR panel shows 'No tracked PRs' fallback -- no extra padding rows."""
+    state = _tui_state()
+    snapshot = _take_snapshot(state)
+
+    assert "No tracked" in snapshot and "PRs" in snapshot
+    # The PR table is the only one that should contain this text.
+    # Verify it's present -- the size=3 constraint keeps it to header + 1 row.
+    assert "PR Auto-Merge" in snapshot

@@ -664,10 +664,16 @@ def test_run_checks_returns_false_on_check_failure(
     def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
         nonlocal call_count
         call_count += 1
+        # WOR-413: run_checks executes required_checks concurrently, so the
+        # first *call* is nondeterministic. Key the induced failure on the
+        # command (ruff fails, mypy passes) so the test is order-independent
+        # — the previous call_count==1 form raced (green on Windows-local,
+        # red on CI when mypy was scheduled first).
+        is_ruff = "ruff" in str(cmd)
         result = MagicMock()
-        result.stdout = "error on line 1" if call_count == 1 else ""
+        result.stdout = "error on line 1" if is_ruff else ""
         result.stderr = ""
-        result.returncode = 1 if call_count == 1 else 0
+        result.returncode = 1 if is_ruff else 0
         return result
 
     with (
