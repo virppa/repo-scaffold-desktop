@@ -25,6 +25,7 @@ from app.core.watcher.watcher_helpers import (
     capture_vllm_metrics_diagnostic,
     compute_vllm_metrics_delta,
 )
+from tests.conftest import make_dispatch_context
 
 # ---------------------------------------------------------------------------
 # capture_vllm_metrics — HTTP + Prometheus text parsing
@@ -218,19 +219,21 @@ def test_dispatch_captures_vllm_snapshot_when_solo(tmp_path: Path) -> None:
         ) as mock_capture,
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     assert len(local_active) == 1
@@ -295,19 +298,21 @@ def test_dispatch_invalidates_solo_peer_when_second_worker_launches(
         ) as mock_capture,
     ):
         start_ticket(
-            manifest=new_manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-2",
-            ticket_id="WOR-2",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            new_manifest,
+            "fake-linear-2",
+            "WOR-2",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     # Pre-existing worker has lost its solo flag
@@ -354,19 +359,21 @@ def test_dispatch_skips_snapshot_when_metrics_endpoint_unreachable(
         ),
     ):
         start_ticket(
-            manifest=manifest,
-            linear=linear,
-            services=services,
-            worker_verbose=False,
-            _local_active=local_active,
-            _cloud_active=cloud_active,
-            max_cloud_workers=3,
-            _repo_root=tmp_path,
-            _processed_tickets=[],
-            linear_id="fake-linear-id",
-            ticket_id="WOR-10",
-            _escalation_policy=MagicMock(),
-            _dedup_state={},
+            manifest,
+            "fake-linear-id",
+            "WOR-10",
+            make_dispatch_context(
+                linear=linear,
+                services=services,
+                worker_verbose=False,
+                local_active=local_active,
+                cloud_active=cloud_active,
+                max_cloud_workers=3,
+                repo_root=tmp_path,
+                processed_tickets=[],
+                escalation_policy=MagicMock(),
+                dedup_state={},
+            ),
         )
 
     worker = local_active[0]

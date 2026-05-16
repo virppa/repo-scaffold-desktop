@@ -354,3 +354,39 @@ def make_isolated_repo_root() -> Path:
     (usually their own `tmp_path`); this only replaces the unsafe default.
     """
     return Path(tempfile.mkdtemp(prefix="wor511_finalize_repo_"))
+
+
+# ---------------------------------------------------------------------------
+# WOR-510 PR-c: dispatch context
+# ---------------------------------------------------------------------------
+
+
+def make_dispatch_context(**overrides: Any) -> Any:
+    """Build a ``dispatch.DispatchContext`` with inert test defaults.
+
+    WOR-510 PR-c: ``start_ticket``'s 11 watcher-cycle params were bundled
+    into ``DispatchContext`` (S107). Mirrors make_manifest /
+    make_active_worker — tests override only the fields they assert on
+    (local_active, repo_root, linear, services …); the rest default to
+    inert MagicMock / empty values. ``repo_root`` defaults to an isolated
+    tmp dir (WOR-511 — never the shared cwd).
+    """
+    from app.core.watcher.dispatch import DispatchContext
+
+    services = MagicMock()
+    services._mode = "default"
+    defaults: dict[str, Any] = {
+        "linear": MagicMock(),
+        "services": services,
+        "worker_verbose": False,
+        "local_active": [],
+        "cloud_active": [],
+        "max_cloud_workers": 3,
+        "repo_root": make_isolated_repo_root(),
+        "processed_tickets": [],
+        "escalation_policy": MagicMock(),
+        "dedup_state": {},
+        "kv_budget": None,
+    }
+    defaults.update(overrides)
+    return DispatchContext(**defaults)

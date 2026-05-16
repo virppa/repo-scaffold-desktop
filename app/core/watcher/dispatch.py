@@ -9,6 +9,7 @@ instantiation required.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -49,52 +50,67 @@ logger = logging.getLogger(__name__)
 _EPIC_DRIFT_THRESHOLD = 30
 
 
-def start_ticket(
+@dataclass
+class DispatchContext:
+    """Watcher-cycle-level state shared across every ``start_ticket`` call
+    in a poll cycle (WOR-510, S107).
+
+    The per-ticket args (manifest, linear_id, ticket_id, candidate) stay
+    direct on :func:`start_ticket`; everything that is constant across
+    tickets within a cycle is bundled here. Field values are exactly the
+    former positional params (the leading underscores were unused-arg
+    markers — these are all genuinely used), so behaviour is identical.
+    """
+
+    linear: LinearClientProtocol
+    services: ServiceManager
+    worker_verbose: bool
+    local_active: list[ActiveWorker]
+    cloud_active: list[ActiveWorker]
+    max_cloud_workers: int
+    repo_root: Path
+    processed_tickets: list[object]
+    escalation_policy: object
+    dedup_state: dict[str, str]
+    kv_budget: int | None = None
+
+
+def _run_preflight(
     manifest: ExecutionManifest,
-    linear: LinearClientProtocol,
-    services: ServiceManager,
-    worker_verbose: bool,
-    _local_active: list[ActiveWorker],
-    _cloud_active: list[ActiveWorker],
-    max_cloud_workers: int,
-    _repo_root: Path,
-    _processed_tickets: list[object],
     linear_id: str,
     ticket_id: str,
-    _escalation_policy: object,
-    _dedup_state: dict[str, str],
-    _candidate: dict[str, Any] | None = None,
-    _kv_budget: int | None = None,
-) -> None:
-    """Run the full ticket-start flow (WOR-431: prereqs + dispatch).
+    ctx: DispatchContext,
+) -> str | None:
+    """All pre-dispatch gates + routing resolution (WOR-510, S3776).
 
-    *candidate* is the raw Linear ticket dict with parent info (WOR-220)
-    used to compute ``same_epic_pair`` at dispatch time.
+    Returns the resolved ``effective_mode``, or ``None`` if any gate
+    aborted dispatch (the caller then just returns). Behaviour identical
+    to the former inline gate sequence — same gates, same order, same
+    early-return semantics, same refused-routing handling.
     """
-    if not _check_blocker_preconditions(linear, manifest, linear_id, ticket_id):
-        return
+    if not _check_blocker_preconditions(ctx.linear, manifest, linear_id, ticket_id):
+        return None
     if not _check_epic_branch_overlap(
-        linear, manifest, _local_active, linear_id, ticket_id
+        ctx.linear, manifest, ctx.local_active, linear_id, ticket_id
     ):
-        return
-    if not _check_manifest_quality(linear, manifest, linear_id, ticket_id):
-        return
-    if not _check_epic_drift(linear, manifest, _repo_root, linear_id, ticket_id):
-        return
-    if not _check_in_progress_local(linear, linear_id, ticket_id):
-        return
+        return None
+    if not _check_manifest_quality(ctx.linear, manifest, linear_id, ticket_id):
+        return None
+    if not _check_epic_drift(ctx.linear, manifest, ctx.repo_root, linear_id, ticket_id):
+        return None
+    if not _check_in_progress_local(ctx.linear, linear_id, ticket_id):
+        return None
     if not _check_path_overlap(
-        manifest, _local_active, _cloud_active, ticket_id, _dedup_state
+        manifest, ctx.local_active, ctx.cloud_active, ticket_id, ctx.dedup_state
     ):
-        return
-
+        return None
     if not _check_kv_budget(
-        manifest, _local_active, ticket_id, _dedup_state, _kv_budget
+        manifest, ctx.local_active, ticket_id, ctx.dedup_state, ctx.kv_budget
     ):
-        return
+        return None
 
     effective_mode = resolve_effective_mode(
-        services._mode if hasattr(services, "_mode") else "local",
+        ctx.services._mode if hasattr(ctx.services, "_mode") else "local",
         manifest.routing,
     )
     if effective_mode == "refused":
@@ -103,7 +119,7 @@ def start_ticket(
             "but the watcher is in local-only mode",
             ticket_id,
         )
-        linear.post_comment(
+        ctx.linear.post_comment(
             linear_id,
             (
                 "Skipping dispatch — the manifest declares "
@@ -113,25 +129,47 @@ def start_ticket(
                 "--worker-mode default to dispatch this ticket."
             ),
         )
-        return
+        return None
 
     if not _check_pool_capacity(
-        effective_mode, _cloud_active, max_cloud_workers, ticket_id
+        effective_mode, ctx.cloud_active, ctx.max_cloud_workers, ticket_id
     ):
-        return
-    if not _check_vllm_health(effective_mode, services, ticket_id, _dedup_state):
+        return None
+    if not _check_vllm_health(effective_mode, ctx.services, ticket_id, ctx.dedup_state):
+        return None
+    return effective_mode
+
+
+def start_ticket(
+    manifest: ExecutionManifest,
+    linear_id: str,
+    ticket_id: str,
+    ctx: DispatchContext,
+    *,
+    candidate: dict[str, Any] | None = None,
+) -> None:
+    """Run the full ticket-start flow (WOR-431: prereqs + dispatch).
+
+    *candidate* is the raw Linear ticket dict with parent info (WOR-220)
+    used to compute ``same_epic_pair`` at dispatch time. WOR-510: the 11
+    watcher-cycle params are bundled into *ctx* (S107) and the preflight
+    gate cluster extracted to :func:`_run_preflight` (S3776) — behaviour
+    identical.
+    """
+    effective_mode = _run_preflight(manifest, linear_id, ticket_id, ctx)
+    if effective_mode is None:
         return
 
     # WOR-458: pre-dispatch cleanup — remove stale artifacts and orphan dirs
     # that would otherwise block the new worktree creation.
-    _cleanup_stale_state(_repo_root, manifest, ticket_id)
+    _cleanup_stale_state(ctx.repo_root, manifest, ticket_id)
 
-    worktree_path = create_worktree(_repo_root, manifest)
-    copy_manifest_to_worktree(_repo_root, manifest, worktree_path)
+    worktree_path = create_worktree(ctx.repo_root, manifest)
+    copy_manifest_to_worktree(ctx.repo_root, manifest, worktree_path)
     write_worker_pytest_config(worktree_path)
 
     safe_set_state(
-        linear,
+        ctx.linear,
         linear_id,
         manifest.ticket_state_map.in_progress_local,
         ticket_id,
@@ -141,21 +179,21 @@ def start_ticket(
     backed_up_plans = backup_plan_files()
     # WOR-363: capture pool size BEFORE launching this worker. Counts OTHER
     # workers — does not include the one we're about to add.
-    dispatch_concurrency = len(_local_active) + len(_cloud_active)
+    dispatch_concurrency = len(ctx.local_active) + len(ctx.cloud_active)
     vllm_metrics_before, remained_solo = _snapshot_vllm_solo(
-        dispatch_concurrency, _local_active, _cloud_active
+        dispatch_concurrency, ctx.local_active, ctx.cloud_active
     )
 
     # WOR-220: compute same_epic_pair — True when this candidate's parent
     # matches any active worker's parent (epic_id).
     same_epic_pair = False
-    if _candidate is not None:
-        parent_id = (_candidate.get("parent") or {}).get("id") or ""
-        active_parents = get_active_parent_ids(_local_active + _cloud_active)
+    if candidate is not None:
+        parent_id = (candidate.get("parent") or {}).get("id") or ""
+        active_parents = get_active_parent_ids(ctx.local_active + ctx.cloud_active)
         same_epic_pair = bool(parent_id and parent_id in active_parents)
 
     process = launch_worker(
-        _repo_root, manifest, worktree_path, effective_mode, worker_verbose
+        ctx.repo_root, manifest, worktree_path, effective_mode, ctx.worker_verbose
     )
     worker = ActiveWorker(
         ticket_id=ticket_id,
@@ -170,9 +208,9 @@ def start_ticket(
         same_epic_pair=same_epic_pair,
     )
     if effective_mode == "local":
-        _local_active.append(worker)
+        ctx.local_active.append(worker)
     else:
-        _cloud_active.append(worker)
+        ctx.cloud_active.append(worker)
 
 
 def _check_blocker_preconditions(
