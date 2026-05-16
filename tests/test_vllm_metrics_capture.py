@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import json
 import logging
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.core.escalation_policy import EscalationPolicy
+from app.core.manifest import ArtifactPaths
 from app.core.watcher.watcher_helpers import (
     capture_vllm_metrics,
     capture_vllm_metrics_diagnostic,
@@ -523,6 +526,246 @@ def test_snapshot_solo_success_logs_nothing(
     assert snap == {"vllm:prompt_tokens_total": 1.0}
     assert solo is True
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+# ---------------------------------------------------------------------------
+# WOR-507: persistence — successful solo finalize_worker records vLLM deltas
+# ---------------------------------------------------------------------------
+
+
+def test_solo_finalize_persists_attributable_vllm_metrics(tmp_path: Path) -> None:
+    """WOR-439 operational lock: a successful solo finalize_worker records a
+    TicketMetrics row with vllm_metrics_attributable=1 and non-NULL delta
+    columns — via MetricsStore.get_by_ticket, NOT through a mock store."""
+    from app.core.metrics import MetricsStore
+    from app.core.watcher.watcher_finalize import finalize_worker
+    from app.core.watcher.watcher_types import ActiveWorker
+    from tests.conftest import make_manifest
+
+    repo_root = tmp_path
+    art_dir = tmp_path / ".claude" / "artifacts" / "wor_507"
+    art_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write result.json with proper checks_passed (exact required_checks strings)
+    result_path = art_dir / "result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "checks_passed": [
+                    "ruff check .",
+                    "mypy app/",
+                    "pytest",
+                    "lint-imports",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = MetricsStore(db_path=tmp_path / "test_metrics.db")
+
+    worker = ActiveWorker(
+        ticket_id="WOR-507",
+        linear_id="fake-linear-507",
+        manifest=make_manifest(
+            ticket_id="WOR-507",
+            worker_branch="wor-507-test",
+            base_branch="main",
+            required_checks=["ruff check .", "mypy app/", "pytest", "lint-imports"],
+            allowed_paths=["tests/test_vllm_metrics_capture.py"],
+            artifact_paths=ArtifactPaths.from_ticket_id("WOR-507"),
+        ),
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+        vllm_metrics_before={
+            "vllm:prefix_cache_hits_total": 1000.0,
+            "vllm:prefix_cache_queries_total": 2000.0,
+            "vllm:prompt_tokens_total": 50000.0,
+            "vllm:generation_tokens_total": 2500.0,
+            "vllm:time_to_first_token_seconds_sum": 120.0,
+            "vllm:time_to_first_token_seconds_count": 80.0,
+            "vllm:num_preemptions_total": 0.0,
+        },
+        remained_solo=True,
+    )
+
+    after_snapshot = {
+        "vllm:prefix_cache_hits_total": 1960.0,
+        "vllm:prefix_cache_queries_total": 3800.0,
+        "vllm:prompt_tokens_total": 95000.0,
+        "vllm:generation_tokens_total": 4800.0,
+        "vllm:time_to_first_token_seconds_sum": 240.0,
+        "vllm:time_to_first_token_seconds_count": 160.0,
+        "vllm:num_preemptions_total": 1.0,
+    }
+
+    after_deltas = compute_vllm_metrics_delta(
+        worker.vllm_metrics_before,  # type: ignore[arg-type]
+        after_snapshot,
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.attempt_pr",
+            return_value=("success", "https://github.com/test/repo/pull/9999"),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize._capture_vllm_post",
+            return_value=(True, after_deltas),
+        ),
+        patch("app.core.watcher.watcher_finalize_helpers.preserve_worker_artifacts"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+        ) as mock_wip,
+    ):
+        from app.core.watcher.watcher_worktrees import WipPreservationResult
+
+        mock_wip.return_value = WipPreservationResult(
+            status="clean", sha=None, backup_path=None, error=None
+        )
+        outcome = finalize_worker(
+            worker,
+            returncode=0,
+            wall_time=45.2,
+            linear=MagicMock(),
+            metrics=store,
+            escalation_policy=EscalationPolicy.from_toml(),
+            repo_root=repo_root,
+            mode="default",
+            project_id="wor-507-proj",
+        )
+
+    assert outcome == "success"
+
+    # Assert via a real MetricsStore query — the operational lock target
+    row = store.get_by_ticket("WOR-507", "wor-507-proj")
+    assert row is not None
+
+    # vllm_metrics_attributable must be truthy (1 = true)
+    assert row.vllm_metrics_attributable is True or row.vllm_metrics_attributable == 1
+
+    # All vLLM delta columns must be non-NULL
+    assert row.vllm_prefix_cache_hits is not None
+    assert row.vllm_prefix_cache_queries is not None
+    assert row.vllm_prefix_cache_hit_ratio is not None
+    assert row.vllm_prompt_tokens is not None
+    assert row.vllm_generation_tokens is not None
+    assert row.vllm_ttft_seconds_sum is not None
+    assert row.vllm_ttft_count is not None
+    assert row.vllm_ttft_mean_seconds is not None
+    assert row.vllm_preemptions is not None
+
+    # Delta values must match the after-before math
+    assert row.vllm_prefix_cache_hits == 960
+    assert row.vllm_prefix_cache_hit_ratio == pytest.approx(960 / 1800)
+    assert row.vllm_prompt_tokens == 45000
+    assert row.vllm_generation_tokens == 2300
+
+
+def test_solo_finalize_no_false_positive_without_before(tmp_path: Path) -> None:
+    """A solo run with no before-snapshot (vllm_metrics_before=None) must NOT
+    record attributable vLLM metrics — guard against false-positive NULL-to-
+    non-NULL regressions."""
+    from app.core.metrics import MetricsStore
+    from app.core.watcher.watcher_finalize import finalize_worker
+    from app.core.watcher.watcher_types import ActiveWorker
+    from tests.conftest import make_manifest
+
+    repo_root = tmp_path
+    art_dir = tmp_path / ".claude" / "artifacts" / "wor_507b"
+    art_dir.mkdir(parents=True, exist_ok=True)
+
+    result_path = art_dir / "result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "checks_passed": [
+                    "ruff check .",
+                    "mypy app/",
+                    "pytest",
+                    "lint-imports",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = MetricsStore(db_path=tmp_path / "test_metrics_b.db")
+
+    worker = ActiveWorker(
+        ticket_id="WOR-507b",
+        linear_id="fake-linear-507b",
+        manifest=make_manifest(
+            ticket_id="WOR-507b",
+            worker_branch="wor-507b-test",
+            base_branch="main",
+            required_checks=["ruff check .", "mypy app/", "pytest", "lint-imports"],
+            allowed_paths=["tests/test_vllm_metrics_capture.py"],
+            artifact_paths=ArtifactPaths.from_ticket_id("WOR-507b"),
+        ),
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+        vllm_metrics_before=None,  # no pre-snapshot → no attribution
+        remained_solo=True,
+    )
+
+    with (
+        patch(
+            "app.core.watcher.watcher_finalize_helpers.run_checks",
+            return_value=(True, []),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize.attempt_pr",
+            return_value=("success", "https://github.com/test/repo/pull/9998"),
+        ),
+        patch(
+            "app.core.watcher.watcher_finalize._capture_vllm_post",
+            return_value=(False, {}),
+        ),
+        patch("app.core.watcher.watcher_finalize_helpers.preserve_worker_artifacts"),
+        patch("app.core.watcher.watcher_finalize.cleanup_worktree"),
+        patch(
+            "app.core.watcher.watcher_finalize.commit_wip_state",
+        ) as mock_wip,
+    ):
+        from app.core.watcher.watcher_worktrees import WipPreservationResult
+
+        mock_wip.return_value = WipPreservationResult(
+            status="clean", sha=None, backup_path=None, error=None
+        )
+        outcome = finalize_worker(
+            worker,
+            returncode=0,
+            wall_time=10.0,
+            linear=MagicMock(),
+            metrics=store,
+            escalation_policy=EscalationPolicy.from_toml(),
+            repo_root=repo_root,
+            mode="default",
+            project_id="wor-507-proj",
+        )
+
+    assert outcome == "success"
+
+    row = store.get_by_ticket("WOR-507b", "wor-507-proj")
+    assert row is not None
+
+    # vllm_metrics_attributable must be falsy/NULL (no before → no attribution)
+    assert row.vllm_metrics_attributable is False or row.vllm_metrics_attributable == 0
+
+    # All vLLM delta columns must be NULL
+    assert row.vllm_prefix_cache_hits is None
+    assert row.vllm_prefix_cache_queries is None
+    assert row.vllm_prefix_cache_hit_ratio is None
+    assert row.vllm_prompt_tokens is None
+    assert row.vllm_generation_tokens is None
 
 
 def test_capture_vllm_post_returns_non_none_deltas_for_solo(
