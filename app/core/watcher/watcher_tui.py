@@ -146,17 +146,21 @@ class WatcherDisplay:
         layout.split_column(
             Layout(name="top", size=3),
             Layout(name="middle"),
-            Layout(name="bottom", size=1),
+            Layout(name="bottom"),
         )
         layout["top"].split_row(self._cost_table(state), self._rollup_table(state))
-        # Middle row: workers+PR on left, vLLM+queue on right.
-        # Each half is a row of two panels stacked vertically.
-        left = Layout()
-        left.split_column(self._worker_table(state), self._pr_table(state))
-        right = Layout()
-        right.split_column(self._vllm_table(state), self._queue_table(state))
-        layout["middle"].split_row(left, right)
-        layout["bottom"].update("Ctrl-C to exit  |  [dim]refresh every ~30s[/dim]")
+        # Workers claims the grow weight (middle = one panel only).
+        layout["middle"].update(
+            Layout(self._worker_table(state), name="workers", ratio=3),
+        )
+        # Low-density panels render at content height — no padding-to-fill.
+        bottom = Layout()
+        bottom.split_column(
+            Layout(self._vllm_table(state), name="vllm", size=0),
+            Layout(self._queue_table(state), name="queue", size=0),
+            Layout(self._pr_table(state), name="pr", size=0),
+        )
+        layout["bottom"].update(bottom)
         return layout
 
     # ------------------------------------------------------------------
