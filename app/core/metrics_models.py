@@ -341,3 +341,35 @@ class CostRollup:
     local_saved: float = 0.0
     cloud_ticket_count: int = 0
     local_ticket_count: int = 0
+
+
+@dataclass
+class RoutingDistribution:
+    """Routing distribution and savings breakdown.
+
+    *local_preferred* = ``billing_bucket='local'`` — tickets that cost-economics
+    consider local-first (most sub-ticket implementations).
+    *cloud_preferred* = ``billing_bucket='subscription'`` — tickets that are
+    inherently cloud (e.g. Linear API calls, CI).  *cloud_only* = rows where
+    ``billing_bucket IS NULL`` — legacy/unknown bucket, assumed cloud.
+
+    ``cloud_preferred_local_ran`` counts cloud_preferred tickets whose
+    ``implementation_mode`` is ``local`` — cloud-preferred but ran on local
+    hardware (e.g. Linear API call fallback).
+
+    ``total_savings`` is the computed savings from
+    ``cloud_preferred_local_ran`` tickets: their local_saved minus their
+    cloud_cost_estimate (positive means local ran cheaper than cloud would
+    have).
+    """
+
+    local_preferred_count: int = 0
+    cloud_preferred_count: int = 0
+    cloud_only_count: int = 0
+    cloud_preferred_local_ran: int = 0
+    cloud_preferred_cloud_ran: int = 0
+    local_preferred_local_ran: int = 0
+    local_preferred_cloud_ran: int = 0
+    total_local_saved: float = 0.0
+    total_cloud_cost: float = 0.0
+    total_savings: float = 0.0

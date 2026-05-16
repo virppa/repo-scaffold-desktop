@@ -26,7 +26,7 @@ from rich.live import Live
 from rich.logging import RichHandler
 from rich.table import Table
 
-from app.core.metrics import CostRollup
+from app.core.metrics import CostRollup, RoutingDistribution
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,9 @@ class TUIState:
     tracked_prs: list[TrackedPR] = field(default_factory=list)
     vllm_metrics: dict[str, float] | None = None
     queue_state: QueueState = field(default_factory=QueueState)
+    routing_distribution: RoutingDistribution = field(
+        default_factory=RoutingDistribution
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +155,11 @@ class WatcherDisplay:
             Layout(name="middle"),
             Layout(name="bottom"),
         )
-        layout["top"].split_row(self._cost_table(state), self._rollup_table(state))
+        layout["top"].split_row(
+            self._cost_table(state),
+            self._routing_table(state),
+            self._rollup_table(state),
+        )
         # Workers claims the grow weight (middle = one panel only).
         layout["middle"].update(
             Layout(self._worker_table(state), name="workers", ratio=3),
@@ -239,6 +246,55 @@ class WatcherDisplay:
         for pr in state.tracked_prs:
             if pr.last_status == "MERGED":
                 table.add_row(f"PR #{pr.number}", "MERGED")
+        return table
+
+    def _routing_table(self, state: TUIState) -> Table:
+        rd = state.routing_distribution
+        table = Table(title="Routing", show_header=True, expand=True)
+        table.add_column("Route", style="cyan")
+        table.add_column("Count", justify="right")
+        table.add_column("Saved", justify="right")
+        has_data = (
+            rd.local_preferred_count
+            or rd.cloud_preferred_count
+            or rd.cloud_only_count
+            or rd.total_local_saved
+            or rd.total_savings
+        )
+        if not has_data:
+            table.add_row("—", "—", "No data yet", "—")
+            return table
+        # local_preferred — tickets that cost-economics consider local-first
+        table.add_row(
+            "Local Pref",
+            str(rd.local_preferred_count),
+            self._format_cost(rd.total_local_saved),
+        )
+        # cloud_preferred breakdown
+        cloud_pref_total = rd.cloud_preferred_local_ran + rd.cloud_preferred_cloud_ran
+        table.add_row(
+            "Cloud Pref",
+            str(cloud_pref_total),
+            self._format_cost(rd.total_cloud_cost),
+        )
+        if cloud_pref_total:
+            local_pct = (rd.cloud_preferred_local_ran / cloud_pref_total) * 100
+            table.add_row(
+                "  Ran Local",
+                str(rd.cloud_preferred_local_ran),
+                f"{local_pct:.0f}%",
+            )
+        table.add_row(
+            "Cloud Only",
+            str(rd.cloud_only_count),
+            "—",
+        )
+        table.add_row(
+            "Total Savings",
+            "",
+            self._format_cost(rd.total_savings),
+            "",
+        )
         return table
 
     @staticmethod
@@ -353,6 +409,15 @@ class WatcherDisplay:
                     f"[COST {period.capitalize()}] "
                     f"cloud_spent={cr.cloud_spent:.4f} local_saved={cr.local_saved:.4f}"
                 )
+        # Routing distribution summary
+        rd = state.routing_distribution
+        if rd.local_preferred_count or rd.cloud_preferred_count or rd.cloud_only_count:
+            lines.append(
+                f"[ROUTING] local_pref={rd.local_preferred_count} "
+                f"cloud_pref={rd.cloud_preferred_count} "
+                f"cloud_only={rd.cloud_only_count} "
+                f"savings={rd.total_savings:.4f}"
+            )
         for msg in lines:
             logger.info("TUI: %s", msg)
 
