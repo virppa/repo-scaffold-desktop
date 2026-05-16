@@ -462,6 +462,12 @@ class MetricsStore:
                     thinking_blocks, thinking_chars_total,
                     input_tokens_max, input_tokens_first, input_tokens_last,
                     redundant_reads_count,
+                    -- WOR-439: per-session vLLM /metrics delta capture
+                    vllm_metrics_attributable, vllm_prefix_cache_hits,
+                    vllm_prefix_cache_queries, vllm_prefix_cache_hit_ratio,
+                    vllm_prompt_tokens, vllm_generation_tokens,
+                    vllm_ttft_seconds_sum, vllm_ttft_count,
+                    vllm_ttft_mean_seconds, vllm_preemptions,
                     billing_bucket
                 ) VALUES (
                     :ticket_id, :project_id, :epic_id, :implementation_mode,
@@ -483,6 +489,12 @@ class MetricsStore:
                     :thinking_blocks, :thinking_chars_total,
                     :input_tokens_max, :input_tokens_first, :input_tokens_last,
                     :redundant_reads_count,
+                    -- WOR-439: per-session vLLM /metrics delta capture
+                    :vllm_metrics_attributable, :vllm_prefix_cache_hits,
+                    :vllm_prefix_cache_queries, :vllm_prefix_cache_hit_ratio,
+                    :vllm_prompt_tokens, :vllm_generation_tokens,
+                    :vllm_ttft_seconds_sum, :vllm_ttft_count,
+                    :vllm_ttft_mean_seconds, :vllm_preemptions,
                     :billing_bucket
                 )
                 """,
