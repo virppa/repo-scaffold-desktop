@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
+from rich.logging import RichHandler
 from rich.table import Table
 
 from app.core.metrics import CostRollup
@@ -108,6 +109,8 @@ class WatcherDisplay:
         self._console = console or Console()
         self._live: Live | None = None
         self._rollup_cache: dict[str, tuple[float, CostRollup]] = {}
+        self._logger_handler: logging.Handler | None = None
+        self._original_handlers: list[logging.Handler] | None = None
 
     # ------------------------------------------------------------------
     # State update — single entry point from watcher poll loop
@@ -138,6 +141,7 @@ class WatcherDisplay:
                 auto_refresh=False,
             )
             self._live.start(refresh=True)
+            self._install_log_handler()
             return
         self._live.update(layout, refresh=True)
 
@@ -353,11 +357,45 @@ class WatcherDisplay:
             logger.info("TUI: %s", msg)
 
     # ------------------------------------------------------------------
+    # Live-aware logging handler lifecycle (WOR-448)
+    # ------------------------------------------------------------------
+
+    def _install_log_handler(self) -> None:
+        """Replace root logger handlers with a RichHandler bound to ``self._console``.
+
+        The ``RichHandler`` writes log output to the same console that the
+        ``rich.Live`` widget renders to, keeping log messages visible to the
+        operator while preventing them from escaping to the raw stderr stream
+        and corrupting the Live frame.
+
+        The original root logger handlers are captured so they can be restored
+        exactly on :meth:`stop`.
+        """
+        root = logging.getLogger()
+        self._original_handlers = list(root.handlers)
+        self._logger_handler = RichHandler(console=self._console)
+        root.handlers = [self._logger_handler]
+
+    def _remove_log_handler(self) -> None:
+        """Restore the original root logger handlers.
+
+        Called on :meth:`stop` to revert the handler swap so that non-TTY
+        logging continues to work as before.
+        """
+        if self._logger_handler is not None:
+            root = logging.getLogger()
+            if self._original_handlers is not None:
+                root.handlers = self._original_handlers
+            else:
+                root.handlers = [self._logger_handler]
+            self._logger_handler = None
+
+    # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
 
     def stop(self) -> None:
-        """Stop the live display.
+        """Stop the live display and restore the original root logger handlers.
 
         Best-effort: rich.live.Live.stop() can raise OSError on broken/closed
         terminal handles during shutdown. Swallow that case explicitly so the
@@ -369,6 +407,7 @@ class WatcherDisplay:
             except OSError as exc:
                 logger.debug("Live.stop() failed during shutdown: %s", exc)
             self._live = None
+        self._remove_log_handler()
 
     def update_pr(
         self,

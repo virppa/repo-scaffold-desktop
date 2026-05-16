@@ -480,6 +480,103 @@ def test_build_layout_has_correct_structure() -> None:
 
 
 # ---------------------------------------------------------------------------
+# WOR-448 -- logging handler lifecycle (install / restore)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_handlers() -> None:
+    """WOR-448: restore root logger handlers after each test."""
+    import logging
+
+    root = logging.getLogger()
+    snapshot = list(root.handlers)
+    yield
+    root.handlers = snapshot
+
+
+def test_log_handler_installed_on_live_start() -> None:
+    """Handler is installed during _render_live when Live is first created."""
+    import logging
+    from unittest.mock import MagicMock, patch
+
+    from rich.logging import RichHandler
+
+    display = WatcherDisplay()
+    with (
+        patch("app.core.watcher.watcher_tui._is_tty", return_value=True),
+        patch("app.core.watcher.watcher_tui.Live") as MockLive,
+    ):
+        mock_instance = MagicMock()
+        MockLive.return_value = mock_instance
+        display._render_live()
+
+    # Live.start must have been called
+    mock_instance.start.assert_called_once_with(refresh=True)
+    # And a RichHandler must have been installed on the root logger
+
+    root = logging.getLogger()
+
+    assert isinstance(root.handlers[0], RichHandler)
+    # The display must track the installed handler for restoration
+    assert display._logger_handler is not None
+    assert isinstance(display._logger_handler, RichHandler)
+
+
+def test_log_handler_restored_on_stop() -> None:
+    """stop() restores the original root logger handlers after Live.stop()."""
+    import logging
+    from unittest.mock import MagicMock, patch
+
+    root = logging.getLogger()
+    # Seed with a known handler so we can verify restore
+    test_handler = logging.Handler()
+    root.handlers.append(test_handler)
+
+    # Snapshot before install
+    pre_handler_count = len(root.handlers)
+
+    display = WatcherDisplay()
+
+    # Simulate the TTY path: Live already created and handler already installed
+    with patch("app.core.watcher.watcher_tui._is_tty", return_value=True):
+        with patch("app.core.watcher.watcher_tui.Live") as MockLive:
+            mock_instance = MagicMock()
+            MockLive.return_value = mock_instance
+            display._render_live()
+
+    # Stop the display
+    display.stop()
+
+    # The original handler(s) must be restored (same count, same objects)
+    assert len(root.handlers) == pre_handler_count
+    assert test_handler in root.handlers
+    assert display._logger_handler is None
+
+
+def test_log_handler_snapshot_restore_roundtrip() -> None:
+    """Original handlers are captured, replaced, and fully restored."""
+    import logging
+
+    root = logging.getLogger()
+    before_count = len(root.handlers)
+
+    display = WatcherDisplay()
+
+    with patch("app.core.watcher.watcher_tui._is_tty", return_value=True):
+        with patch("app.core.watcher.watcher_tui.Live") as MockLive:
+            MockLive.return_value = MagicMock()
+            display._render_live()
+
+    # After install, root has exactly one handler (the RichHandler)
+    assert len(root.handlers) == 1
+
+    # After stop, the original handlers list is fully restored
+    display.stop()
+    assert len(root.handlers) == before_count
+
+
+# ---------------------------------------------------------------------------
 # _build_tui_state -- empty workers list
 # ---------------------------------------------------------------------------
 
