@@ -12,6 +12,7 @@ import pytest
 
 from app.core.escalation_policy import EscalationPolicy
 from app.core.linear_client import LinearError
+from app.core.manifest import ArtifactPaths
 from app.core.watcher.watcher_finalize import finalize_worker
 from app.core.watcher.watcher_helpers import (
     WorkerBehavior,
@@ -1498,3 +1499,143 @@ def test_finalize_worker_forbidden_path_violation_marks_blocked(
     comment_body: str = linear_mock.post_comment.call_args[0][1]
     assert "FORBIDDEN app/ui/widget.py" in comment_body
     assert "PR creation aborted" in comment_body
+
+
+# ---------------------------------------------------------------------------
+# WOR-514: _post_improvement_log survives list-shaped notes
+# ---------------------------------------------------------------------------
+
+
+def _make_worker_with_notes(
+    tmp_path: Path, notes: object
+) -> tuple[MagicMock, MagicMock, Path]:
+    """Return (linear_mock, metrics_mock, result_path) with result.json notes set."""
+    linear_mock = MagicMock()
+    metrics_mock = MagicMock()
+
+    result_path = tmp_path / ".claude" / "artifacts" / "wor_514" / "result.json"
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(
+        json.dumps({"status": "success", "notes": notes, "checks_passed": []}),
+        encoding="utf-8",
+    )
+    return linear_mock, metrics_mock, result_path
+
+
+def test_post_improvement_log_notes_list_does_not_crash(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """result.json notes as a list → no AttributeError; note content still harvested."""
+    linear_mock, _, _ = _make_worker_with_notes(
+        tmp_path,
+        [
+            "item A is slow and needs attention",
+            "item B needs a full refactor",
+        ],
+    )
+
+    from app.core.watcher.watcher_finalize import _post_improvement_log
+
+    worker = ActiveWorker(
+        ticket_id="WOR-514",
+        linear_id="fake-linear-id",
+        manifest=make_manifest(
+            ticket_id="WOR-514",
+            worker_branch="wor-514-test",
+            artifact_paths=ArtifactPaths.from_ticket_id("WOR-514"),
+        ),
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.core.watcher.watcher_finalize"):
+        _post_improvement_log(linear_mock, worker)
+
+    # Should NOT raise — list should be joined and posted
+    linear_mock.post_comment.assert_called_once()
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    assert "item A is slow" in comment_body
+    assert "item B needs a full refactor" in comment_body
+
+
+def test_post_improvement_log_notes_string_works_unchanged(
+    tmp_path: Path,
+) -> None:
+    """notes as a str → unchanged behaviour, still harvested."""
+    linear_mock, _, _ = _make_worker_with_notes(
+        tmp_path,
+        "  this item needs a full investigation and should be prioritized  ",
+    )
+
+    from app.core.watcher.watcher_finalize import _post_improvement_log
+
+    worker = ActiveWorker(
+        ticket_id="WOR-514",
+        linear_id="fake-linear-id",
+        manifest=make_manifest(
+            ticket_id="WOR-514",
+            worker_branch="wor-514-test",
+            artifact_paths=ArtifactPaths.from_ticket_id("WOR-514"),
+        ),
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    _post_improvement_log(linear_mock, worker)
+
+    linear_mock.post_comment.assert_called_once()
+    comment_body: str = linear_mock.post_comment.call_args[0][1]
+    # .strip() should remove surrounding whitespace
+    assert "needs a full investigation" in comment_body
+    assert "  needs a full investigation" not in comment_body
+
+
+def test_post_improvement_log_notes_none_no_post(
+    tmp_path: Path,
+) -> None:
+    """notes absent / null → no post."""
+    linear_mock, _, _ = _make_worker_with_notes(tmp_path, None)
+
+    from app.core.watcher.watcher_finalize import _post_improvement_log
+
+    worker = ActiveWorker(
+        ticket_id="WOR-514",
+        linear_id="fake-linear-id",
+        manifest=make_manifest(
+            ticket_id="WOR-514",
+            worker_branch="wor-514-test",
+            artifact_paths=ArtifactPaths.from_ticket_id("WOR-514"),
+        ),
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    _post_improvement_log(linear_mock, worker)
+
+    linear_mock.post_comment.assert_not_called()
+
+
+def test_post_improvement_log_notes_int_coerced_to_empty(
+    tmp_path: Path,
+) -> None:
+    """notes as an int (non-str/non-list) → treated as empty, no post."""
+    linear_mock, _, _ = _make_worker_with_notes(tmp_path, 42)
+
+    from app.core.watcher.watcher_finalize import _post_improvement_log
+
+    worker = ActiveWorker(
+        ticket_id="WOR-514",
+        linear_id="fake-linear-id",
+        manifest=make_manifest(
+            ticket_id="WOR-514",
+            worker_branch="wor-514-test",
+            artifact_paths=ArtifactPaths.from_ticket_id("WOR-514"),
+        ),
+        worktree_path=tmp_path,
+        process=MagicMock(spec=subprocess.Popen),
+    )
+
+    _post_improvement_log(linear_mock, worker)
+
+    linear_mock.post_comment.assert_not_called()
