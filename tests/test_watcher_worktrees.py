@@ -43,8 +43,18 @@ def test_create_worktree_happy_path(tmp_path: Path) -> None:
     # create_worktree uses repo_root.parent / "worktrees" / name
     worktree_path = tmp_path.parent / "worktrees" / "wor-10-test"
 
+    call_count = [0]
+
+    def _side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # list → non-zero rc → _is_registered_but_missing returns False
+            return _completed_process(returncode=1, stdout="")
+        # add → success
+        return _completed_process()
+
     with (
-        patch("subprocess.run") as mock_run,
+        patch("subprocess.run", side_effect=_side_effect),
         patch(
             "app.core.watcher.watcher_worktrees.rebase_worktree_from_base",
         ) as mock_rebase,
@@ -52,7 +62,7 @@ def test_create_worktree_happy_path(tmp_path: Path) -> None:
         result = create_worktree(tmp_path, manifest)
 
     assert result == worktree_path
-    assert mock_run.call_count == 1
+    assert call_count[0] == 2  # list + add
     assert mock_rebase.call_count == 1
     mock_rebase.assert_called_once_with(worktree_path, "main")
 
@@ -69,20 +79,130 @@ def test_create_worktree_uses_worktree_name_when_present(tmp_path: Path) -> None
 
     expected_path = tmp_path.parent / "worktrees" / "custom-worktree"
 
+    call_count = [0]
+    add_cmd: list[list[str]] = []
+
+    def _side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # list → non-zero rc → _is_registered_but_missing returns False
+            return _completed_process(returncode=1, stdout="")
+        # add
+        add_cmd.append(args[0] if args else [])
+        return _completed_process()
+
     with (
-        patch("subprocess.run") as mock_run,
-        patch(
-            "app.core.watcher.watcher_worktrees.rebase_worktree_from_base",
-        ),
+        patch("subprocess.run", side_effect=_side_effect),
+        patch("app.core.watcher.watcher_worktrees.rebase_worktree_from_base"),
     ):
         result = create_worktree(tmp_path, manifest)
 
     assert result == expected_path
-    mock_run.assert_called_once()
-    # Check the path argument in the subprocess call
-    call_args = mock_run.call_args
-    cmd = call_args[0][0]
-    assert str(expected_path) in cmd
+    assert call_count[0] == 2  # list + add
+    # Check the path argument in the add call
+    assert len(add_cmd) == 1
+    assert str(expected_path) in add_cmd[0]
+
+
+def test_create_worktree_prunes_stale_missing_registration_and_succeeds(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """WOR-520: registered-but-missing path → prune+retry → add succeeds."""
+    manifest = make_manifest(
+        ticket_id="WOR-520",
+        worker_branch="wor-520-test",
+        base_branch="main",
+        objective="Test",
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-520"),
+    )
+
+    worktree_path = tmp_path.parent / "worktrees" / "wor-520-test"
+
+    call_log: list[list[str]] = []
+
+    def _side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        cmd = args[0] if args else []
+        call_log.append(cmd)
+
+        if "worktree" in cmd and "list" in cmd:
+            # Simulate: path is registered but missing (prunable)
+            return _completed_process(
+                stdout=(
+                    "worktree " + str(worktree_path) + "\n"
+                    "status prunable\n"
+                    "HEAD " + "a" * 40 + "\n"
+                )
+            )
+        if "worktree" in cmd and "prune" in cmd:
+            return _completed_process()
+        if "worktree" in cmd and "add" in cmd:
+            return _completed_process()
+        return _completed_process()
+
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+            side_effect=_side_effect,
+        ),
+        patch(
+            "app.core.watcher.watcher_worktrees.rebase_worktree_from_base",
+        ) as mock_rebase,
+        caplog.at_level(logging.INFO, logger="app.core.watcher.watcher_worktrees"),
+    ):
+        result = create_worktree(tmp_path, manifest)
+
+    assert result == worktree_path
+    # Verify prune happened before add
+    prune_idx = next(i for i, c in enumerate(call_log) if "prune" in c)
+    add_idx = next(i for i, c in enumerate(call_log) if "add" in c)
+    assert prune_idx < add_idx
+    assert mock_rebase.call_count == 1
+    assert any("registered but missing" in r.message for r in caplog.records)
+
+
+def test_create_worktree_skips_prune_when_registered_and_present(
+    tmp_path: Path,
+) -> None:
+    """WOR-520: normal path (present) → no prune call."""
+    manifest = make_manifest(
+        ticket_id="WOR-520",
+        worker_branch="wor-520-test",
+        base_branch="main",
+        objective="Test",
+        artifact_paths=ArtifactPaths.from_ticket_id("WOR-520"),
+    )
+
+    worktree_path = tmp_path.parent / "worktrees" / "wor-520-test"
+
+    call_log: list[list[str]] = []
+
+    def _side_effect(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+        cmd = args[0] if args else []
+        call_log.append(cmd)
+        if "worktree" in cmd and "list" in cmd:
+            # Present path — no "status prunable" line
+            return _completed_process(
+                stdout=("worktree " + str(worktree_path) + "\nHEAD " + "a" * 40 + "\n")
+            )
+        if "worktree" in cmd and "add" in cmd:
+            return _completed_process()
+        return _completed_process()
+
+    with (
+        patch(
+            "app.core.watcher.watcher_worktrees.subprocess.run",
+            side_effect=_side_effect,
+        ),
+        patch("app.core.watcher.watcher_worktrees.rebase_worktree_from_base"),
+    ):
+        create_worktree(tmp_path, manifest)
+
+    # Only list and add — no prune
+    cmds = [c for sublist in call_log for c in sublist]
+    assert "prune" not in cmds
+    assert "list" in cmds
+    assert "add" in cmds
 
 
 def test_create_worktree_raises_on_path_traversal() -> None:
