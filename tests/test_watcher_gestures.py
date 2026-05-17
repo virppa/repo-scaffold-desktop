@@ -427,8 +427,11 @@ class TestWatcherForcestop:
 
     def test_forcestop_when_daemon_not_running(self, tmp_path: Path) -> None:
         """When the PID file is absent, force-stop returns an error."""
-        args = argparse.Namespace()
-        rc = _run_watcher_forcestop(args)
+        # WOR-523: isolate cwd so a concurrently-running real daemon's
+        # .claude/watcher.pid is never observed — mirrors the
+        # *_succeeds_when_running siblings (per-test isolation, WOR-506/511).
+        with patch.object(Path, "cwd", return_value=tmp_path):
+            rc = _run_watcher_forcestop(argparse.Namespace())
         assert rc == 1
 
     def test_forcestop_succeeds_when_running(self, tmp_path: Path) -> None:
@@ -453,8 +456,11 @@ class TestWatcherPause:
 
     def test_pause_when_daemon_not_running(self, tmp_path: Path) -> None:
         """When the PID file is absent, pause returns an error."""
-        args = argparse.Namespace()
-        rc = _run_watcher_pause(args)
+        # WOR-523: isolate cwd so a concurrently-running real daemon's
+        # .claude/watcher.pid is never observed — mirrors the
+        # *_succeeds_when_running siblings (per-test isolation, WOR-506/511).
+        with patch.object(Path, "cwd", return_value=tmp_path):
+            rc = _run_watcher_pause(argparse.Namespace())
         assert rc == 1
 
     def test_pause_succeeds_when_running(self, tmp_path: Path) -> None:
@@ -510,8 +516,11 @@ class TestWatcherKill:
 
     def test_kill_no_pid_file(self, tmp_path: Path) -> None:
         """When the PID file is absent, kill returns an error."""
-        args = argparse.Namespace(ticket_ids=["WOR-10"])
-        rc = _run_watcher_kill(args)
+        # WOR-523: isolate cwd so a concurrently-running real daemon's
+        # .claude/watcher.pid is never observed — mirrors the
+        # *_succeeds_when_running siblings (per-test isolation, WOR-506/511).
+        with patch.object(Path, "cwd", return_value=tmp_path):
+            rc = _run_watcher_kill(argparse.Namespace(ticket_ids=["WOR-10"]))
         assert rc == 1
 
     def test_kill_no_ticket_ids(self, tmp_path: Path) -> None:
