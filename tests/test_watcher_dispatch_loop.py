@@ -1122,3 +1122,84 @@ def test_start_ticket_proceeds_when_state_not_found(
 
     assert len(w._local_active) == 1
     assert w._local_active[0].ticket_id == "WOR-458"
+
+
+# ---------------------------------------------------------------------------
+# WOR-525 — terminal-state guard: stale ReadyForLocal manifest must not be
+# re-dispatched when the ticket is already Done/MergedToEpic/Cancelled/Duplicate
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "terminal_state", ["Done", "MergedToEpic", "Cancelled", "Duplicate"]
+)
+def test_start_ticket_blocked_when_state_terminal(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, terminal_state: str
+) -> None:
+    """WOR-525: a freshly-restarted daemon (no in-process memory) must NOT
+    re-dispatch a ticket whose Linear state is already terminal, even though
+    its .claude/artifacts manifest is stale at ReadyForLocal. This is the
+    exact scenario that re-ran the already-merged WOR-515/516/517."""
+    manifest = _make_manifest(
+        ticket_id="WOR-515",
+        worker_branch="wor-515-fetch-sonar-token-or-sonarcloud-token",
+        base_branch="epic/wor-519-half-wired-cleanup",
+        allowed_paths=["app/core/foo.py"],
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.get_current_state_name.return_value = terminal_state
+    linear_mock.list_ready_for_local.return_value = []
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch("app.core.watcher.dispatch.create_worktree") as mock_create,
+        caplog.at_level(logging.WARNING, logger="app.core.watcher"),
+    ):
+        w._start_ticket("WOR-515", "fake-linear-id")
+
+    # No worktree created, no active worker — the stale manifest is ignored.
+    assert len(w._local_active) == 0
+    mock_create.assert_not_called()
+    assert any("terminal" in m and "WOR-525" in m for m in caplog.messages)
+    w._linear.get_current_state_name.assert_called_once_with("fake-linear-id")
+
+
+def test_start_ticket_still_proceeds_for_ready_for_local_after_wor525(
+    tmp_path: Path,
+) -> None:
+    """WOR-525 regression guard: the terminal-state gate must NOT block a
+    legitimately ReadyForLocal ticket."""
+    manifest = _make_manifest(
+        ticket_id="WOR-10",
+        worker_branch="wor-10-test-ticket",
+        base_branch="main",
+        allowed_paths=["app/core/foo.py"],
+    )
+    linear_mock = MagicMock()
+    linear_mock.get_open_blockers.return_value = []
+    linear_mock.get_current_state_name.return_value = "ReadyForLocal"
+
+    w = Watcher(linear_client=linear_mock, repo_root=tmp_path)
+    fake_process = MagicMock(spec=subprocess.Popen)
+
+    with (
+        patch.object(w, "_load_manifest", return_value=manifest),
+        patch("app.core.watcher.dispatch.create_worktree", return_value=tmp_path),
+        patch("app.core.watcher.dispatch.copy_manifest_to_worktree"),
+        patch("app.core.watcher.dispatch.write_worker_pytest_config"),
+        patch("app.core.watcher.dispatch.safe_set_state"),
+        patch("app.core.watcher.dispatch.backup_plan_files", return_value=[]),
+        patch(
+            "app.core.watcher.dispatch.launch_worker",
+            return_value=fake_process,
+        ),
+        patch.object(w._services, "ensure_vllm_anthropic_mode"),
+        patch.object(w._services, "probe_vllm_health", return_value=True),
+    ):
+        w._start_ticket("WOR-10", "fake-linear-id")
+
+    assert len(w._local_active) == 1
+    assert w._local_active[0].ticket_id == "WOR-10"
