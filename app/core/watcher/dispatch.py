@@ -385,22 +385,48 @@ def _check_path_overlap(
     return False
 
 
+# WOR-525: a freshly-restarted daemon has no in-process memory of which
+# tickets it already handled, so a stale ``ReadyForLocal`` manifest in
+# .claude/artifacts/ for an already-completed ticket gets re-dispatched
+# (observed live: WOR-515/516/517 re-run after a restart, all already merged
+# via the WOR-519 epic). These workflow-state names are terminal in the
+# repo-scaffold-desktop Linear workflow; a ticket in any of them must never
+# be (re-)dispatched regardless of its manifest status.
+_TERMINAL_STATE_NAMES = frozenset(
+    {"Done", "MergedToEpic", "Cancelled", "Canceled", "Duplicate"}
+)
+
+
 def _check_in_progress_local(
     linear: LinearClientProtocol,
     linear_id: str,
     ticket_id: str,
 ) -> bool:
-    """WOR-458: guard against double-launch when Linear state is InProgressLocal.
+    """WOR-458 + WOR-525: refuse dispatch when the ticket's Linear state
+    means it must not be (re-)run.
 
-    A ticket that is already ``InProgressLocal`` must not be dispatched again —
-    the Linear state lock prevents the watcher from picking it up, but this check
-    acts as a safety net for edge cases (e.g. state race during dispatch).
+    Refuses ``InProgressLocal`` (WOR-458 double-launch guard) and any
+    terminal state — ``Done`` / ``MergedToEpic`` / ``Cancelled`` /
+    ``Duplicate`` (WOR-525). The Linear state lock normally keeps the
+    watcher from picking these up, but a freshly-restarted daemon would
+    otherwise re-dispatch a completed ticket from a stale ReadyForLocal
+    manifest in .claude/artifacts/ — this reconciles against Linear's
+    authoritative state before any worktree is created.
     """
     state_name = linear.get_current_state_name(linear_id)
     if state_name == "InProgressLocal":
         logger.warning(
             "Deferring %s — ticket is already InProgressLocal (state=%s). "
             "Double-launch guard.",
+            ticket_id,
+            state_name,
+        )
+        return False
+    if state_name in _TERMINAL_STATE_NAMES:
+        logger.warning(
+            "Skipping %s — Linear state is terminal (state=%s); not "
+            "re-dispatching a completed ticket from a stale ReadyForLocal "
+            "manifest (WOR-525).",
             ticket_id,
             state_name,
         )
