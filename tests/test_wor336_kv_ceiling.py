@@ -24,13 +24,13 @@ class TestKvConcurrencyCeiling:
 
     def test_light_worker_scales_up(self) -> None:
         """A 30k-token worker leaves room for several concurrent peers."""
-        # floor(148816 * 0.9 / 30000) = floor(4.46) = 4
-        assert kv_concurrency_ceiling(30_000) == 4
+        # floor(173968 * 0.9 / 30000) = floor(5.22) = 5
+        assert kv_concurrency_ceiling(30_000) == 5
 
     def test_mid_worker(self) -> None:
-        # floor(148816 * 0.9 / 67000) = floor(1.999) = 1
-        assert kv_concurrency_ceiling(67_000) == 1
-        # at full utilisation two mid workers fit
+        # floor(173968 * 0.9 / 67000) = floor(2.34) = 2
+        assert kv_concurrency_ceiling(67_000) == 2
+        # at full utilisation two mid workers still fit
         assert kv_concurrency_ceiling(67_000, utilization_target=1.0) == 2
 
     def test_monotonic_decreasing_in_context_size(self) -> None:
@@ -46,9 +46,9 @@ class TestKvConcurrencyCeiling:
         low = kv_concurrency_ceiling(20_000, utilization_target=0.5)
         high = kv_concurrency_ceiling(20_000, utilization_target=1.0)
         assert high >= low
-        # floor(148816*0.5/20000)=3 ; floor(148816*1.0/20000)=7
-        assert low == 3
-        assert high == 7
+        # floor(173968*0.5/20000)=4 ; floor(173968*1.0/20000)=8
+        assert low == 4
+        assert high == 8
 
     def test_min_workers_floor_when_context_exceeds_pool(self) -> None:
         """Even an over-pool context returns at least one worker."""
@@ -92,6 +92,11 @@ class TestKvConcurrencyCeiling:
             kv_concurrency_ceiling(-100)
 
     def test_production_constant_sanity(self) -> None:
-        """Guard against an accidental edit to the measured constants."""
-        assert PRODUCTION_KV_CACHE_TOKENS == 148_816
+        """Guard against an accidental edit to the measured constants.
+
+        WOR-504 Phase 0 (2026-05-20) updated PRODUCTION_KV_CACHE_TOKENS from
+        148,816 (at the implicit 0.90 default) to 173,968 (live-measured at
+        --gpu-memory-utilization 0.93 in WSL2 / RTX 5090 setup).
+        """
+        assert PRODUCTION_KV_CACHE_TOKENS == 173_968
         assert COMPACTION_CONTEXT_CEILING == 134_000

@@ -1,0 +1,45 @@
+# WOR-504 cell — chunked prefill OFF at 131K coding tier
+#
+# Sets BT = context_size so chunked prefill is implicitly disabled for the
+# coding tier (BT=131072 ≥ max prompt size at 131K). This is the head-to-head
+# against vllm_bt_4096 to measure "any-chunking vs no-chunking" at the coding
+# regime — answering whether chunked prefill imposes a structural Mamba-SSM
+# tax (per WOR-221 step B's −45% boundary regression) or whether sufficient
+# BT recovery is possible.
+#
+# Boundary tier (262K) is intentionally OMITTED: at 262K context, a true
+# chunkoff would require BT ≥ 262144, which exceeds the safe ~65536 KV cap
+# (KV pool is only ~148,816 tokens). A boundary-tier chunkoff measurement
+# would risk OOM at concurrency > 1 and is deferred to a follow-up after
+# WOR-502's KV-budget-aware concurrency lands.
+#
+# vLLM launch — replace --max-num-batched-tokens with 131072 in the canonical
+# command. Keep --gpu-memory-utilization 0.93.
+# Note: BT=131072 exceeds the 65536 safe cap; Phase 0 must confirm the pool
+# can accommodate this for c=4/8 testing. If not, run this cell at c=1 only.
+#
+# Driven by: python scripts/bench/run_wor504_sweep.py
+
+[matrix]
+context_sizes                    = [131072]   # coding tier only — no boundary
+boundary_context_sizes           = [262144]   # placeholder — boundary tier not enabled below
+concurrency_levels               = [1, 4, 8]
+repeats                          = 3
+skip_oom_larger_ctx              = true
+require_single_concurrency_first = true
+
+[[backends]]
+id              = "vllm_bt_chunkoff"
+enabled         = true
+base_url        = "http://localhost:8000"
+enable_thinking = true
+
+[[models]]
+id         = "qwen3-coder"
+backend_id = "vllm_bt_chunkoff"
+quant      = "nvfp4"
+
+[[tiers]]
+name = "coding"
+
+# Boundary tier intentionally omitted — see header.
