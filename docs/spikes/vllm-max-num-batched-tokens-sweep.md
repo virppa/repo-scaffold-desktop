@@ -132,7 +132,47 @@ work. Not bundled into WOR-504 to keep the BT axis clean.
 
 ## 2. Phase 1 — BT sweep cells
 
-**Matrix:**
+### Live finding (cell 2 launch, before bench runs)
+
+The first vLLM relaunch at BT=8192 revealed an unexpected coupling: **the
+KV pool shrinks as BT grows**. Per the cell 2 startup log:
+
+```
+Available KV cache memory: 5.99 GiB
+GPU KV cache size: 155,104 tokens     ← was 173,968 at BT=4096
+Maximum concurrency for 262,144 tokens per request: 2.27x  ← was 2.52x
+```
+
+| BT | KV pool tokens | Δ vs 4096 | vLLM max c @ 262K | `kv_ceiling(30K)` @ 0.9 |
+|---|---|---|---|---|
+| 4096 | 173,968 | — | 2.52x | 5 |
+| 8192 | **155,104** | **−10.8%** | **2.27x** | **4** |
+| 16384 | *(pending)* | | | |
+| 32768 | *(pending)* | | | |
+| 65536 | *(pending)* | | | |
+| 131072 (chunkoff) | *(pending)* | | | |
+
+**Mechanism:** per-step prefill activation memory scales with
+`--max-num-batched-tokens`. Each doubling of BT roughly doubles the
+activation memory that vLLM reserves for chunked-prefill computation,
+and that memory comes out of the KV-cache budget — not the model
+weights or the CUDA graph reserve.
+
+This is **not** a flaw — it's the trade-off the spike was set up to
+measure. The chunked-prefill speedup of larger BT (fewer Mamba-SSM
+chunks per prefill) has to exceed the cost of reduced KV pool
+(more frequent prefix-cache eviction, lower max concurrency, possible
+preemption pressure) for any BT > 4096 to be a net win in production.
+
+**Re-predicted concern list for cells 4-6:** if KV pool drops ~10% per
+BT doubling, BT=32768 leaves ~110k tokens — a single 131K coding-tier
+worker no longer fits without preempting. BT=65536 and the chunkoff
+cell (BT=131072) may be unable to keep the working set in memory at
+all for boundary 262K prompts, showing severe throughput cliffs not
+from chunked-prefill but from **KV starvation forcing constant
+preemption**.
+
+### Matrix
 
 | Cell | Backend ID | `--max-num-batched-tokens` | Tiers | Concurrency | Status |
 |---|---|---|---|---|---|
