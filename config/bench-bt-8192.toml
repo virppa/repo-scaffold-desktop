@@ -20,7 +20,7 @@ base_url        = "http://localhost:8000"
 enable_thinking = true
 
 [[models]]
-id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+id         = "qwen3-coder"
 backend_id = "vllm_bt_8192"
 quant      = "nvfp4"
 
