@@ -146,11 +146,19 @@ Maximum concurrency for 262,144 tokens per request: 2.27x  ← was 2.52x
 | BT | KV pool tokens | Δ vs 4096 | vLLM max c @ 262K | `kv_ceiling(30K)` @ 0.9 |
 |---|---|---|---|---|
 | 4096 | 173,968 | — | 2.52x | 5 |
-| 8192 | **155,104** | **−10.8%** | **2.27x** | **4** |
-| 16384 | *(pending)* | | | |
-| 32768 | *(pending)* | | | |
-| 65536 | *(pending)* | | | |
-| 131072 (chunkoff) | *(pending)* | | | |
+| 8192 | 155,104 | −10.8% | 2.27x | 4 |
+| 16384 | **134,144** | **−22.9%** | **1.94x** | **4** |
+| 32768 | *(pending — predicted ~107k)* | | | |
+| 65536 | *(pending — predicted ~78k)* | | | |
+| 131072 (chunkoff) | *(pending — may fail outright)* | | | |
+
+**Cell 3 update (BT=16384):** the KV-pool decline is accelerating
+slightly per BT doubling (−11%, then −14% within the same starting
+budget). At this point a *single* 134K-context heavy worker just
+fits the pool at 0.9 utilization — concurrent heavy serving is now
+impossible without preemption. Mid-weight (67K) `kv_ceiling` drops
+from 2 to 1 — the first material concurrency loss for the watcher's
+typical workload band.
 
 **Mechanism:** per-step prefill activation memory scales with
 `--max-num-batched-tokens`. Each doubling of BT roughly doubles the
