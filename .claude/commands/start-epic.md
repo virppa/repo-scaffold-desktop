@@ -19,7 +19,7 @@ Watcher: not running
   Local mode (RTX 5090 + vLLM — start the server in WSL2 first if not already up):
     /home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \
       --served-model-name qwen3-coder --max-model-len 262144 --max-num-seqs 16 \
-      --gpu-memory-utilization 0.95 \
+      --gpu-memory-utilization 0.93 \
       --kv-cache-dtype fp8 --max-num-batched-tokens 4096 --reasoning-parser qwen3 \
       --enable-prefix-caching --language-model-only --safetensors-load-strategy prefetch \
       --enable-auto-tool-choice --tool-call-parser qwen3_coder \

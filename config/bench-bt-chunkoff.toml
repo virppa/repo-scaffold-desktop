@@ -14,7 +14,7 @@
 # WOR-502's KV-budget-aware concurrency lands.
 #
 # vLLM launch — replace --max-num-batched-tokens with 131072 in the canonical
-# command. Keep --gpu-memory-utilization 0.95.
+# command. Keep --gpu-memory-utilization 0.93.
 # Note: BT=131072 exceeds the 65536 safe cap; Phase 0 must confirm the pool
 # can accommodate this for c=4/8 testing. If not, run this cell at c=1 only.
 #

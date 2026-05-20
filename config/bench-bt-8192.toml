@@ -1,7 +1,7 @@
 # WOR-504 cell — BT=8192 (2× current; ~16 chunks for 131K, ~32 for 262K)
 #
 # vLLM launch — replace --max-num-batched-tokens 4096 with --max-num-batched-tokens 8192
-# in the canonical command. Keep --gpu-memory-utilization 0.95.
+# in the canonical command. Keep --gpu-memory-utilization 0.93.
 #
 # Driven by: python scripts/bench/run_wor504_sweep.py
 

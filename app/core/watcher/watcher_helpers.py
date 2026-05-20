@@ -84,10 +84,18 @@ logger = logging.getLogger(__name__)
 
 # Measured vLLM KV-cache token capacity for the production server config
 # (Qwen3.6-35B-A3B-NVFP4, --max-model-len 262144, --max-num-seqs 16,
-# --kv-cache-dtype fp8 on a 32 GiB RTX 5090): the paged-KV pool holds
-# ~148,816 tokens (~5.73 GiB). Source: WOR-336 forensic + live 6->2 A/B
-# (docs/spikes/vllm-max-num-seqs-sensitivity.md).
-PRODUCTION_KV_CACHE_TOKENS = 148_816
+# --kv-cache-dtype fp8, --gpu-memory-utilization 0.93 on a 32 GiB RTX 5090):
+# the paged-KV pool holds ~173,968 tokens (~6.64 GiB). Live-measured
+# 2026-05-20 (WOR-504 Phase 0) from vLLM startup log.
+#
+# Note: vLLM 0.20+ reserves ~3.6 pp of memory for CUDA graph profiling
+# by default (effective utilization is 0.8938 at nominal 0.93). Setting
+# VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0 would reclaim ~7k more KV
+# tokens but risks OOM during graph capture; deferred to a follow-up.
+#
+# Previous value 148,816 (at the implicit 0.90 default, pre-WOR-527) is
+# documented in docs/spikes/vllm-max-num-seqs-sensitivity.md.
+PRODUCTION_KV_CACHE_TOKENS = 173_968
 
 # Observed peak per-worker input context before Claude Code compaction
 # fires (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=75 over a 240k window). Heavy

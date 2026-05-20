@@ -7,7 +7,7 @@
 # vLLM launch — current canonical command (CLAUDE.md "Local model development"):
 #   --max-num-batched-tokens 4096
 #   (chunked prefill is implicit at BT < max_model_len in vLLM 0.20)
-#   --gpu-memory-utilization 0.95   ← WOR-527, merged 2026-05-20
+#   --gpu-memory-utilization 0.93   ← WOR-527, merged 2026-05-20
 #
 # Driven by: python scripts/bench/run_wor504_sweep.py
 

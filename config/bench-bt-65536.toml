@@ -5,7 +5,7 @@
 # Phase 0 must confirm before pushing past this. Phase 0 may revise upward.
 #
 # vLLM launch — replace --max-num-batched-tokens with 65536 in the canonical
-# command. Keep --gpu-memory-utilization 0.95.
+# command. Keep --gpu-memory-utilization 0.93.
 #
 # Driven by: python scripts/bench/run_wor504_sweep.py
 

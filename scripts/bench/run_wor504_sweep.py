@@ -94,7 +94,7 @@ def _print_launch_command(bt_value: str) -> None:
 /home/antti/vllm-env/bin/vllm serve /home/antti/models/Qwen3.6-35B-A3B-NVFP4 \\
   --served-model-name qwen3-coder \\
   --max-model-len 262144 --max-num-seqs 16 \\
-  --gpu-memory-utilization 0.95 \\
+  --gpu-memory-utilization 0.93 \\
   --kv-cache-dtype fp8 --max-num-batched-tokens {bt_value} \\
   --reasoning-parser qwen3 --enable-prefix-caching \\
   --language-model-only --safetensors-load-strategy prefetch \\
@@ -189,11 +189,11 @@ def _run_bench_cell(config_path: str) -> str | None:
 
 
 def _run_phase_0() -> int:
-    """Phase 0: prompt for KV pool size at --gpu-memory-utilization 0.95."""
+    """Phase 0: prompt for KV pool size at --gpu-memory-utilization 0.93."""
     print(
         """
 ================================================================================
-  PHASE 0 -- Re-measure KV pool at --gpu-memory-utilization 0.95 (post-WOR-527)
+  PHASE 0 -- Re-measure KV pool at --gpu-memory-utilization 0.93 (post-WOR-527)
 ================================================================================
 """
     )

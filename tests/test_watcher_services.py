@@ -186,12 +186,15 @@ def test_vllm_fp8_cmd_is_canonical_full_command() -> None:
 
 
 def test_vllm_cmd_includes_gpu_memory_utilization_fix() -> None:
-    """WOR-527: --gpu-memory-utilization 0.95 must be present in both
-    canonical command strings. WOR-336 found vLLM's default (0.90)
-    under-provisions the KV pool for concurrent worker traffic; the 0.95
-    bump grows the pool to reduce prefix-cache eviction pressure."""
-    assert "--gpu-memory-utilization 0.95" in _VLLM_FP8_CMD
-    assert "--gpu-memory-utilization 0.95" in _VLLM_SCRIPT_BODY
+    """WOR-527 + WOR-504 Phase 0: --gpu-memory-utilization must be present in
+    both canonical command strings. The exact value (currently 0.93) is
+    intentionally NOT asserted -- WOR-336 found vLLM's default (0.90)
+    under-provisions the KV pool, and 0.93 was the first value that booted
+    reliably on the WSL2/RTX 5090 setup (0.95 oversubscribed startup-free
+    memory). The flag itself being dropped is the regression we want to
+    catch; value tuning is allowed to evolve."""
+    assert "--gpu-memory-utilization" in _VLLM_FP8_CMD
+    assert "--gpu-memory-utilization" in _VLLM_SCRIPT_BODY
 
 
 def test_write_vllm_script_file_pipes_body_via_stdin() -> None:
