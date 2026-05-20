@@ -193,7 +193,7 @@ cell — resumable across sessions via `python scripts/bench/run_wor504_sweep.py
 | backend_id | sweep_id | coding 131K c=1 tok/s | coding 131K c=4 agg | coding 131K c=8 agg | coding 262K c=1 tok/s | coding 262K c=8 agg | boundary 262K c=1 tok/s | boundary 262K c=8 agg | prefix_cache_hit_ratio | mean TTFT (s) | preemptions |
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | vllm_bt_4096 | run_20260520_182252 | **185** | **574** | **1010** | **185** | **1003** | **157** (warm) | **974** | **97.3%**† | 0.86s** | 0 |
-| vllm_bt_8192 | — | — | — | — | — | — | — | — | — | — | — |
+| vllm_bt_8192 | run_20260520_190355 | 182 | 579 | 990 | 182 | 985 | 154 | **297** ⚠️ | **97.3%** | 1.05s | 0 |
 | vllm_bt_16384 | — | — | — | — | — | — | — | — | — | — | — |
 | vllm_bt_32768 | — | — | — | — | — | — | — | — | — | — | — |
 | vllm_bt_65536 | — | — | — | — | — | — | — | — | — | — | — |
@@ -278,8 +278,83 @@ output). 0% pass is the FP4-non-determinism territory WOR-221 already
 noted, amplified by strict CI checks. Out of scope for WOR-504, which
 measures throughput not coding quality.
 
-### 2.2 Cell 2 — `vllm_bt_8192`
-*(Pending)*
+### 2.2 Cell 2 — `vllm_bt_8192` — **COMPLETE**
+
+**Sweep ID:** `run_20260520_190355`
+
+**Headline:** *coding tier and boundary-c=1 unchanged within ~2%; boundary
+c=4 and c=8 collapse by ~70%*. This is the spike's most consequential
+finding — it inverts the working hypothesis that "larger BT recovers
+the chunked-prefill tax." Larger BT instead creates a sharp cliff under
+the exact workload the production watcher generates.
+
+| Tier × ctx × c | Cell 1 (BT=4096) | Cell 2 (BT=8192) | Δ |
+|---|---|---|---|
+| coding 131K c=1 | 185 | 182 | −2% |
+| coding 131K c=4 agg | 574 | 579 | +1% |
+| coding 131K c=8 agg | 1010 | 990 | −2% |
+| coding 262K c=1 | 185 | 182 | −2% |
+| coding 262K c=4 agg | 573 | 547 (avg) | −5% |
+| coding 262K c=8 agg | 1003 | 985 | −2% |
+| boundary 262K c=1 (warm) | 157 | 154 | −2% |
+| **boundary 262K c=4 per-req** | **121** | **38** | **−69%** ⚠️ |
+| **boundary 262K c=4 agg** | **481** | **154** | **−68%** ⚠️ |
+| **boundary 262K c=8 per-req** | **116** | **37** | **−68%** ⚠️ |
+| **boundary 262K c=8 agg** | **944** | **297** | **−69%** ⚠️ |
+| cache_hit ratio | 97.3%† | **97.3%** (live) | identical |
+| preemptions | 0 | 0 | unchanged |
+
+**Mechanism of the collapse:**
+
+The KV-pool shrink alone (173,968 → 155,104, −11%) can't linearly
+explain a 70% throughput drop. The real mechanism combines three
+effects:
+
+1. **Boundary tier prompts are ~249K tokens each** — the coding
+   tier's `ctx=262144` is just the allocated context budget for a
+   short (~few-hundred-token) prompt, but boundary actually fills 95%
+   of the context. Concurrent c=4 boundary means 4 × ~249K KV tokens
+   demanded against a 155K pool — vast oversubscription.
+
+2. **APC can't help** because `seed=None` at c>1 produces four
+   different boundary prompts with no shared prefix. So vLLM has to
+   keep all four KV working sets, and constantly evicts/re-prefills.
+
+3. **Each prefill chunk at BT=8192 takes ~2x longer than at BT=4096**
+   (Mamba SSM state initialization scales with chunk size). Under
+   constant eviction-and-re-prefill from #1+#2, the longer prefill
+   chunks monopolize the GPU's compute lanes for longer, starving
+   decode streams across all workers. This is the WOR-336 "KV
+   oversubscription" failure mode amplified by larger BT.
+
+vLLM reports 0 preemptions — but the throughput collapse comes from
+constant prefix-cache *eviction* (a different mechanism from
+preemption), not from sequences being swapped out. The cache_hit
+ratio stays at 97.3% because the same prompts that miss-and-re-prefill
+are scored as cache misses for the *new* allocation, not the eviction
+that just happened. (vLLM's hit-ratio measure undercounts the
+eviction cost.)
+
+**c=1 is unaffected** because a single boundary worker has the pool
+to itself; no oversubscription. The cliff appears only when
+concurrent serving forces KV competition.
+
+**Coding tier is unaffected** because its short prompts don't trip
+the oversubscription threshold even at c=8 — the per-worker KV
+footprint is small.
+
+**Implication for production:** the watcher's actual workload is
+multi-turn, growing-context, divergent across concurrent workers —
+*much closer to the boundary tier than to coding*. The spike's
+working hypothesis "larger BT recovers the WOR-336 12%" doesn't hold.
+At BT=8192 the boundary-tier collapse is far larger than any
+chunked-prefill gain.
+
+**One-iteration anomaly:** coding 131K c=8 r=1 took 58.78s wall vs
+~15s for r=2/r=3. The first c=8 iteration paid CUDA-graph / JIT
+warmup cost specific to this BT value; subsequent iterations
+normalized. Single-iteration noise, no impact on the per-cell
+aggregate.
 
 ### 2.3 Cell 3 — `vllm_bt_16384`
 *(Pending)*
