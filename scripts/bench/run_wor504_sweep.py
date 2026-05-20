@@ -126,9 +126,12 @@ def _capture_metrics_snapshot() -> dict[str, float]:
     Sums across labeled variants so the snapshot is per-server, not per-label.
     Returns empty dict if /metrics is unavailable (older vLLM or disabled).
     """
+    # vLLM 0.20 Prometheus metric names. Confirmed live via curl /metrics
+    # on the post-Phase-0 vLLM. Counter metrics use `_total` suffix per
+    # Prometheus convention; histogram base names get `_sum` / `_count`.
     keys = (
-        "vllm:prefix_cache_hits",
-        "vllm:prefix_cache_queries",
+        "vllm:prefix_cache_hits_total",
+        "vllm:prefix_cache_queries_total",
         "vllm:num_preemptions_total",
         "vllm:prompt_tokens_total",
         "vllm:generation_tokens_total",
@@ -162,8 +165,8 @@ def _compute_delta(
 ) -> dict[str, float]:
     """Subtract before from after; add derived hit-ratio and mean TTFT."""
     delta: dict[str, float] = {k: v - before.get(k, 0.0) for k, v in after.items()}
-    queries = delta.get("vllm:prefix_cache_queries", 0.0)
-    hits = delta.get("vllm:prefix_cache_hits", 0.0)
+    queries = delta.get("vllm:prefix_cache_queries_total", 0.0)
+    hits = delta.get("vllm:prefix_cache_hits_total", 0.0)
     if queries > 0:
         delta["derived:prefix_cache_hit_ratio"] = hits / queries
     ttft_sum = delta.get("vllm:time_to_first_token_seconds_sum", 0.0)

@@ -152,7 +152,7 @@ cell — resumable across sessions via `python scripts/bench/run_wor504_sweep.py
 
 | backend_id | sweep_id | coding 131K c=1 tok/s | coding 131K c=4 agg | coding 131K c=8 agg | coding 262K c=1 tok/s | coding 262K c=8 agg | boundary 262K c=1 tok/s | boundary 262K c=8 agg | prefix_cache_hit_ratio | mean TTFT (s) | preemptions |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| vllm_bt_4096 | run_20260520_182252 | **185** | **574** | **1010** | **185** | **1003** | **157** (warm) | **974** | n/a* | 0.86s** | 0 |
+| vllm_bt_4096 | run_20260520_182252 | **185** | **574** | **1010** | **185** | **1003** | **157** (warm) | **974** | **97.3%**† | 0.86s** | 0 |
 | vllm_bt_8192 | — | — | — | — | — | — | — | — | — | — | — |
 | vllm_bt_16384 | — | — | — | — | — | — | — | — | — | — | — |
 | vllm_bt_32768 | — | — | — | — | — | — | — | — | — | — | — |
@@ -208,12 +208,23 @@ repeats.
 
 **Caveats:**
 
-\* **Cache hit ratio missing from wrapper output** (`cache_hit=-`).
-  My metric-name guess (`vllm:prefix_cache_hits` /
-  `vllm:prefix_cache_queries`) doesn't match vLLM 0.20's actual
-  /metrics export. The TTFT drop above is direct evidence APC works;
-  the precise per-cell hit ratio will be captured after a wrapper
-  fix lands (one-line change once we have the right metric name).
+† **Cache hit ratio (97.3%) computed manually** from the cumulative
+  /metrics counters captured just after cell 1 finished
+  (`vllm:prefix_cache_queries_total = 6,471,480`;
+  `vllm:prefix_cache_hits_total = 6,294,288`; ratio = 6,294,288 /
+  6,471,480 = 0.9726). Wrapper missed it live because the original
+  metric names lacked the `_total` suffix that vLLM 0.20 actually
+  uses; fix landed and cells 2-6 will capture per-cell hit ratios
+  directly. Since vLLM was freshly launched in this session,
+  cell 1's traffic is the only contributor to these counters --
+  the manual delta is exact.
+
+  **97.3% is a very strong APC hit rate**, consistent with the
+  bench's repeats=3 pattern: each (tier, ctx, c) combo sends the
+  same prompt three times; the first call is cold, the next two
+  hit warm cache. Roughly two-thirds of the tokens queried get
+  cache hits, plus the first call's queried tokens get partial
+  block-level hits from shared system prompt and structure.
 
 \*\* **TTFT mean 0.86s** captured from `vllm:time_to_first_token_seconds_*`
   is lower than the bench's per-case TTFTs (2.0-2.5s typical). Likely
