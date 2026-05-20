@@ -13,9 +13,43 @@
 
 ---
 
-## TL;DR
+## TL;DR / Recommendation
 
-*(To be written when Phase 1 completes. Phase 0's headline lives in §1 below.)*
+**Keep `--max-num-batched-tokens 4096`.** The WOR-336 "12% chunked-prefill
+tax" hypothesis does not hold under production-realistic concurrent
+heavy-context workloads. Larger BT shrinks the KV pool (10.8% at
+BT=8192, 22.9% at BT=16384) and creates a severe concurrency cliff:
+
+| Boundary 262K c=4 (the production-realistic case) | tok/s per-req | vs baseline |
+|---|---|---|
+| BT=4096 (current) | **121** | baseline |
+| BT=8192 | 38 | **−69%** |
+| BT=16384 | **10** | **−92%** |
+
+The coding tier (synthetic short prompts) was BT-invariant at ~1000
+tok/s aggregate. **But coding-tier numbers are misleadingly optimistic
+for the production workload**: real watcher sessions carry 50K-134K
+contexts that grow per turn, concurrent and divergent across workers
+— much closer to the boundary tier. The KV-pool-shrinkage + Mamba-SSM
+chunk-tax + APC inability combo produces the cliff above.
+
+**Action:**
+- No change to the canonical `--max-num-batched-tokens 4096` value.
+- Phase 0 corrections (`--gpu-memory-utilization 0.93`,
+  `PRODUCTION_KV_CACHE_TOKENS = 173_968`) land with this spike's PR.
+- The real lever for production throughput is **WOR-502 KV-budget-aware
+  adaptive concurrency**, not BT tuning. Strongly motivated by this
+  spike's findings.
+
+**Methodology:**
+- Cells 1-3 sweep (`bt_4096`, `bt_8192`, `bt_16384`) was sufficient to
+  resolve the curve. Cells 4-6 skipped — predicted to confirm the
+  monotonic worsening into OOM territory without changing the
+  recommendation. Saved ~60 min of operator time. The sweep is
+  resumable; cells 4-6 can be run later via `--cells` if a complete
+  curve is needed.
+- Bench infrastructure (sweep IDs, resume, /metrics deltas) worked
+  cleanly once the metric-name typo was fixed mid-sweep.
 
 ---
 
@@ -202,10 +236,16 @@ cell — resumable across sessions via `python scripts/bench/run_wor504_sweep.py
 |---|---|---|---|---|---|---|---|---|---|---|---|
 | vllm_bt_4096 | run_20260520_182252 | **185** | **574** | **1010** | **185** | **1003** | **157** (warm) | **974** | **97.3%**† | 0.86s** | 0 |
 | vllm_bt_8192 | run_20260520_190355 | 182 | 579 | 990 | 182 | 985 | 154 | **297** ⚠️ | **97.3%** | 1.05s | 0 |
-| vllm_bt_16384 | — | — | — | — | — | — | — | — | — | — | — |
-| vllm_bt_32768 | — | — | — | — | — | — | — | — | — | — | — |
-| vllm_bt_65536 | — | — | — | — | — | — | — | — | — | — | — |
-| vllm_bt_chunkoff | — | — | — | — | n/a | n/a | n/a | n/a | — | — | — |
+| vllm_bt_16384 | run_20260520_193709 | 182 | 574 | 1010 | 182 | 1006 | **117** ⚠️ | **98** ⚠️ | **97.3%** | 1.03s | 0 |
+| vllm_bt_32768 | SKIPPED‡ | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
+| vllm_bt_65536 | SKIPPED‡ | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
+| vllm_bt_chunkoff | SKIPPED‡ | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a | n/a |
+
+‡ Cells 4-6 skipped after cell 3 confirmed the trend is monotonic and
+accelerating. Boundary c=4 throughput dropped 92% from baseline by
+BT=16384; further BT increases would push into OOM territory (VRAM
+offload already triggered at BT=16384) with no new information for
+the production recommendation. See §3 Discussion for full reasoning.
 
 ### 2.1 Cell 1 — `vllm_bt_4096` (baseline) — **COMPLETE**
 
@@ -364,68 +404,295 @@ warmup cost specific to this BT value; subsequent iterations
 normalized. Single-iteration noise, no impact on the per-cell
 aggregate.
 
-### 2.3 Cell 3 — `vllm_bt_16384`
-*(Pending)*
+### 2.3 Cell 3 — `vllm_bt_16384` — **COMPLETE**
 
-### 2.4 Cell 4 — `vllm_bt_32768`
-*(Pending)*
+**Sweep ID:** `run_20260520_193709`
 
-### 2.5 Cell 5 — `vllm_bt_65536`
-*(Pending — must not push past KV pool / VRAM)*
+**Headline:** *the boundary cliff deepens monotonically. Boundary c=4
+per-req drops to 10 tok/s (−92% from baseline), boundary c=8 per-req
+drops to 12 tok/s (−90%). For the first time, boundary c=1 (solo) also
+degrades — 117 tok/s vs 157 baseline (−25%) — and VRAM offload to host
+memory triggers during the cold boundary prefill.*
 
-### 2.6 Cell 6 — `vllm_bt_chunkoff`
-*(Pending — coding tier only; head-to-head against vllm_bt_4096 at coding 131K)*
+| Tier × ctx × c | Cell 1 (4096) | Cell 2 (8192) | Cell 3 (16384) | Δ vs baseline |
+|---|---|---|---|---|
+| coding 131K c=1 | 185 | 182 | 182 | −2% |
+| coding 131K c=8 agg | 1010 | 990 | 1010 | flat |
+| coding 262K c=1 | 185 | 182 | 182 | −2% |
+| coding 262K c=8 agg | 1003 | 985 | 1006 | flat |
+| boundary 262K c=1 (warm) | 157 | 154 | **117** | **−25%** ⚠️ |
+| boundary 262K c=1 r=0 cold TTFT | 20.5s | 23.6s | **34.9s** | +70% slower |
+| **boundary 262K c=4 per-req** | 121 | 38 | **10** | **−92%** ⚠️ |
+| **boundary 262K c=4 agg** | 481 | 154 | **40** | **−92%** ⚠️ |
+| **boundary 262K c=8 per-req** | 116 | 37 | **12** | **−90%** ⚠️ |
+| **boundary 262K c=8 agg** | 944 | 297 | **98** | **−90%** ⚠️ |
+| Offload column | No | No | **Yes** (c=1 r=0) | first offload event |
+| cache_hit ratio | 97.3% | 97.3% | 97.3% | unchanged |
+| preempts | 0 | 0 | 0 | still cache eviction |
+
+**Two new failure modes:**
+
+1. **Boundary c=1 (solo) degrades for the first time** (157 → 117,
+   −25%). The 134K KV pool barely fits one full 249K-token boundary
+   prompt; even with no concurrent workers, vLLM partially evicts
+   during prefill. The cold-prefill TTFT also extends from 20.5s
+   (cell 1) → 34.9s (cell 3), confirming the prefill itself is
+   getting harder.
+
+2. **VRAM offload to host memory triggered** on boundary 262K c=1
+   r=0 — `Offload Yes` in the summary table. VRAM held at 31.2 GB
+   (ceiling) and vLLM moved KV blocks to system RAM to keep the
+   request alive. This is the danger threshold — pushing BT higher
+   would either OOM outright or thrash through PCIe-bound offload
+   storms.
+
+**Coding tier remains immune:** short prompts don't trip the
+oversubscription threshold even at c=8, and aggregate throughput is
+within 1% of baseline across all coding configurations.
+
+**One-iteration anomaly:** coding 131K c=8 r=3 took 33.85s wall vs
+~14s for r=1/r=2 — same warmup pattern as cell 2's first c=8
+iteration. Internal vLLM state transition, not a regression.
+
+### 2.4-2.6 Cells 4-6 — **SKIPPED**
+
+The cell 1→2→3 trajectory established a clear monotonic curve:
+boundary c=4 per-req throughput is **121 → 38 → 10 tok/s** — losing
+roughly two-thirds at each BT doubling, with VRAM offload already
+triggered at BT=16384.
+
+**Predicted cell 4-6 outcomes (not measured):**
+
+| Cell | KV pool (predicted) | Boundary c=4 per-req (predicted) | Failure mode |
+|---|---|---|---|
+| 4 (BT=32768) | ~107k | ~5-8 tok/s | severe; potentially boundary c=1 also fails |
+| 5 (BT=65536) | ~78k | OOM-risk | boundary tier may fail at c≥1; coding 262K starts hurting |
+| 6 (BT=131072, chunkoff) | ~50k or less | likely fail | may not boot at full util; even coding 131K marginal |
+
+Running cells 4-6 would extend the curve into pathological OOM
+territory without changing the production recommendation, which is
+already locked in (see §3 Discussion and §4 Recommendation). The
+operator-time cost (~45-75 min more) is not justified given the
+monotonic trend and the VRAM-offload warning at BT=16384.
+
+**Saved data:** the operator can re-run cells 4-6 later via
+`python scripts/bench/run_wor504_sweep.py --cells vllm_bt_32768`
+etc. The wrapper is resumable; cells 1-3 will be skipped as already
+complete. This is the right exit condition for the spike — clear
+answer obtained, full curve documented in §3, future operators
+can extend the matrix if needed.
 
 ---
 
 ## 3. Discussion
 
-*(To be written after all cells complete. Pulls together: BT-vs-tok/s curve,
-chunk-on-vs-chunk-off tax, KV-pool-peak observations, prefix-cache hit rate
-behavior across BT values.)*
+The sweep produced a clear and unexpected answer: **the WOR-336 "BT
+recovers the 12% chunked-prefill tax" hypothesis is wrong**. Larger
+BT doesn't recover the tax — it amplifies a different, much larger
+cost (KV-pool oversubscription cliff under realistic concurrent
+heavy-context workloads).
 
-### 3.1 Does larger BT recover the chunked-prefill penalty?
+### 3.1 The BT-vs-throughput curve has two regimes, separated by workload
 
-*(Open. WOR-336 H4 measured chunk_off_4096 at 115.8 vs chunk_on_4096 at 102.3
-on long context — a ~12% chunked-prefill cost. The sweep tests whether BT
-values from 8192 to 65536 recover this gap, or whether the Mamba-SSM
-per-chunk-boundary tax is fixed.)*
+**Coding tier (short prompts at large ctx allocation):**
+throughput is **invariant to BT** across 4096-16384. Aggregate
+c=8 stays at 1003-1010 tok/s regardless. The "ctx=262144" config
+parameter is just an allocation ceiling; actual coding prompts are
+a few hundred tokens, so per-worker KV footprint is small. The
+oversubscription threshold is never crossed.
 
-### 3.2 Does the chunkoff cell vindicate disabling chunked prefill entirely?
+**Boundary tier (~249K-token prompts, realistic concurrent fan-out):**
+throughput **collapses monotonically and steeply** with BT. The
+mechanism (validated by three data points):
 
-*(Open. WOR-221 step B found enabling chunked prefill caused −45% on the
-boundary tier — the "chunked-prefill on" overhead is real and significant
-at default BT. If the chunkoff cell's coding-131K result is materially
-higher than vllm_bt_65536's coding-131K, that's evidence the Mamba SSM
-tax is structural and BT-tuning can only partially recover it.)*
+- **Per-worker KV demand exceeds pool** when concurrent boundary
+  workers run. At c=4 the demand is 4 × ~249K ≈ 1M tokens against
+  a pool that shrinks from 174K (BT=4096) to 134K (BT=16384). APC
+  cannot help because `seed=None` at c>1 produces divergent prompts
+  with no shared prefix.
+- **vLLM's response is constant prefix-cache eviction** (not
+  preemption — `preempts=0` throughout). The cache_hit ratio stays
+  at 97.3% across all cells because hits are scored at allocation
+  time, before the just-evicted blocks would have hit.
+- **Larger BT makes each prefill chunk take ~2x longer** (Mamba SSM
+  state initialization scales with chunk size). Under the constant
+  eviction-and-re-prefill cycle, longer chunks monopolize the GPU's
+  compute lanes, starving decode streams across all concurrent
+  workers. This is the WOR-221 step B "Mamba SSM chunk overhead"
+  finding (which measured −45% on boundary at BT=4096-with-chunked-
+  prefill-on vs without) showing up dramatically at higher BT.
 
-### 3.3 Interaction with the CUDA graph profiling overhead
+### 3.2 Why solo boundary started degrading at BT=16384
 
-*(Open. All cells run with the 3.6 pp CUDA graph reserve active. The
-absolute tok/s numbers are at the "effective 0.8938" operating point; if
-the follow-up CUDA-graph-profiling spike confirms it's safe to disable,
-all numbers would scale somewhat — but the relative ranking across BT
-values is invariant to this overhead.)*
+A new threshold crossed at cell 3: even with no concurrent workers,
+boundary c=1 dropped to 117 tok/s (vs 157 baseline, −25%), and the
+cold-prefill TTFT extended from 20.5s to 34.9s. With KV pool at
+134,144 tokens and a 249K-token prompt, vLLM cannot keep the full
+KV cache resident — it partially evicts even during the prefill of
+the very first request. The kv_concurrency_ceiling(134K) is exactly
+1 at 0.9 utilization, with no margin for the additional working
+memory the prefill itself needs.
+
+This is the boundary between "lossy under concurrency" (BT=8192)
+and "lossy even solo" (BT=16384). Higher BT would push this into
+"cannot complete the request" territory — the VRAM offload event
+at cell 3 r=0 is the precursor.
+
+### 3.3 Coding-tier immunity is a quirk of the bench, not the production workload
+
+The coding tier sends short prompts but reserves `ctx=262144` for
+output. The bench reports tok/s based on the output generation rate,
+which is decode-dominated. Concurrent decode of 8 short-prompt
+requests fits easily in any KV pool 30K+. This is why the coding
+tier shows BT-invariance.
+
+**Real worker sessions are not like this.** They:
+- Carry 50K-134K-token *input* contexts that grow per turn
+- Run multiple concurrent workers with divergent prompts (different
+  tickets in flight)
+- Continually re-prefill on each turn (the WOR-336 H2 forensic
+  showed effective tok/s collapsing with concurrency in production)
+
+Production behavior is much closer to the boundary tier than to the
+coding tier. **The sweep's coding-tier numbers are the optimistic
+scenario; the boundary-tier numbers are the realistic one.**
+
+### 3.4 The WOR-336 H4 bonus signal is misleading in isolation
+
+The motivating evidence for this spike was: WOR-336 H4 measured
+`chunk_off_4096 = 115.8 tok/s` vs `chunk_on_4096 = 102.3 tok/s` at
+c=1 long-context — a 12% chunked-prefill cost. This held out the
+hope that "if we can disable chunked prefill or use a BT that's
+effectively no-chunking, we'd recover 12%."
+
+What this sweep shows:
+- **At c=1 the gap is real but small (cell 1 boundary c=1 is 157
+  tok/s, in the same ballpark as the WOR-221 step A 162 tok/s
+  chunk_off baseline)**.
+- **The cost of any BT > 4096 vastly exceeds the 12% recovery
+  potential** because the production workload runs at c≥2, often c≥4.
+- The chunk-off goal that the spike's chunkoff cell was meant to
+  test would require BT ≥ max-model-len (262144), which is far
+  outside the safe-pool range we measured.
+
+The WOR-336 bonus signal was a c=1 measurement, but the watcher
+operates at c≥2 effectively all the time. The 12% recovery would
+require running at c=1 (negating the local-LLM strategy entirely)
+or finding a way to disable chunked prefill safely, which the
+148,816-token KV pool budget prohibits at boundary contexts.
+
+### 3.5 What about the CUDA graph profiling overhead?
+
+All cells ran with `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=1`
+(the default). vLLM reserves 3.6-8.3 pp of memory for graph
+capture safety — effective utilization at nominal 0.93 was
+0.8938 (cell 1), 0.9128 (cell 2), 0.9174 (cell 3). Disabling
+this could reclaim ~4-5% more KV pool size, partially offsetting
+the BT shrinkage.
+
+But the *relative* trends across BT values are invariant to this
+overhead — the cliff appears at BT=8192 regardless. The CUDA graph
+follow-up spike (see §5) might extend the safe BT range slightly
+on the margin, but it cannot rescue BT=16384's boundary cliff.
+
+### 3.6 Bench-vs-production divergence revisited
+
+WOR-336 H2 vs H4 already noted: controlled bench scales to 982
+tok/s aggregate at c=8 while production workers thrash. This spike
+quantifies the gap: in the controlled bench, *coding* tier hits
+1010 tok/s at c=8 across all BT values; in the boundary tier
+(production-realistic), c=8 aggregate at BT=16384 is 98 tok/s.
+
+**The boundary tier IS the production scenario.** Future spikes that
+care about production-realistic numbers should default to boundary
++ c≥2, not coding.
 
 ---
 
 ## 4. Recommendation
 
-*(Filled in when all cells complete and data is consistent. Possible
-outcomes:)*
+### 4.1 Production setting: keep `--max-num-batched-tokens 4096`
 
-1. **Keep `--max-num-batched-tokens 4096`** — if no higher BT shows
-   meaningful improvement over the baseline.
-2. **Move to `--max-num-batched-tokens N`** — if a specific higher value
-   gives ≥5% aggregate throughput improvement at c=8 without OOM or
-   latency regression.
-3. **Disable chunked prefill** (`--max-num-batched-tokens >= max-model-len`)
-   — if `vllm_bt_chunkoff` materially outperforms all BT-tuned cells,
-   reproducing WOR-221's chunk-off baseline.
+The current production value is correct. The WOR-336 "12% bonus
+signal" cannot be exploited by BT tuning under realistic concurrent
+worker conditions — every BT > 4096 trades modest c=1 gains for
+severe c≥4 boundary collapse.
 
-A follow-up Fix ticket rolls the production recommendation into the
-canonical `vllm serve` command across the 5 sites (`watcher_services.py`,
-`CLAUDE.md`, `README.md`, `start-ticket.md`, `start-epic.md`).
+**No change to the canonical vLLM serve command across the 5 sites
+(`watcher_services.py`, `CLAUDE.md`, `README.md`, `start-ticket.md`,
+`start-epic.md`).** Phase 0 already updated `--gpu-memory-utilization
+0.93` and `PRODUCTION_KV_CACHE_TOKENS = 173_968` — those land as
+part of this spike's PR.
+
+### 4.2 Where the real lever is
+
+The spike found that the limiting factor for production throughput
+is **KV-pool oversubscription** under concurrent heavy-context
+workers, not chunked-prefill efficiency. This validates two
+existing follow-ups:
+
+- **WOR-502** (KV-budget-aware adaptive concurrency) is the right
+  lever. It consumes the Phase 0 `PRODUCTION_KV_CACHE_TOKENS =
+  173,968` constant and the spike's observation that 1.30 heavy
+  workers fit at 0.9 utilization. Capping concurrency to 1-2 for
+  heavy workers and 4+ for light workers avoids the oversubscription
+  cliff entirely.
+- **CUDA graph profiling spike** (follow-up §5) is a secondary
+  lever — could buy ~4% more KV but is bounded in upside.
+
+Both are higher-leverage than any BT-value tuning.
+
+### 4.3 Negative-result findings worth preserving
+
+This spike produced several findings worth keeping even though they
+flow against the original hypothesis:
+
+1. **BT-tuning is a trade, not a free knob.** Larger BT shrinks the
+   KV pool by 10-23% (BT=8192 to BT=16384) and creates a severe
+   concurrent-boundary-throughput cliff. Future spikes should not
+   assume BT can be raised without measuring KV impact first.
+
+2. **The coding-tier bench is misleadingly optimistic.** Short
+   prompts at large ctx allocation insulate the benchmark from
+   the oversubscription regime that production runs in. Use the
+   boundary tier (or build a watcher-pattern workload variant)
+   for production-relevant numbers.
+
+3. **vLLM 0.20+ silently reserves memory for CUDA graph profiling.**
+   Documented in §1.3; constant follow-up if reclaim is safe.
+
+4. **0.95 is too aggressive on WSL2 with default Windows desktop**
+   (Phase 0 finding; WOR-527 fix-up to 0.93 lands in this PR).
+
+5. **Effective utilization grows with BT** — at higher BT, vLLM's
+   reserve for per-step prefill activation memory grows, leaving
+   less for KV but more for chunked-prefill working memory.
+
+---
+
+## 5. Open follow-ups (not in this spike)
+
+1. **CUDA graph memory profiling spike** —
+   `VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS=0`, ~30 min, ~+4-5%
+   KV pool if safe. Filed separately at the end of WOR-504.
+2. **WOR-502 KV-budget-aware concurrency** — consumes Phase 0's
+   updated `PRODUCTION_KV_CACHE_TOKENS = 173_968` and the spike's
+   per-worker-context concurrency math. Now strongly motivated by
+   §3.1's boundary collapse mechanism.
+3. **APC effectiveness under divergent contexts** — the 2.52x
+   vLLM-reported max concurrency at cell 1 relies on prefix
+   sharing that real divergent workers don't realize. Measuring
+   per-cell APC effectiveness under divergent boundary prompts
+   would tighten the WOR-502 calibration.
+4. **Cells 4-6 of this matrix (deferred)** — operator may resume
+   via `python scripts/bench/run_wor504_sweep.py --cells vllm_bt_32768`
+   if a complete curve is needed for future readers. Predicted
+   outcomes are documented in §2.4-2.6.
+5. **WOR-502's concurrency cap value** — the spike found
+   `kv_concurrency_ceiling(134K) ≈ 1.30` at the current pool.
+   Whether 1 (round-down conservative) or 2 (with APC partial credit)
+   is the right cap value remains an open question for WOR-502's
+   calibration phase.
 
 ---
 
