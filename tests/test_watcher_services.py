@@ -185,6 +185,15 @@ def test_vllm_fp8_cmd_is_canonical_full_command() -> None:
     assert _VLLM_FP8_CMD != _VLLM_AUTOSTART_CMD
 
 
+def test_vllm_cmd_includes_gpu_memory_utilization_fix() -> None:
+    """WOR-527: --gpu-memory-utilization 0.95 must be present in both
+    canonical command strings. WOR-336 found vLLM's default (0.90)
+    under-provisions the KV pool for concurrent worker traffic; the 0.95
+    bump grows the pool to reduce prefix-cache eviction pressure."""
+    assert "--gpu-memory-utilization 0.95" in _VLLM_FP8_CMD
+    assert "--gpu-memory-utilization 0.95" in _VLLM_SCRIPT_BODY
+
+
 def test_write_vllm_script_file_pipes_body_via_stdin() -> None:
     """Writing must pipe the script body via stdin to `wsl bash -c '... tee
     ...'` — never a shell command interpolating the script content. This is
