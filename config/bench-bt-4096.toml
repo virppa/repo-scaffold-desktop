@@ -1,0 +1,37 @@
+# WOR-504 cell — current production baseline (chunk-on, BT=4096)
+#
+# WOR-336's H4 bonus signal measured this at 102.3 tok/s vs the chunk_off
+# baseline at 115.8 (long-context, c=1) — the ~12% chunked-prefill penalty
+# this spike sweeps to recover or confirm.
+#
+# vLLM launch — current canonical command (CLAUDE.md "Local model development"):
+#   --max-num-batched-tokens 4096
+#   (chunked prefill is implicit at BT < max_model_len in vLLM 0.20)
+#   --gpu-memory-utilization 0.95   ← WOR-527, merged 2026-05-20
+#
+# Driven by: python scripts/bench/run_wor504_sweep.py
+
+[matrix]
+context_sizes                    = [131072, 262144]
+boundary_context_sizes           = [262144]
+concurrency_levels               = [1, 4, 8]
+repeats                          = 3
+skip_oom_larger_ctx              = true
+require_single_concurrency_first = true
+
+[[backends]]
+id              = "vllm_bt_4096"
+enabled         = true
+base_url        = "http://localhost:8000"
+enable_thinking = true
+
+[[models]]
+id         = "/home/antti/models/Qwen3.6-35B-A3B-NVFP4"
+backend_id = "vllm_bt_4096"
+quant      = "nvfp4"
+
+[[tiers]]
+name = "coding"
+
+[[tiers]]
+name = "boundary"
