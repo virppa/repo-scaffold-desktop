@@ -17,7 +17,7 @@ jobs:
       QT_QPA_PLATFORM: offscreen
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # full history for SonarCloud SCM auto-assignment
 
@@ -115,7 +115,7 @@ jobs:
     if: github.event_name == 'pull_request' && (github.base_ref == 'main' || startsWith(github.base_ref, 'epic/'))
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Python
         uses: actions/setup-python@v6
